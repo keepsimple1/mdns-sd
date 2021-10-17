@@ -1,0 +1,10 @@
+[package]
+name = "mdns-sd"                                # stands for "mDNS service discovery"
+version = "0.1.0"
+authors = ["keepsimple <keepsimple@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+crossbeam-channel = "0.5.1" # channel between threads
+log = "0.4.14"              # logging
+nix = "0.23.0"              # socket APIs
