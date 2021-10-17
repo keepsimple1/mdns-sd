@@ -1,0 +1,33 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: 1.46.0
+          override: true
+          components: rustfmt, clippy
+      - name: Run rustfmt and fail if any warnings
+        run: cargo fmt -- --check
+      - name: Build
+        run: cargo build
+      - name: Run clippy and fail if any warnings
+        run: cargo clippy -- -D warnings
+      - name: Run tests
+        run: cargo test
+      - name: Run Clippy
+        run: cargo clippy
