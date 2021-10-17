@@ -7,6 +7,7 @@ license = "Apache-2.0 OR MIT"
 repository = "https://github.com/keepsimple1/mdns-sd"
 documentation = "https://docs.rs/mdns-sd"
 keywords = ["mdns", "discovery", "service-discovery", "zeroconf", "dns-sd"]
+categories = ["network-programming"]
 description = "mDNS Service Discovery library with no async runtime dependency"
 
 [dependencies]
