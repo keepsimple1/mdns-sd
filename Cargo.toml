@@ -1,8 +1,13 @@
 [package]
-name = "mdns-sd"                                # stands for "mDNS service discovery"
+name = "mdns-sd"
 version = "0.1.0"
 authors = ["keepsimple <keepsimple@gmail.com>"]
 edition = "2018"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/keepsimple1/mdns-sd"
+documentation = "https://docs.rs/mdns-sd"
+keywords = ["mdns", "discovery", "service-discovery", "zeroconf", "dns-sd"]
+description = "mDNS Service Discovery library with no async runtime dependency"
 
 [dependencies]
 crossbeam-channel = "0.5.1" # channel between threads
