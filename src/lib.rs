@@ -131,13 +131,16 @@
 // corresponds to a set of DNS Resource Records.
 use crossbeam_channel::{bounded, Receiver, Sender};
 use log::{debug, error};
-use nix::sys::{
-    select::{select, FdSet},
-    socket::{
-        bind, recvfrom, sendto, setsockopt, socket, sockopt, AddressFamily, InetAddr, IpAddr,
-        IpMembershipRequest, Ipv4Addr, MsgFlags, SockAddr, SockFlag, SockType,
+use nix::{
+    errno, fcntl,
+    sys::{
+        select::{select, FdSet},
+        socket::{
+            bind, recvfrom, sendto, setsockopt, socket, sockopt, AddressFamily, InetAddr, IpAddr,
+            IpMembershipRequest, Ipv4Addr, MsgFlags, SockAddr, SockFlag, SockType,
+        },
+        time::{TimeVal, TimeValLike},
     },
-    time::{TimeVal, TimeValLike},
 };
 use std::{
     any::Any,
@@ -316,10 +319,22 @@ impl ServiceDaemon {
 
             // read incoming packets with a small timeout
             let mut timeout = TimeVal::milliseconds(10);
+
+            // From POSIX select():
+            // If the readfds argument is not a null pointer,
+            // it points to an object of type fd_set that on input
+            // specifies the file descriptors to be checked for
+            // being ready to read, and on output indicates which
+            // file descriptors are ready to read.
             match select(None, Some(&mut read_fds), None, None, Some(&mut timeout)) {
                 Ok(_) => {
                     for fd in read_fds.fds(None) {
-                        zc.handle_read(fd);
+                        loop {
+                            let rc = zc.handle_read(fd);
+                            if !rc {
+                                break;
+                            }
+                        }
                     }
                 }
                 Err(e) => error!("failed to select from sockets: {}", e),
@@ -479,6 +494,9 @@ fn new_socket(port: u16) -> Result<RawFd> {
         .map_err(|e| e_fmt!("nix::sys::setsockopt ReuseAddr failed: {}", e))?;
     setsockopt(fd, sockopt::ReusePort, &true)
         .map_err(|e| e_fmt!("nix::sys::setsockopt ReusePort failed: {}", e))?;
+
+    fcntl::fcntl(fd, fcntl::FcntlArg::F_SETFL(fcntl::OFlag::O_NONBLOCK))
+        .map_err(|e| e_fmt!("nix::fcntl O_NONBLOCK: {}", e))?;
 
     let ipv4_any = IpAddr::new_v4(0, 0, 0, 0);
     let inet_addr = InetAddr::new(ipv4_any, port);
@@ -735,17 +753,24 @@ impl Zeroconf {
         self.send(&out, &self.broadcast_addr);
     }
 
-    fn handle_read(&mut self, sockfd: RawFd) {
+    /// Returns false if failed to receive a packet,
+    /// otherwise returns true.
+    fn handle_read(&mut self, sockfd: RawFd) -> bool {
         let mut buf = vec![0; MAX_MSG_ABSOLUTE];
         let (sz, src_addr) = match recvfrom(sockfd, &mut buf) {
             Ok((sz, Some(addr))) => (sz, addr),
             Ok((_, None)) => {
                 error!("recvfrom could not find source address");
-                return;
+                return false;
+            }
+            Err(errno::Errno::EAGAIN) => {
+                // Simply means the fd has no more packets to read.
+                // No need to log an error.
+                return false;
             }
             Err(e) => {
                 error!("recvfrom failed: {}", e);
-                return;
+                return false;
             }
         };
 
@@ -766,6 +791,8 @@ impl Zeroconf {
             }
             Err(e) => error!("Invalid incoming message: {:?}", e),
         }
+
+        true
     }
 
     fn find_and_send_instances(&mut self, ty_domain: &str, sender: Sender<ServiceEvent>) {
