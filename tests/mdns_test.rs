@@ -1,9 +1,10 @@
-use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::thread::sleep;
-use std::time::Duration;
-use std::time::SystemTime;
+use mdns_sd::{Error, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    thread::sleep,
+    time::{Duration, SystemTime},
+};
 
 /// This test covers:
 /// register(announce), browse(query), response, unregister, shutdown.
@@ -94,6 +95,16 @@ fn integration_success() {
         }
     });
 
+    // Try to flood the browsing until we got Error::Again.
+    loop {
+        match d.browse(ty_domain) {
+            Ok(_chan) => {}
+            Err(Error::Again) => break,
+            Err(_e) => assert!(false), // Should not happen.
+        }
+    }
+
+    // Wait a bit to let the daemon process commands in the channel.
     sleep(Duration::from_secs(1));
 
     // Unregister the service
