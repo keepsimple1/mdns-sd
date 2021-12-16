@@ -16,8 +16,9 @@
 //!    |       <-- Resolved A --     |
 //!    |           ...               |
 //!```
-//! As a result of the design, this library can easily work with both sync and async code,
-//! with no dependency on any async runtimes.
+//! All commands in the public API are sent to the daemon using the unblocking `try_send()`
+//! so that the caller can use it with both sync and async code, with no dependency on any
+//! particular async runtimes.
 //!
 //! # Usage
 //!
@@ -40,7 +41,8 @@
 //! let receiver = mdns.browse(service_type).expect("Failed to browse");
 //!
 //! // Receive the browse events in sync or async. Here is
-//! // an example of async using a thread.
+//! // an example of using a thread. Users can call `receiver.try_recv()`
+//! // if running in async environment.
 //! std::thread::spawn(move || {
 //!     while let Ok(event) = receiver.recv() {
 //!         match (event) {
@@ -129,7 +131,7 @@
 // In mDNS and DNS, the basic data structure is "Resource Record" (RR), where
 // in Service Discovery, the basic data structure is "Service Info". One Service Info
 // corresponds to a set of DNS Resource Records.
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use log::{debug, error};
 use nix::{
     errno, fcntl,
@@ -157,6 +159,10 @@ use std::{
 /// A basic error type from this library.
 #[derive(Debug)]
 pub enum Error {
+    /// Like a classic EAGAIN. The receiver should retry.
+    Again,
+
+    /// A generic error message.
     Msg(String),
 }
 
@@ -164,6 +170,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Msg(s) => write!(f, "{}", s),
+            Error::Again => write!(f, "try again"),
         }
     }
 }
@@ -225,7 +232,8 @@ pub enum UnregisterStatus {
 /// This struct provides a handle and an API to the daemon. It is cloneable.
 #[derive(Clone)]
 pub struct ServiceDaemon {
-    sender: Sender<Command>, // The channel to send commands to the daemon
+    /// Sender handle of the channel to the daemon.
+    sender: Sender<Command>,
 }
 
 impl ServiceDaemon {
@@ -246,35 +254,45 @@ impl ServiceDaemon {
 
     /// Starts browsing for a specific service type.
     ///
-    /// Returns a channel `Receiver` to receive events about the service.
+    /// Returns a channel `Receiver` to receive events about the service. The caller
+    /// can call `.try_recv()` on this receiver to handle events in an async environment
+    /// or call `.recv()` in a sync environment.
     ///
     /// When a new instance is found, the daemon automatically tries to resolve, i.e.
     /// finding more details, i.e. SRV records and TXT records.
     pub fn browse(&self, service_type: &str) -> Result<Receiver<ServiceEvent>> {
         let (resp_s, resp_r) = bounded(10);
         self.sender
-            .send(Command::Browse(service_type.to_string(), 1, resp_s))
-            .map_err(|e| e_fmt!("crossbeam::channel::send failed: {}", e))?;
+            .try_send(Command::Browse(service_type.to_string(), 1, resp_s))
+            .map_err(|e| match e {
+                TrySendError::Full(_) => Error::Again,
+                e => e_fmt!("crossbeam::channel::send failed: {}", e),
+            })?;
         Ok(resp_r)
     }
 
     /// Stops searching for a specific service type.
     ///
-    /// When returns error, it means we failed to send the request to
-    /// the daemon as the channel closed. Retry probably won't help.
-    /// The caller should just note down the error and move on.
+    /// When an error is returned, the caller should retry only when
+    /// the error is `Error::Again`, otherwise should log and move on.
     pub fn stop_browse(&self, ty_domain: &str) -> Result<()> {
         self.sender
-            .send(Command::StopBrowse(ty_domain.to_string()))
-            .map_err(|e| e_fmt!("crossbeam::channel::send failed: {}", e))?;
+            .try_send(Command::StopBrowse(ty_domain.to_string()))
+            .map_err(|e| match e {
+                TrySendError::Full(_) => Error::Again,
+                e => e_fmt!("crossbeam::channel::send failed: {}", e),
+            })?;
         Ok(())
     }
 
     /// Registers a service provided by this host.
     pub fn register(&self, service_info: ServiceInfo) -> Result<()> {
         self.sender
-            .send(Command::Register(service_info))
-            .map_err(|e| e_fmt!("crossbeam::channel::send failed: {}", e))?;
+            .try_send(Command::Register(service_info))
+            .map_err(|e| match e {
+                TrySendError::Full(_) => Error::Again,
+                e => e_fmt!("crossbeam::channel::send failed: {}", e),
+            })?;
         Ok(())
     }
 
@@ -283,25 +301,28 @@ impl ServiceDaemon {
     /// Returns a channel receiver that is used to receive the status code
     /// of the unregister.
     ///
-    /// When returns error, it means we failed to send the request to
-    /// the daemon as the channel closed. Retry probably won't help.
-    /// The caller should just note down the error and move on.
+    /// When an error is returned, the caller should retry only when
+    /// the error is `Error::Again`, otherwise should log and move on.
     pub fn unregister(&self, fullname: &str) -> Result<Receiver<UnregisterStatus>> {
         let (resp_s, resp_r) = bounded(1);
         self.sender
-            .send(Command::Unregister(fullname.to_lowercase(), resp_s))
-            .map_err(|e| e_fmt!("crossbeam::channel::send failed: {}", e))?;
+            .try_send(Command::Unregister(fullname.to_lowercase(), resp_s))
+            .map_err(|e| match e {
+                TrySendError::Full(_) => Error::Again,
+                e => e_fmt!("crossbeam::channel::send failed: {}", e),
+            })?;
         Ok(resp_r)
     }
 
     /// Shuts down the daemon thread.
     ///
-    /// When returns error, the caller should just note down the error
-    /// and move on. No need to retry.
+    /// When an error is returned, the caller should retry only when
+    /// the error is `Error::Again`, otherwise should log and move on.
     pub fn shutdown(&self) -> Result<()> {
-        self.sender
-            .send(Command::Exit)
-            .map_err(|e| e_fmt!("crossbeam::channel::send failed: {}", e))
+        self.sender.try_send(Command::Exit).map_err(|e| match e {
+            TrySendError::Full(_) => Error::Again,
+            e => e_fmt!("crossbeam::channel::send failed: {}", e),
+        })
     }
 
     /// The main event loop of the daemon thread
@@ -329,6 +350,7 @@ impl ServiceDaemon {
             match select(None, Some(&mut read_fds), None, None, Some(&mut timeout)) {
                 Ok(_) => {
                     for fd in read_fds.fds(None) {
+                        // Read from `fd` until no more packets available.
                         loop {
                             let rc = zc.handle_read(fd);
                             if !rc {
@@ -340,7 +362,7 @@ impl ServiceDaemon {
                 Err(e) => error!("failed to select from sockets: {}", e),
             }
 
-            // process actions from the command channel
+            // process commands from the command channel
             match receiver.try_recv() {
                 Ok(Command::Exit) => {
                     debug!("Exit from daemon");
