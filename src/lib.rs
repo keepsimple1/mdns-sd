@@ -755,6 +755,7 @@ impl Zeroconf {
 
     /// Returns false if failed to receive a packet,
     /// otherwise returns true.
+    /// `sockfd` is expected to be connectionless (i.e. UDP socket).
     fn handle_read(&mut self, sockfd: RawFd) -> bool {
         let mut buf = vec![0; MAX_MSG_ABSOLUTE];
         let (sz, src_addr) = match recvfrom(sockfd, &mut buf) {
