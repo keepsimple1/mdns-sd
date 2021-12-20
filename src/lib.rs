@@ -503,7 +503,8 @@ impl ServiceDaemon {
 }
 
 /// Creates a new UDP socket to bind to `port` with REUSEPORT option.
-fn new_socket(port: u16) -> Result<RawFd> {
+/// `non_block` indicates whether to set O_NONBLOCK for the socket.
+fn new_socket(port: u16, non_block: bool) -> Result<RawFd> {
     let fd = socket(
         AddressFamily::Inet,
         SockType::Datagram,
@@ -517,8 +518,10 @@ fn new_socket(port: u16) -> Result<RawFd> {
     setsockopt(fd, sockopt::ReusePort, &true)
         .map_err(|e| e_fmt!("nix::sys::setsockopt ReusePort failed: {}", e))?;
 
-    fcntl::fcntl(fd, fcntl::FcntlArg::F_SETFL(fcntl::OFlag::O_NONBLOCK))
-        .map_err(|e| e_fmt!("nix::fcntl O_NONBLOCK: {}", e))?;
+    if non_block {
+        fcntl::fcntl(fd, fcntl::FcntlArg::F_SETFL(fcntl::OFlag::O_NONBLOCK))
+            .map_err(|e| e_fmt!("nix::fcntl O_NONBLOCK: {}", e))?;
+    }
 
     let ipv4_any = IpAddr::new_v4(0, 0, 0, 0);
     let inet_addr = InetAddr::new(ipv4_any, port);
@@ -570,7 +573,7 @@ struct Zeroconf {
 
 impl Zeroconf {
     fn new(udp_port: u16) -> Result<Self> {
-        let listen_socket = new_socket(udp_port)?;
+        let listen_socket = new_socket(udp_port, true)?;
         debug!("created listening socket: {}", &listen_socket);
 
         let group_addr = Ipv4Addr::new(224, 0, 0, 251);
@@ -581,7 +584,7 @@ impl Zeroconf {
         // We are not setting specific outgoing interface for this socket.
         // It will use the default outgoing interface set by the OS.
         let mut respond_sockets = Vec::new();
-        let respond_socket = new_socket(udp_port)?;
+        let respond_socket = new_socket(udp_port, false)?;
         respond_sockets.push(respond_socket);
 
         let broadcast_addr =
