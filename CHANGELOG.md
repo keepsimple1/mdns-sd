@@ -1,3 +1,7 @@
+# Version 0.2.2
+
+- Add the first example code. Thanks @lu-zero! (#5)
+
 # Version 0.2.1
 
 - mDNS daemon respond socket to be blocking for simpler send.
