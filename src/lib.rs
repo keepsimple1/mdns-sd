@@ -229,7 +229,7 @@ pub enum UnregisterStatus {
 
 /// Different counter types included in the metrics.
 #[derive(Hash, Eq, PartialEq, Clone)]
-pub enum Counter {
+enum Counter {
     Register,
     Unregister,
     Announce,
@@ -238,7 +238,20 @@ pub enum Counter {
     PacketResend,
 }
 
-pub type Metrics = HashMap<Counter, i64>;
+impl fmt::Display for Counter {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Counter::Register => write!(f, "register"),
+            Counter::Unregister => write!(f, "unregister"),
+            Counter::Announce => write!(f, "re-boardcast"),
+            Counter::SendQuery => write!(f, "send-query"),
+            Counter::SendResponse => write!(f, "respond-query"),
+            Counter::PacketResend => write!(f, "resend-packet"),
+        }
+    }
+}
+
+pub type Metrics = HashMap<String, i64>;
 
 /// A daemon thread for mDNS
 ///
@@ -1182,10 +1195,11 @@ impl Zeroconf {
 
     /// Increases the value of `counter` by `count`.
     fn increase_counter(&mut self, counter: Counter, count: i64) {
-        match self.counters.get_mut(&counter) {
+        let key = counter.to_string();
+        match self.counters.get_mut(&key) {
             Some(v) => *v += count,
             None => {
-                self.counters.insert(counter, count);
+                self.counters.insert(key, count);
             }
         }
     }
