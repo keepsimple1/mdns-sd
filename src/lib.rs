@@ -227,6 +227,19 @@ pub enum UnregisterStatus {
     NotFound,
 }
 
+/// Different counter types included in the metrics.
+#[derive(Hash, Eq, PartialEq, Clone)]
+pub enum Counter {
+    Register,
+    Unregister,
+    Announce,
+    SendQuery,
+    SendResponse,
+    PacketResend,
+}
+
+pub type Metrics = HashMap<Counter, i64>;
+
 /// A daemon thread for mDNS
 ///
 /// This struct provides a handle and an API to the daemon. It is cloneable.
@@ -325,6 +338,17 @@ impl ServiceDaemon {
         })
     }
 
+    pub fn get_metrics(&self) -> Result<Receiver<Metrics>> {
+        let (resp_s, resp_r) = bounded(1);
+        self.sender
+            .try_send(Command::GetMetrics(resp_s))
+            .map_err(|e| match e {
+                TrySendError::Full(_) => Error::Again,
+                e => e_fmt!("crossbeam::channel::try_send failed: {}", e),
+            })?;
+        Ok(resp_r)
+    }
+
     /// The main event loop of the daemon thread
     ///
     /// In each round, it will:
@@ -386,6 +410,7 @@ impl ServiceDaemon {
             }
 
             // check for refresh due records with active queriers
+            let mut query_count = 0;
             for (ty_domain, _sender) in zc.queriers.iter() {
                 if let Some(instances) = zc.cache.map.get(ty_domain) {
                     for instance_ptr in instances.iter() {
@@ -398,6 +423,7 @@ impl ServiceDaemon {
                                     let rec = record.get_record();
                                     if !rec.is_expired(now) && rec.refresh_due(now) {
                                         zc.send_query(&dns_ptr.alias, TYPE_ANY);
+                                        query_count += 1;
                                         break; // for one instance, only query once
                                     }
                                 }
@@ -406,6 +432,7 @@ impl ServiceDaemon {
                     }
                 }
             }
+            zc.increase_counter(Counter::SendQuery, query_count);
 
             // check and evict expired records in our cache
             let now = current_time_millis();
@@ -438,6 +465,7 @@ impl ServiceDaemon {
                 }
 
                 zc.send_query(&ty, TYPE_PTR);
+                zc.increase_counter(Counter::SendQuery, 1);
 
                 let next_time = current_time_millis() + (next_delay * 1000) as u64;
                 let max_delay = 60 * 60;
@@ -449,12 +477,16 @@ impl ServiceDaemon {
             Command::Register(service_info) => {
                 debug!("register service {:?}", &service_info);
                 zc.register_service(service_info);
+                zc.increase_counter(Counter::Register, 1);
             }
 
             Command::Announce(fullname) => {
                 debug!("announce service: {}", &fullname);
                 match zc.my_services.get(&fullname) {
-                    Some(info) => zc.broadcast_service(info),
+                    Some(info) => {
+                        zc.broadcast_service(info);
+                        zc.increase_counter(Counter::Announce, 1);
+                    }
                     None => debug!("announce: cannot find such service {}", &fullname),
                 }
             }
@@ -468,6 +500,7 @@ impl ServiceDaemon {
                     }
                     Some((_k, info)) => {
                         let packet = zc.unregister_service(&info);
+                        zc.increase_counter(Counter::Unregister, 1);
                         // repeat for one time just in case some peers miss the message
                         if !repeating && !packet.is_empty() {
                             let next_time = current_time_millis() + 120;
@@ -485,6 +518,7 @@ impl ServiceDaemon {
             Command::SendPacket(packet) => {
                 debug!("Send a packet length of {}", packet.len());
                 zc.send_packet(&packet[..], &zc.broadcast_addr);
+                zc.increase_counter(Counter::PacketResend, 1);
             }
 
             Command::StopBrowse(ty_domain) => match zc.queriers.remove_entry(&ty_domain) {
@@ -493,6 +527,11 @@ impl ServiceDaemon {
                     Ok(()) => debug!("Sent SearchStopped to the listener"),
                     Err(e) => error!("Failed to send SearchStopped: {}", e),
                 },
+            },
+
+            Command::GetMetrics(resp_s) => match resp_s.send(zc.counters.clone()) {
+                Ok(()) => debug!("Sent metrics to the client"),
+                Err(e) => error!("Failed to send metrics: {}", e),
             },
 
             _ => {
@@ -569,6 +608,8 @@ struct Zeroconf {
 
     /// All repeating transmissions sorted by their "next_time"
     retransmissions: BTreeMap<u64, Command>, // <next_time, command>
+
+    counters: Metrics,
 }
 
 impl Zeroconf {
@@ -599,6 +640,7 @@ impl Zeroconf {
             queriers: HashMap::new(),
             instances_to_resolve: HashMap::new(),
             retransmissions: BTreeMap::new(),
+            counters: HashMap::new(),
         })
     }
 
@@ -1004,7 +1046,7 @@ impl Zeroconf {
         }
     }
 
-    fn handle_query(&self, msg: DnsIncoming, addr: &SockAddr) {
+    fn handle_query(&mut self, msg: DnsIncoming, addr: &SockAddr) {
         debug!("handle_query from {}", &addr);
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
 
@@ -1133,6 +1175,18 @@ impl Zeroconf {
         if !out.answers.is_empty() {
             out.id = msg.id;
             self.send(&out, &self.broadcast_addr);
+
+            self.increase_counter(Counter::SendResponse, 1);
+        }
+    }
+
+    /// Increases the value of `counter` by `count`.
+    fn increase_counter(&mut self, counter: Counter, count: i64) {
+        match self.counters.get_mut(&counter) {
+            Some(v) => *v += count,
+            None => {
+                self.counters.insert(counter, count);
+            }
         }
     }
 }
@@ -1172,6 +1226,9 @@ enum Command {
 
     /// Stop browsing a service type
     StopBrowse(String), // (ty_domain)
+
+    /// Read the current values of the counters
+    GetMetrics(Sender<Metrics>),
 
     Exit,
 }
