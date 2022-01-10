@@ -227,32 +227,35 @@ pub enum UnregisterStatus {
     NotFound,
 }
 
-/// Different counter types included in the metrics.
+/// Different counters included in the metrics.
+/// Currently all counters are for outgoing packets.
 #[derive(Hash, Eq, PartialEq, Clone)]
 enum Counter {
     Register,
+    RegisterResend,
     Unregister,
-    Announce,
+    UnregisterResend,
     Browse,
+    Respond,
     CacheRefreshQuery,
-    SendResponse,
-    PacketResend,
 }
 
 impl fmt::Display for Counter {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Counter::Register => write!(f, "register"),
+            Counter::RegisterResend => write!(f, "register-resend"),
             Counter::Unregister => write!(f, "unregister"),
-            Counter::Announce => write!(f, "re-boardcast"),
-            Counter::Browse => write!(f, "browsing-query"),
-            Counter::CacheRefreshQuery => write!(f, "cache-refresh-query"),
-            Counter::SendResponse => write!(f, "respond"),
-            Counter::PacketResend => write!(f, "resend-packet"),
+            Counter::UnregisterResend => write!(f, "unregister-resend"),
+            Counter::Browse => write!(f, "browse"),
+            Counter::Respond => write!(f, "respond"),
+            Counter::CacheRefreshQuery => write!(f, "cache-refresh"),
         }
     }
 }
 
+/// The metrics is a HashMap of (name_key, i64_value).
+/// The main purpose is to help monitoring the mDNS packet traffic.
 pub type Metrics = HashMap<String, i64>;
 
 /// A daemon thread for mDNS
@@ -353,6 +356,10 @@ impl ServiceDaemon {
         })
     }
 
+    /// Returns a channel receiver for the metrics, e.g. input/output counters.
+    ///
+    /// The metrics returned is a snapshot. Hence the caller should call
+    /// this method repeatly if they want to monitor the metrics continuously.
     pub fn get_metrics(&self) -> Result<Receiver<Metrics>> {
         let (resp_s, resp_r) = bounded(1);
         self.sender
@@ -451,6 +458,8 @@ impl ServiceDaemon {
     }
 
     /// The entry point that executes all commands received by the daemon.
+    ///
+    /// `repeating`: whether this is a retransmission.
     fn exec_command(zc: &mut Zeroconf, command: Command, repeating: bool) {
         match command {
             Command::Browse(ty, next_delay, listener) => {
@@ -480,12 +489,12 @@ impl ServiceDaemon {
                 zc.increase_counter(Counter::Register, 1);
             }
 
-            Command::Announce(fullname) => {
+            Command::RegisterResend(fullname) => {
                 debug!("announce service: {}", &fullname);
                 match zc.my_services.get(&fullname) {
                     Some(info) => {
                         zc.broadcast_service(info);
-                        zc.increase_counter(Counter::Announce, 1);
+                        zc.increase_counter(Counter::RegisterResend, 1);
                     }
                     None => debug!("announce: cannot find such service {}", &fullname),
                 }
@@ -505,7 +514,7 @@ impl ServiceDaemon {
                         if !repeating && !packet.is_empty() {
                             let next_time = current_time_millis() + 120;
                             zc.retransmissions
-                                .insert(next_time, Command::SendPacket(packet));
+                                .insert(next_time, Command::UnregisterResend(packet));
                         }
                         UnregisterStatus::OK
                     }
@@ -515,10 +524,10 @@ impl ServiceDaemon {
                 }
             }
 
-            Command::SendPacket(packet) => {
+            Command::UnregisterResend(packet) => {
                 debug!("Send a packet length of {}", packet.len());
                 zc.send_packet(&packet[..], &zc.broadcast_addr);
-                zc.increase_counter(Counter::PacketResend, 1);
+                zc.increase_counter(Counter::UnregisterResend, 1);
             }
 
             Command::StopBrowse(ty_domain) => match zc.queriers.remove_entry(&ty_domain) {
@@ -664,12 +673,14 @@ impl Zeroconf {
         // ..The Multicast DNS responder MUST send at least two unsolicited
         //    responses, one second apart.
         let next_time = current_time_millis() + 1000;
-        self.retransmissions
-            .insert(next_time, Command::Announce(info.fullname.to_lowercase()));
 
         // The key has to be lower case letter as DNS record name is case insensitive.
         // The info will have the original name.
-        self.my_services.insert(info.fullname.to_lowercase(), info);
+        let service_fullname = info.fullname.to_lowercase();
+        self.retransmissions
+            .insert(next_time, Command::RegisterResend(service_fullname.clone()));
+
+        self.my_services.insert(service_fullname, info);
     }
 
     /// Send an unsolicited response for owned service
@@ -778,6 +789,9 @@ impl Zeroconf {
         self.send(&out, &self.broadcast_addr)
     }
 
+    /// Binds a channel `listener` to querying mDNS domain type `ty`.
+    ///
+    /// If there is already a `listener`, it will be updated, i.e. overwritten.
     fn add_querier(&mut self, ty: String, listener: Sender<ServiceEvent>) {
         self.queriers.insert(ty, listener);
     }
@@ -1178,7 +1192,7 @@ impl Zeroconf {
             out.id = msg.id;
             self.send(&out, &self.broadcast_addr);
 
-            self.increase_counter(Counter::SendResponse, 1);
+            self.increase_counter(Counter::Respond, 1);
         }
     }
 
@@ -1221,11 +1235,11 @@ enum Command {
     /// Unregister a service
     Unregister(String, Sender<UnregisterStatus>), // (fullname)
 
-    /// Announce a service to local network
-    Announce(String), // (fullname), only used for retransmission
+    /// Announce again a service to local network
+    RegisterResend(String), // (fullname)
 
-    /// Send a multicast packet out
-    SendPacket(Vec<u8>), // (packet content), only for retransmission
+    /// Resend unregister packet.
+    UnregisterResend(Vec<u8>), // (packet content)
 
     /// Stop browsing a service type
     StopBrowse(String), // (ty_domain)
@@ -1337,6 +1351,8 @@ impl DnsCache {
                     let rec = record.get_record_mut();
                     if !rec.is_expired(now) && rec.refresh_due(now) {
                         result.push(instance.clone());
+
+                        // Only refresh a record once, until it expires and resets.
                         rec.refresh_no_more();
                         break; // for one instance, only query once
                     }

@@ -125,6 +125,16 @@ fn integration_success() {
 
     sleep(Duration::from_secs(1));
 
+    // Verify metrics.
+    let metrics_receiver = d.get_metrics().unwrap();
+    let metrics = metrics_receiver.recv().unwrap();
+    assert_eq!(metrics["register"], 1);
+    assert_eq!(metrics["unregister"], 1);
+    assert_eq!(metrics["register-resend"], 1);
+    assert_eq!(metrics["unregister-resend"], 1);
+    assert!(metrics["browse"] >= 2); // browse has been retransmitted.
+    assert!(metrics["respond"] >= 2); // respond has been sent for every browse.
+
     // Shutdown
     d.shutdown().unwrap();
 }
