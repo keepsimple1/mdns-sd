@@ -128,6 +128,7 @@ fn integration_success() {
     // Verify metrics.
     let metrics_receiver = d.get_metrics().unwrap();
     let metrics = metrics_receiver.recv().unwrap();
+    println!("metrics: {:?}", &metrics);
     assert_eq!(metrics["register"], 1);
     assert_eq!(metrics["unregister"], 1);
     assert_eq!(metrics["register-resend"], 1);

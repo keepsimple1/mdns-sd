@@ -147,7 +147,7 @@ use nix::{
 use std::{
     any::Any,
     cmp,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     convert::TryInto,
     fmt,
     os::unix::io::RawFd,
@@ -359,7 +359,7 @@ impl ServiceDaemon {
     /// Returns a channel receiver for the metrics, e.g. input/output counters.
     ///
     /// The metrics returned is a snapshot. Hence the caller should call
-    /// this method repeatly if they want to monitor the metrics continuously.
+    /// this method repeatedly if they want to monitor the metrics continuously.
     pub fn get_metrics(&self) -> Result<Receiver<Metrics>> {
         let (resp_s, resp_r) = bounded(1);
         self.sender
@@ -418,16 +418,15 @@ impl ServiceDaemon {
                 _ => {}
             }
 
-            // check for repeated commands
+            // check for repeated commands and run them if their time is up.
             let now = current_time_millis();
-            let keys: Vec<_> = zc.retransmissions.keys().cloned().collect();
-            for instant in keys.iter() {
-                if now >= *instant {
-                    debug!("Execute command from planned actions");
-                    match zc.retransmissions.remove_entry(instant) {
-                        Some((_, cmd)) => Self::exec_command(&mut zc, cmd, true),
-                        None => error!("missing command in planned actions"),
-                    }
+            let mut i = 0;
+            while i < zc.retransmissions.len() {
+                if now >= zc.retransmissions[i].next_time {
+                    let rerun = zc.retransmissions.remove(i);
+                    Self::exec_command(&mut zc, rerun.command, true);
+                } else {
+                    i += 1;
                 }
             }
 
@@ -479,8 +478,10 @@ impl ServiceDaemon {
                 let next_time = current_time_millis() + (next_delay * 1000) as u64;
                 let max_delay = 60 * 60;
                 let delay = cmp::min(next_delay * 2, max_delay);
-                zc.retransmissions
-                    .insert(next_time, Command::Browse(ty, delay, listener));
+                zc.retransmissions.push(ReRun {
+                    next_time,
+                    command: Command::Browse(ty, delay, listener),
+                });
             }
 
             Command::Register(service_info) => {
@@ -513,8 +514,10 @@ impl ServiceDaemon {
                         // repeat for one time just in case some peers miss the message
                         if !repeating && !packet.is_empty() {
                             let next_time = current_time_millis() + 120;
-                            zc.retransmissions
-                                .insert(next_time, Command::UnregisterResend(packet));
+                            zc.retransmissions.push(ReRun {
+                                next_time,
+                                command: Command::UnregisterResend(packet),
+                            });
                         }
                         UnregisterStatus::OK
                     }
@@ -589,6 +592,11 @@ fn current_time_millis() -> u64 {
 
 type DnsRecordBox = Box<dyn DnsRecordExt + Send>;
 
+struct ReRun {
+    next_time: u64,
+    command: Command,
+}
+
 /// A struct holding the state. It was inspired by `zeroconf` package in Python.
 struct Zeroconf {
     /// One socket to receive all mDNS packets incoming, regardless interface.
@@ -615,8 +623,8 @@ struct Zeroconf {
     /// Active queriers interested instances
     instances_to_resolve: HashMap<String, ServiceInfo>,
 
-    /// All repeating transmissions sorted by their "next_time"
-    retransmissions: BTreeMap<u64, Command>, // <next_time, command>
+    /// All repeating transmissions.
+    retransmissions: Vec<ReRun>,
 
     counters: Metrics,
 }
@@ -648,7 +656,7 @@ impl Zeroconf {
             cache: DnsCache::new(),
             queriers: HashMap::new(),
             instances_to_resolve: HashMap::new(),
-            retransmissions: BTreeMap::new(),
+            retransmissions: Vec::new(),
             counters: HashMap::new(),
         })
     }
@@ -677,9 +685,10 @@ impl Zeroconf {
         // The key has to be lower case letter as DNS record name is case insensitive.
         // The info will have the original name.
         let service_fullname = info.fullname.to_lowercase();
-        self.retransmissions
-            .insert(next_time, Command::RegisterResend(service_fullname.clone()));
-
+        self.retransmissions.push(ReRun {
+            next_time,
+            command: Command::RegisterResend(service_fullname.clone()),
+        });
         self.my_services.insert(service_fullname, info);
     }
 
