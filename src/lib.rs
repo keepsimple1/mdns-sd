@@ -233,7 +233,8 @@ enum Counter {
     Register,
     Unregister,
     Announce,
-    SendQuery,
+    Browse,
+    CacheRefreshQuery,
     SendResponse,
     PacketResend,
 }
@@ -244,8 +245,9 @@ impl fmt::Display for Counter {
             Counter::Register => write!(f, "register"),
             Counter::Unregister => write!(f, "unregister"),
             Counter::Announce => write!(f, "re-boardcast"),
-            Counter::SendQuery => write!(f, "send-query"),
-            Counter::SendResponse => write!(f, "respond-query"),
+            Counter::Browse => write!(f, "browsing-query"),
+            Counter::CacheRefreshQuery => write!(f, "cache-refresh-query"),
+            Counter::SendResponse => write!(f, "respond"),
             Counter::PacketResend => write!(f, "resend-packet"),
         }
     }
@@ -422,30 +424,15 @@ impl ServiceDaemon {
                 }
             }
 
-            // check for refresh due records with active queriers
+            // Refresh cache records with active queriers
             let mut query_count = 0;
             for (ty_domain, _sender) in zc.queriers.iter() {
-                if let Some(instances) = zc.cache.map.get(ty_domain) {
-                    for instance_ptr in instances.iter() {
-                        if let Some(dns_ptr) = instance_ptr.any().downcast_ref::<DnsPointer>() {
-                            // get the records of a particular service instance
-                            if let Some(records) = zc.cache.map.get(&dns_ptr.alias) {
-                                let now = current_time_millis();
-
-                                for record in records.iter() {
-                                    let rec = record.get_record();
-                                    if !rec.is_expired(now) && rec.refresh_due(now) {
-                                        zc.send_query(&dns_ptr.alias, TYPE_ANY);
-                                        query_count += 1;
-                                        break; // for one instance, only query once
-                                    }
-                                }
-                            }
-                        }
-                    }
+                for instance in zc.cache.refresh_due(ty_domain).iter() {
+                    zc.send_query(instance, TYPE_ANY);
+                    query_count += 1;
                 }
             }
-            zc.increase_counter(Counter::SendQuery, query_count);
+            zc.increase_counter(Counter::CacheRefreshQuery, query_count);
 
             // check and evict expired records in our cache
             let now = current_time_millis();
@@ -474,11 +461,11 @@ impl ServiceDaemon {
                 if !repeating {
                     zc.add_querier(ty.clone(), listener.clone());
                     // if we already have the records in our cache, just send them
-                    zc.find_and_send_instances(&ty, listener.clone());
+                    zc.query_cache(&ty, listener.clone());
                 }
 
                 zc.send_query(&ty, TYPE_PTR);
-                zc.increase_counter(Counter::SendQuery, 1);
+                zc.increase_counter(Counter::Browse, 1);
 
                 let next_time = current_time_millis() + (next_delay * 1000) as u64;
                 let max_delay = 60 * 60;
@@ -876,7 +863,9 @@ impl Zeroconf {
         true
     }
 
-    fn find_and_send_instances(&mut self, ty_domain: &str, sender: Sender<ServiceEvent>) {
+    /// Checks if `ty_domain` has records in the cache. If yes, sends the
+    /// cached records via `sender`.
+    fn query_cache(&mut self, ty_domain: &str, sender: Sender<ServiceEvent>) {
         if let Some(records) = self.cache.get_records_by_name(ty_domain) {
             for record in records.iter() {
                 if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
@@ -1318,6 +1307,43 @@ impl DnsCache {
                 !expired // only retain non-expired ones
             });
         }
+    }
+
+    /// Returns the list of full name of the instances for a `ty_domain`.
+    fn instance_names(&self, ty_domain: &str) -> Vec<String> {
+        let mut result = Vec::new();
+        if let Some(instances) = self.map.get(ty_domain) {
+            for instance_ptr in instances.iter() {
+                if let Some(dns_ptr) = instance_ptr.any().downcast_ref::<DnsPointer>() {
+                    result.push(dns_ptr.alias.clone());
+                }
+            }
+        }
+        result
+    }
+
+    /// Returns the list of instance names that are due for refresh
+    /// for a `ty_domain`.
+    ///
+    /// For these instances, their refresh time will be updated so that
+    /// they will not refresh again.
+    fn refresh_due(&mut self, ty_domain: &str) -> Vec<String> {
+        let now = current_time_millis();
+        let mut result = Vec::new();
+
+        for instance in self.instance_names(ty_domain).iter() {
+            if let Some(records) = self.map.get_mut(instance) {
+                for record in records.iter_mut() {
+                    let rec = record.get_record_mut();
+                    if !rec.is_expired(now) && rec.refresh_due(now) {
+                        result.push(instance.clone());
+                        rec.refresh_no_more();
+                        break; // for one instance, only query once
+                    }
+                }
+            }
+        }
+        result
     }
 }
 
@@ -1817,6 +1843,12 @@ impl DnsRecord {
 
     fn refresh_due(&self, now: u64) -> bool {
         now >= self.refresh
+    }
+
+    /// Updates the refresh time to be the same as the expire time so that
+    /// there is no more refresh for this record.
+    fn refresh_no_more(&mut self) {
+        self.refresh = get_expiration_time(self.created, self.ttl, 100);
     }
 
     /// Returns the remaining TTL in seconds
