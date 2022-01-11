@@ -1,3 +1,9 @@
+# Version 0.3.0
+
+- Add "get_metrics" in API.
+- Fixed a bug in cache refresh.
+- Fixed a bug in retransmission.
+
 # Version 0.2.2
 
 - Add the first example code. Thanks @lu-zero! (#5)
