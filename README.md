@@ -11,7 +11,9 @@ This is a small implementation of mDNS (Multicast DNS) based service discovery i
 
 ## Approach
 
-We are not using async/.await, instead we create a new thread to run a mDNS daemon. The API interacts with the daemon via [`crossbeam-channel`](https://crates.io/crates/crossbeam-channel). Because the channel handles are `Clone` and `Send`, they work easily with both sync and async code. For more details, please see the [documentation](https://docs.rs/mdns-sd).
+We are not using async/.await, instead we create a new thread to run a mDNS daemon.
+
+The API interacts with the daemon via [`flume`](https://crates.io/crates/flume). Because the channel handles are `Clone` and `Send`, they work easily with both sync and async code. For more details, please see the [documentation](https://docs.rs/mdns-sd).
 
 ## Compatibility and Limitations
 
@@ -29,7 +31,7 @@ Currently this library has the following limitations:
 
 ## Minimum Rust version
 
-Tested against Rust 1.46.0
+Tested against Rust 1.49.0
 
 ## License
 

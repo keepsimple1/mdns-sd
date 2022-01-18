@@ -10,7 +10,11 @@ keywords = ["mdns", "discovery", "service-discovery", "zeroconf", "dns-sd"]
 categories = ["network-programming"]
 description = "mDNS Service Discovery library with no async runtime dependency"
 
+[features]
+async = ["flume/async"]
+default = ["async"]
+
 [dependencies]
-crossbeam-channel = "0.5.1" # channel between threads
+flume = { version = "0.10", default-features = false } # channel between threads
 log = "0.4.14"              # logging
 nix = "0.23.0"              # socket APIs
