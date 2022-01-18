@@ -131,7 +131,7 @@
 // In mDNS and DNS, the basic data structure is "Resource Record" (RR), where
 // in Service Discovery, the basic data structure is "Service Info". One Service Info
 // corresponds to a set of DNS Resource Records.
-use flume::{bounded, Receiver, Sender, TrySendError};
+use flume::{bounded, Sender, TrySendError};
 use log::{debug, error};
 use nix::{
     errno, fcntl,
@@ -177,6 +177,9 @@ impl fmt::Display for Error {
 
 /// One and only `Result` type from this library crate.
 pub type Result<T> = core::result::Result<T, Error>;
+
+/// Re-export the channel Receiver
+pub use flume::Receiver;
 
 /// A simple macro to report all kinds of errors.
 macro_rules! e_fmt {
