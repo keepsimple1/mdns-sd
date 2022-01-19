@@ -2,7 +2,7 @@
 //!
 //! This library creates one new thread to run a mDNS daemon, and exposes
 //! its API that interacts with the daemon via a
-//! [`crossbeam-channel`](https://crates.io/crates/crossbeam-channel).
+//! [`flume`](https://crates.io/crates/flume).
 //!
 //! For example, a client querying (browsing) a service behaves like this:
 //!```text
@@ -131,7 +131,7 @@
 // In mDNS and DNS, the basic data structure is "Resource Record" (RR), where
 // in Service Discovery, the basic data structure is "Service Info". One Service Info
 // corresponds to a set of DNS Resource Records.
-use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use flume::{bounded, Sender, TrySendError};
 use log::{debug, error};
 use nix::{
     errno, fcntl,
@@ -177,6 +177,9 @@ impl fmt::Display for Error {
 
 /// One and only `Result` type from this library crate.
 pub type Result<T> = core::result::Result<T, Error>;
+
+/// Re-export the channel Receiver
+pub use flume::Receiver;
 
 /// A simple macro to report all kinds of errors.
 macro_rules! e_fmt {
@@ -297,7 +300,7 @@ impl ServiceDaemon {
             .try_send(Command::Browse(service_type.to_string(), 1, resp_s))
             .map_err(|e| match e {
                 TrySendError::Full(_) => Error::Again,
-                e => e_fmt!("crossbeam::channel::send failed: {}", e),
+                e => e_fmt!("flume::channel::send failed: {}", e),
             })?;
         Ok(resp_r)
     }
@@ -311,7 +314,7 @@ impl ServiceDaemon {
             .try_send(Command::StopBrowse(ty_domain.to_string()))
             .map_err(|e| match e {
                 TrySendError::Full(_) => Error::Again,
-                e => e_fmt!("crossbeam::channel::send failed: {}", e),
+                e => e_fmt!("flume::channel::send failed: {}", e),
             })?;
         Ok(())
     }
@@ -322,7 +325,7 @@ impl ServiceDaemon {
             .try_send(Command::Register(service_info))
             .map_err(|e| match e {
                 TrySendError::Full(_) => Error::Again,
-                e => e_fmt!("crossbeam::channel::send failed: {}", e),
+                e => e_fmt!("flume::channel::send failed: {}", e),
             })?;
         Ok(())
     }
@@ -340,7 +343,7 @@ impl ServiceDaemon {
             .try_send(Command::Unregister(fullname.to_lowercase(), resp_s))
             .map_err(|e| match e {
                 TrySendError::Full(_) => Error::Again,
-                e => e_fmt!("crossbeam::channel::send failed: {}", e),
+                e => e_fmt!("flume::channel::send failed: {}", e),
             })?;
         Ok(resp_r)
     }
@@ -352,7 +355,7 @@ impl ServiceDaemon {
     pub fn shutdown(&self) -> Result<()> {
         self.sender.try_send(Command::Exit).map_err(|e| match e {
             TrySendError::Full(_) => Error::Again,
-            e => e_fmt!("crossbeam::channel::send failed: {}", e),
+            e => e_fmt!("flume::channel::send failed: {}", e),
         })
     }
 
@@ -366,7 +369,7 @@ impl ServiceDaemon {
             .try_send(Command::GetMetrics(resp_s))
             .map_err(|e| match e {
                 TrySendError::Full(_) => Error::Again,
-                e => e_fmt!("crossbeam::channel::try_send failed: {}", e),
+                e => e_fmt!("flume::channel::try_send failed: {}", e),
             })?;
         Ok(resp_r)
     }
