@@ -1,3 +1,7 @@
+# Version 0.4.0
+
+- Replace `crossbeam-channel` with `flume`.
+
 # Version 0.3.0
 
 - Add "get_metrics" in API.
