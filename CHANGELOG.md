@@ -1,3 +1,7 @@
+# Version 0.4.1
+
+- Update docs.
+
 # Version 0.4.0
 
 - Replace `crossbeam-channel` with `flume`.
