@@ -11,9 +11,9 @@ This is a small implementation of mDNS (Multicast DNS) based service discovery i
 
 ## Approach
 
-We are not using async/.await, instead we create a new thread to run a mDNS daemon.
+We are not using async/.await internally, instead we create a new thread to run a mDNS daemon.
 
-The API interacts with the daemon via [`flume`](https://crates.io/crates/flume). Because the channel handles are `Clone` and `Send`, they work easily with both sync and async code. For more details, please see the [documentation](https://docs.rs/mdns-sd).
+The API interacts with the daemon via [`flume`](https://crates.io/crates/flume) channels that work easily with both sync and async code. For more details, please see the [documentation](https://docs.rs/mdns-sd).
 
 ## Compatibility and Limitations
 

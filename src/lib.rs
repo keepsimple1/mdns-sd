@@ -2,7 +2,8 @@
 //!
 //! This library creates one new thread to run a mDNS daemon, and exposes
 //! its API that interacts with the daemon via a
-//! [`flume`](https://crates.io/crates/flume).
+//! [`flume`](https://crates.io/crates/flume) channel. The channel supports
+//! both `recv()` and `recv_async()`.
 //!
 //! For example, a client querying (browsing) a service behaves like this:
 //!```text
@@ -41,7 +42,7 @@
 //! let receiver = mdns.browse(service_type).expect("Failed to browse");
 //!
 //! // Receive the browse events in sync or async. Here is
-//! // an example of using a thread. Users can call `receiver.try_recv()`
+//! // an example of using a thread. Users can call `receiver.recv_async().await`
 //! // if running in async environment.
 //! std::thread::spawn(move || {
 //!     while let Ok(event) = receiver.recv() {
@@ -178,7 +179,7 @@ impl fmt::Display for Error {
 /// One and only `Result` type from this library crate.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// Re-export the channel Receiver
+/// Re-export from `flume`.
 pub use flume::Receiver;
 
 /// A simple macro to report all kinds of errors.
@@ -271,7 +272,7 @@ pub struct ServiceDaemon {
 }
 
 impl ServiceDaemon {
-    /// Creates a new daemon.
+    /// Creates a new daemon and spawns a thread to run the daemon.
     ///
     /// The daemon (re)uses the default mDNS port 5353. To keep it simple, we don't
     /// ask callers to set the port.
@@ -289,8 +290,8 @@ impl ServiceDaemon {
     /// Starts browsing for a specific service type.
     ///
     /// Returns a channel `Receiver` to receive events about the service. The caller
-    /// can call `.try_recv()` on this receiver to handle events in an async environment
-    /// or call `.recv()` in a sync environment.
+    /// can call `.recv_async().await` on this receiver to handle events in an
+    /// async environment or call `.recv()` in a sync environment.
     ///
     /// When a new instance is found, the daemon automatically tries to resolve, i.e.
     /// finding more details, i.e. SRV records and TXT records.
