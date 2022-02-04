@@ -136,6 +136,37 @@ fn integration_success() {
     assert!(metrics["browse"] >= 2); // browse has been retransmitted.
     assert!(metrics["respond"] >= 2); // respond has been sent for every browse.
 
+    // Test the special meta-query of "_services._dns-sd._udp.local."
+    let service2_type = "_my-service2._udp.local.";
+    let service2_instance = "instance2";
+    let service2 = ServiceInfo::new(
+        service2_type,
+        service2_instance,
+        host_name,
+        host_ipv4,
+        port,
+        None,
+    );
+    d.register(service2)
+        .expect("Failed to register the 2nd service");
+
+    // Browse using the special meta-query.
+    let meta_query = "_services._dns-sd._udp.local.";
+    let browse_chan = d.browse(meta_query).unwrap();
+
+    while let Ok(event) = browse_chan.recv() {
+        match event {
+            ServiceEvent::ServiceFound(ty_domain, fullname) => {
+                println!("Found a service of {}: {}", &ty_domain, &fullname);
+                // Among all services found, should have our 2nd service.
+                if fullname == service2_type {
+                    break;
+                }
+            }
+            _ => sleep(Duration::from_millis(100)),
+        }
+    }
+
     // Shutdown
     d.shutdown().unwrap();
 }
