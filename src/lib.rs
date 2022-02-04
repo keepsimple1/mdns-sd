@@ -1079,6 +1079,10 @@ impl Zeroconf {
         debug!("handle_query from {}", &addr);
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
 
+        // Special meta-query "_services._dns-sd._udp.<Domain>".
+        // See https://datatracker.ietf.org/doc/html/rfc6763#section-9
+        const META_QUERY: &str = "_services._dns-sd._udp.local.";
+
         for question in msg.questions.iter() {
             debug!("question: {:?}", &question);
             let qtype = question.entry.ty;
@@ -1086,6 +1090,8 @@ impl Zeroconf {
             if qtype == TYPE_PTR {
                 for service in self.my_services.values() {
                     if question.entry.name == service.ty_domain {
+                        out.add_answer_with_additionals(&msg, service);
+                    } else if question.entry.name == META_QUERY {
                         let ptr_added = out.add_answer(
                             &msg,
                             Box::new(DnsPointer::new(
@@ -1096,40 +1102,8 @@ impl Zeroconf {
                                 service.fullname.clone(),
                             )),
                         );
-
                         if !ptr_added {
-                            debug!("answer was not added for question {:?}", &question);
-                            continue;
-                        }
-
-                        // Add recommended additional answers according to
-                        // https://tools.ietf.org/html/rfc6763#section-12.1.
-                        out.add_additional_answer(Box::new(DnsSrv::new(
-                            &service.fullname,
-                            CLASS_IN | CLASS_UNIQUE,
-                            service.host_ttl,
-                            service.priority,
-                            service.weight,
-                            service.port,
-                            service.server.clone(),
-                        )));
-
-                        out.add_additional_answer(Box::new(DnsTxt::new(
-                            &service.fullname,
-                            TYPE_TXT,
-                            CLASS_IN | CLASS_UNIQUE,
-                            service.host_ttl,
-                            service.generate_txt(),
-                        )));
-
-                        for address in &service.addresses {
-                            out.add_additional_answer(Box::new(DnsAddress::new(
-                                &service.server,
-                                TYPE_A,
-                                CLASS_IN | CLASS_UNIQUE,
-                                service.host_ttl,
-                                *address,
-                            )));
+                            debug!("answer was not added for meta-query {:?}", &question);
                         }
                     }
                 }
@@ -1587,6 +1561,56 @@ impl DnsOutgoing {
             return true;
         }
         false
+    }
+
+    /// Adds PTR answer with SRV, TXT and available ADDR answers.
+    /// See https://tools.ietf.org/html/rfc6763#section-12.1
+    fn add_answer_with_additionals(&mut self, msg: &DnsIncoming, service: &ServiceInfo) {
+        let ptr_added = self.add_answer(
+            msg,
+            Box::new(DnsPointer::new(
+                &service.ty_domain,
+                TYPE_PTR,
+                CLASS_IN,
+                service.other_ttl,
+                service.fullname.clone(),
+            )),
+        );
+
+        if !ptr_added {
+            debug!("answer was not added for msg {:?}", msg);
+            return;
+        }
+
+        // Add recommended additional answers according to
+        // https://tools.ietf.org/html/rfc6763#section-12.1.
+        self.add_additional_answer(Box::new(DnsSrv::new(
+            &service.fullname,
+            CLASS_IN | CLASS_UNIQUE,
+            service.host_ttl,
+            service.priority,
+            service.weight,
+            service.port,
+            service.server.clone(),
+        )));
+
+        self.add_additional_answer(Box::new(DnsTxt::new(
+            &service.fullname,
+            TYPE_TXT,
+            CLASS_IN | CLASS_UNIQUE,
+            service.host_ttl,
+            service.generate_txt(),
+        )));
+
+        for address in &service.addresses {
+            self.add_additional_answer(Box::new(DnsAddress::new(
+                &service.server,
+                TYPE_A,
+                CLASS_IN | CLASS_UNIQUE,
+                service.host_ttl,
+                *address,
+            )));
+        }
     }
 
     fn add_question(&mut self, name: &str, qtype: u16) {
@@ -2216,6 +2240,7 @@ fn check_service_name(fullname: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug)]
 struct DnsIncoming {
     offset: usize,
     data: Vec<u8>,
