@@ -2,7 +2,14 @@
 //!
 //! Run with:
 //!
-//!     cargo run --example query <service_type>
+//!     cargo run --example query <service_type_without_domain>
+//!
+//! Example:
+//!
+//!     cargo run --example query _my-service._udp
+//!
+//! Note: there is no '.' at the end as the program adds ".local."
+//! automatically.
 //!
 //! Keeps listening for new events.
 
