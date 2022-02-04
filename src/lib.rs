@@ -1371,6 +1371,9 @@ pub struct ServiceInfo {
 impl ServiceInfo {
     /// Creates a new service info.
     ///
+    /// `ty_domain` is the service type and the domain label, for example
+    /// "_my-service._udp.local.".
+    ///
     /// `my_name` is the instance name, without the service type suffix.
     /// `properties` are optional key/value pairs for the service.
     ///
