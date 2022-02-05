@@ -12,6 +12,7 @@
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 
 fn main() {
+    // Create a new mDNS daemon.
     let mdns = ServiceDaemon::new().expect("Could not create service daemon");
     let service_type = std::env::args()
         .nth(1)
@@ -23,6 +24,7 @@ fn main() {
     let service_hostname = "192.168.1.111.local.";
     let port = 3456;
 
+    // Register a service.
     let service_info = ServiceInfo::new(
         &service_type,
         &instance_name,
