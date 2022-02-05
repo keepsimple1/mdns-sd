@@ -10,6 +10,8 @@ use std::{
 /// register(announce), browse(query), response, unregister, shutdown.
 #[test]
 fn integration_success() {
+    env_logger::init();
+
     // Create a daemon
     let d = ServiceDaemon::new().expect("Failed to create daemon");
 
