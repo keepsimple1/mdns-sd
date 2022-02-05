@@ -28,6 +28,6 @@ jobs:
       - name: Run clippy and fail if any warnings
         run: cargo clippy -- -D warnings
       - name: Run tests
-        run: cargo test -- --nocapture
+        run: cargo test
       - name: Run Clippy
         run: cargo clippy
