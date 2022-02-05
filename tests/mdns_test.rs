@@ -165,7 +165,10 @@ fn integration_success() {
                         break;
                     }
                 }
-                _ => sleep(Duration::from_millis(100)),
+                e => {
+                    println!("Received event {:?}", e);
+                    sleep(Duration::from_millis(100));
+                }
             },
             Err(e) => {
                 println!("browse error: {}", e);
