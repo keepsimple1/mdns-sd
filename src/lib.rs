@@ -1095,11 +1095,11 @@ impl Zeroconf {
                         let ptr_added = out.add_answer(
                             &msg,
                             Box::new(DnsPointer::new(
-                                &service.ty_domain,
+                                &question.entry.name,
                                 TYPE_PTR,
                                 CLASS_IN,
                                 service.other_ttl,
-                                service.fullname.clone(),
+                                service.ty_domain.clone(),
                             )),
                         );
                         if !ptr_added {
