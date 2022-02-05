@@ -153,17 +153,24 @@ fn integration_success() {
     // Browse using the special meta-query.
     let meta_query = "_services._dns-sd._udp.local.";
     let browse_chan = d.browse(meta_query).unwrap();
+    let timeout = Duration::from_secs(2);
 
-    while let Ok(event) = browse_chan.recv() {
-        match event {
-            ServiceEvent::ServiceFound(ty_domain, fullname) => {
-                println!("Found a service of {}: {}", &ty_domain, &fullname);
-                // Among all services found, should have our 2nd service.
-                if fullname == service2_type {
-                    break;
+    loop {
+        match browse_chan.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceFound(ty_domain, fullname) => {
+                    println!("Found a service of {}: {}", &ty_domain, &fullname);
+                    // Among all services found, should have our 2nd service.
+                    if fullname == service2_type {
+                        break;
+                    }
                 }
+                _ => sleep(Duration::from_millis(100)),
+            },
+            Err(e) => {
+                println!("browse error: {}", e);
+                assert!(false);
             }
-            _ => sleep(Duration::from_millis(100)),
         }
     }
 
