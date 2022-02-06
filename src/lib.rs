@@ -1566,7 +1566,7 @@ impl DnsOutgoing {
         false
     }
 
-    /// Adds PTR answer with SRV, TXT and available ADDR answers.
+    /// Adds PTR answer and SRV, TXT, ADDR answers.
     /// See https://tools.ietf.org/html/rfc6763#section-12.1
     fn add_answer_with_additionals(&mut self, msg: &DnsIncoming, service: &ServiceInfo) {
         let ptr_added = self.add_answer(
