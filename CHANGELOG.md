@@ -1,3 +1,7 @@
+# Version 0.4.2
+
+- New feature: support meta-query `_services._dns-sd._udp` per RFC 6763.
+
 # Version 0.4.1
 
 - Update docs.
