@@ -539,10 +539,25 @@ impl ServiceDaemon {
 
             Command::StopBrowse(ty_domain) => match zc.queriers.remove_entry(&ty_domain) {
                 None => error!("StopBrowse: cannot find querier for {}", &ty_domain),
-                Some((_ty, sender)) => match sender.send(ServiceEvent::SearchStopped(ty_domain)) {
-                    Ok(()) => debug!("Sent SearchStopped to the listener"),
-                    Err(e) => error!("Failed to send SearchStopped: {}", e),
-                },
+                Some((ty, sender)) => {
+                    // Remove pending browse commands in the reruns.
+                    let mut i = 0;
+                    while i < zc.retransmissions.len() {
+                        if let Command::Browse(t, _, _) = &zc.retransmissions[i].command {
+                            if t == &ty {
+                                zc.retransmissions.remove(i);
+                                continue;
+                            }
+                        }
+                        i += 1;
+                    }
+
+                    // Notify the client.
+                    match sender.send(ServiceEvent::SearchStopped(ty_domain)) {
+                        Ok(()) => debug!("Sent SearchStopped to the listener"),
+                        Err(e) => error!("Failed to send SearchStopped: {}", e),
+                    }
+                }
             },
 
             Command::GetMetrics(resp_s) => match resp_s.send(zc.counters.clone()) {
