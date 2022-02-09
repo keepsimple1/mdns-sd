@@ -44,6 +44,8 @@ fn integration_success() {
     let resolve_count_clone = resolve_count.clone();
     let remove_count = Arc::new(Mutex::new(0));
     let remove_count_clone = remove_count.clone();
+    let stopped_count = Arc::new(Mutex::new(0));
+    let stopped_count_clone = stopped_count.clone();
 
     let browse_chan = d.browse(ty_domain).unwrap();
     std::thread::spawn(move || {
@@ -89,6 +91,8 @@ fn integration_success() {
                 }
                 ServiceEvent::SearchStopped(ty) => {
                     println!("Search stopped for {}", &ty);
+                    let mut num = stopped_count_clone.lock().unwrap();
+                    *num += 1;
                     break;
                 }
             }
@@ -124,6 +128,9 @@ fn integration_success() {
     d.stop_browse(ty_domain).expect("Failed to stop browsing");
 
     sleep(Duration::from_secs(1));
+
+    let count = stopped_count.lock().unwrap();
+    assert_eq!(*count, 1);
 
     // Verify metrics.
     let metrics_receiver = d.get_metrics().unwrap();
