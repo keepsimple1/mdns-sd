@@ -1,3 +1,7 @@
+# Version 0.4.3
+
+- Fix a bug in stop-browse
+
 # Version 0.4.2
 
 - New feature: support meta-query `_services._dns-sd._udp` per RFC 6763.
