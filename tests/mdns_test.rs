@@ -109,7 +109,7 @@ fn integration_success() {
     }
 
     // Wait a bit to let the daemon process commands in the channel.
-    sleep(Duration::from_secs(1));
+    sleep(Duration::from_millis(1200));
 
     // Unregister the service
     let receiver = d.unregister(&fullname).unwrap();

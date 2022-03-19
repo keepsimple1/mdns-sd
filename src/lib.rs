@@ -134,28 +134,17 @@
 // corresponds to a set of DNS Resource Records.
 use flume::{bounded, Sender, TrySendError};
 use log::{debug, error};
-use nix::{
-    errno, fcntl,
-    sys::{
-        select::{select, FdSet},
-        socket::{
-            bind, recvfrom, sendto, setsockopt, socket, sockopt, AddressFamily,
-            IpMembershipRequest, MsgFlags, SockFlag, SockType, SockaddrIn,
-        },
-        time::{TimeVal, TimeValLike},
-    },
-};
+use polling::Poller;
+use socket2::{SockAddr, Socket};
 use std::{
     any::Any,
     cmp,
     collections::{HashMap, HashSet},
     convert::TryInto,
     fmt,
-    net::Ipv4Addr,
-    os::unix::io::RawFd,
-    str::{self, FromStr},
-    thread,
-    time::SystemTime,
+    net::{Ipv4Addr, SocketAddrV4},
+    str, thread,
+    time::{Duration, SystemTime},
     vec,
 };
 
@@ -391,29 +380,36 @@ impl ServiceDaemon {
     /// 4. announce its registered services.
     /// 5. process retransmissions if any.
     fn run(mut zc: Zeroconf, receiver: Receiver<Command>) {
+        let poller_key = 7;
+        if let Err(e) = zc
+            .poller
+            .add(&zc.listen_socket, polling::Event::readable(poller_key))
+        {
+            error!("failed to add socket to poller: {}", e);
+            return;
+        }
+        let mut events = Vec::new();
+        let timeout = Duration::from_millis(10);
+
         loop {
-            let mut read_fds = FdSet::new();
-            read_fds.insert(zc.listen_socket);
-
-            // read incoming packets with a small timeout
-            let mut timeout = TimeVal::milliseconds(10);
-
-            // From POSIX select():
-            // If the readfds argument is not a null pointer,
-            // it points to an object of type fd_set that on input
-            // specifies the file descriptors to be checked for
-            // being ready to read, and on output indicates which
-            // file descriptors are ready to read.
-            match select(None, Some(&mut read_fds), None, None, Some(&mut timeout)) {
-                Ok(_) => {
-                    for fd in read_fds.fds(None) {
-                        // Read from `fd` until no more packets available.
+            events.clear();
+            match zc.poller.wait(&mut events, Some(timeout)) {
+                Ok(count) => {
+                    if count > 0 {
+                        // Read until no more packets available.
                         loop {
-                            let rc = zc.handle_read(fd);
+                            let rc = zc.handle_read();
                             if !rc {
                                 break;
                             }
                         }
+                    }
+                    if let Err(e) = zc
+                        .poller
+                        .modify(&zc.listen_socket, polling::Event::readable(poller_key))
+                    {
+                        error!("failed to poll listen_socket again: {}", e);
+                        break;
                     }
                 }
                 Err(e) => error!("failed to select from sockets: {}", e),
@@ -581,29 +577,27 @@ impl ServiceDaemon {
 
 /// Creates a new UDP socket to bind to `port` with REUSEPORT option.
 /// `non_block` indicates whether to set O_NONBLOCK for the socket.
-fn new_socket(port: u16, non_block: bool) -> Result<RawFd> {
-    let fd = socket(
-        AddressFamily::Inet,
-        SockType::Datagram,
-        SockFlag::empty(),
-        None,
-    )
-    .map_err(|e| e_fmt!("nix::sys::socket failed: {}", e))?;
+fn new_socket(port: u16, non_block: bool) -> Result<Socket> {
+    let fd = Socket::new(socket2::Domain::ipv4(), socket2::Type::dgram(), None)
+        .map_err(|e| e_fmt!("create socket failed: {}", e))?;
 
-    setsockopt(fd, sockopt::ReuseAddr, &true)
-        .map_err(|e| e_fmt!("nix::sys::setsockopt ReuseAddr failed: {}", e))?;
-    setsockopt(fd, sockopt::ReusePort, &true)
-        .map_err(|e| e_fmt!("nix::sys::setsockopt ReusePort failed: {}", e))?;
+    fd.set_reuse_address(true)
+        .map_err(|e| e_fmt!("set ReuseAddr failed: {}", e))?;
+    #[cfg(unix)] // this is currently restricted to Unix's in socket2
+    fd.set_reuse_port(true)
+        .map_err(|e| e_fmt!("set ReusePort failed: {}", e))?;
 
     if non_block {
-        fcntl::fcntl(fd, fcntl::FcntlArg::F_SETFL(fcntl::OFlag::O_NONBLOCK))
-            .map_err(|e| e_fmt!("nix::fcntl O_NONBLOCK: {}", e))?;
+        fd.set_nonblocking(true)
+            .map_err(|e| e_fmt!("set O_NONBLOCK: {}", e))?;
     }
 
-    let ipv4_any = SockaddrIn::new(0, 0, 0, 0, port);
-    bind(fd, &ipv4_any).map_err(|e| e_fmt!("nix::sys::socket::bind failed: {}", e))?;
+    let ipv4_any = Ipv4Addr::new(0, 0, 0, 0);
+    let inet_addr = SocketAddrV4::new(ipv4_any, port);
+    fd.bind(&inet_addr.into())
+        .map_err(|e| e_fmt!("socket bind failed: {}", e))?;
 
-    debug!("new socket {} bind to {}", &fd, &ipv4_any);
+    debug!("new socket bind to {}", &inet_addr);
     Ok(fd)
 }
 
@@ -625,13 +619,13 @@ struct ReRun {
 struct Zeroconf {
     /// One socket to receive all mDNS packets incoming, regardless interface.
     /// This socket will not be able to read unicast packets.
-    listen_socket: RawFd,
+    listen_socket: Socket,
 
     /// Sockets for outgoing packets.
     /// NOTE: For now we only support multicast and this Vec has only one socket.
     /// If we support unicast, we will have one respond socket for each
     /// valid interface, and read unicast packets from these sockets.
-    respond_sockets: Vec<RawFd>,
+    respond_sockets: Vec<Socket>,
 
     /// Local registered services
     my_services: HashMap<String, ServiceInfo>,
@@ -651,17 +645,20 @@ struct Zeroconf {
     retransmissions: Vec<ReRun>,
 
     counters: Metrics,
+
+    poller: Poller,
 }
 
 impl Zeroconf {
     fn new(udp_port: u16) -> Result<Self> {
+        let poller = Poller::new().map_err(|e| e_fmt!("create Poller: {}", e))?;
         let listen_socket = new_socket(udp_port, true)?;
-        debug!("created listening socket: {}", &listen_socket);
+        debug!("created listening socket: {:?}", &listen_socket);
 
         let group_addr = Ipv4Addr::new(224, 0, 0, 251);
-        let request = IpMembershipRequest::new(group_addr, None);
-        setsockopt(listen_socket, sockopt::IpAddMembership, &request)
-            .map_err(|e| e_fmt!("nix::sys::setsockopt failed: {}", e))?;
+        listen_socket
+            .join_multicast_v4(&group_addr, &Ipv4Addr::new(0, 0, 0, 0))
+            .map_err(|e| e_fmt!("join multicast group: {}", e))?;
 
         // We are not setting specific outgoing interface for this socket.
         // It will use the default outgoing interface set by the OS.
@@ -669,7 +666,7 @@ impl Zeroconf {
         let respond_socket = new_socket(udp_port, false)?;
         respond_sockets.push(respond_socket);
 
-        let broadcast_addr = SockaddrIn::new(224, 0, 0, 251, MDNS_PORT);
+        let broadcast_addr = SocketAddrV4::new(group_addr, MDNS_PORT).into();
 
         Ok(Self {
             listen_socket,
@@ -681,6 +678,7 @@ impl Zeroconf {
             instances_to_resolve: HashMap::new(),
             retransmissions: Vec::new(),
             counters: HashMap::new(),
+            poller,
         })
     }
 
@@ -832,7 +830,7 @@ impl Zeroconf {
     fn send(&self, out: &DnsOutgoing, addr: &SockaddrIn) -> Vec<u8> {
         let qtype = if out.is_query() { "query" } else { "response" };
         debug!(
-            "Sending {} to {}: {} questions {} answers {} authorities {} additional",
+            "Sending {} to {:?}: {} questions {} answers {} authorities {} additional",
             qtype,
             addr,
             out.questions.len(),
@@ -852,8 +850,8 @@ impl Zeroconf {
 
     fn send_packet(&self, packet: &[u8], addr: &SockaddrIn) {
         for s in self.respond_sockets.iter() {
-            match sendto(*s, packet, addr, MsgFlags::empty()) {
-                Ok(sz) => debug!("sent out {} bytes on socket {}", sz, s),
+            match s.send_to(packet, addr) {
+                Ok(sz) => debug!("sent out {} bytes on socket {:?}", sz, s),
                 Err(e) => error!("send failed: {}", e),
             }
         }
@@ -869,29 +867,20 @@ impl Zeroconf {
     /// Returns false if failed to receive a packet,
     /// otherwise returns true.
     /// `sockfd` is expected to be connectionless (i.e. UDP socket).
-    fn handle_read(&mut self, sockfd: RawFd) -> bool {
-        let mut buf = vec![0; MAX_MSG_ABSOLUTE];
-        let (sz, src_addr) = match recvfrom(sockfd, &mut buf) {
-            Ok((sz, Some(addr))) => (sz, addr),
-            Ok((_, None)) => {
-                error!("recvfrom could not find source address");
-                return false;
-            }
-            Err(errno::Errno::EAGAIN) => {
-                // Simply means the fd has no more packets to read.
-                // No need to log an error.
-                return false;
-            }
+    fn handle_read(&mut self) -> bool {
+        let sockfd = &self.listen_socket;
+        let mut buf = vec![0u8; MAX_MSG_ABSOLUTE];
+        let (sz, src_addr) = match sockfd.recv_from(&mut buf) {
+            Ok((sz, addr)) => (sz, addr),
             Err(e) => {
-                error!("recvfrom failed: {}", e);
+                if e.kind() != std::io::ErrorKind::WouldBlock {
+                    error!("recvfrom failed: {}", e);
+                }
                 return false;
             }
         };
 
-        debug!(
-            "socket fd {} received {} bytes from {}",
-            &sockfd, sz, src_addr
-        );
+        debug!("received {} bytes from {:?}", sz, &src_addr);
 
         match DnsIncoming::new(buf) {
             Ok(msg) => {
@@ -1087,7 +1076,7 @@ impl Zeroconf {
     /// are held in the cache, and listeners are notified.
     fn handle_response(&mut self, mut msg: DnsIncoming, src: &SockaddrIn) {
         debug!(
-            "handle_response from {}: {} answers {} authorities {} additionals",
+            "handle_response from {:?}: {} answers {} authorities {} additionals",
             src, &msg.num_answers, &msg.num_authorities, &msg.num_additionals
         );
         let now = current_time_millis();
@@ -1114,8 +1103,8 @@ impl Zeroconf {
         }
     }
 
-    fn handle_query(&mut self, msg: DnsIncoming, addr: &SockaddrIn) {
-        debug!("handle_query from {}", &addr);
+    fn handle_query(&mut self, msg: DnsIncoming, addr: &SockAddr) {
+        debug!("handle_query from {:?}", &addr);
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
 
         // Special meta-query "_services._dns-sd._udp.<Domain>".
@@ -1498,9 +1487,7 @@ impl ServiceInfo {
         let fullname = format!("{}.{}", my_name, ty_domain);
         let ty_domain = ty_domain.to_string();
         let server = host_name.to_string();
-
         let addresses = host_ipv4.as_ipv4_addrs()?;
-
         let properties = properties.unwrap_or_default();
 
         let this = Self {
