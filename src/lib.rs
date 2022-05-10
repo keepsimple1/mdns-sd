@@ -1380,22 +1380,35 @@ impl AsAddr for &str {
             .split(',')
             .map(|addr| (addr, std::net::Ipv4Addr::from_str(addr)))
             .map(|(raw, addr)| {
+                // i'd really like to avoid the vec![] allocation here
                 match addr {
-                    Ok(ok) => Ok(ok),
+                    Ok(ok) => Ok({
+                        let mut h = HashSet::new();
+                        h.insert(Ipv4Addr::from_std(&ok));
+                        h
+                    }),
                     // on ipnet try to parse it as an CIDR instead as a last ditch effort
                     #[cfg(feature = "ipnet")]
                     Err(_) => ipnet::Ipv4Net::from_str(raw)
-                        .map_err(|err| Error::ParseIpAddr(err.to_string())),
+                        .map_err(|err| Error::ParseIpAddr(err.to_string()))
+                        .and_then(|net| net.as_addr()),
                     #[cfg(not(feature = "ipnet"))]
                     Err(err) => Err(Error::ParseIpAddr(err.to_string())),
                 }
             })
-            .collect::<Result<Vec<Vec<_>>>>()?
+            // this collect isn't ideal, but helps us remove the result err
+            .collect::<Result<Vec<_>>>()?
             .into_iter()
             .flatten()
             .collect();
 
         Ok(res)
+    }
+}
+
+impl AsAddr for String {
+    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
+        self.as_str().as_addr()
     }
 }
 
@@ -1434,22 +1447,23 @@ impl AsAddr for std::net::Ipv4Addr {
 #[cfg(feature = "ipnet")]
 impl AsAddr for ipnet::Ipv4Net {
     fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
-        self.subnets(0)
-            .map_err(|err| Error::ParseIpAddr(err.to_string()))
-            .map(|subnets| {
-                subnets
-                    .map(|subnet| Ipv4Addr::from_std(&subnet.network()))
-                    .collect()
-            })
+        self.hosts().as_addr()
     }
 }
 
 #[cfg(feature = "ipnet")]
 impl AsAddr for ipnet::Ipv4AddrRange {
+    // note(bmahmoud):
+    // there's a hefty performance penalty here, if we use HashSet here, instead of a
+    // vec, the time goes from ~2s generating everything for 127.0.0.0/8 (16,777,216 addresses)
+    // to about ~29s, this might be solved by moving to a different hasher, or make ipnet mandatory,
+    // tho /8 CIDR is not likely to be used here in this scenario.
     fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
-        Ok(self
+        let addr = self
             .map(|addr| Ipv4Addr::from_std(&addr))
-            .collect::<HashSet<_>>())
+            .collect::<HashSet<_>>();
+
+        Ok(addr)
     }
 }
 
