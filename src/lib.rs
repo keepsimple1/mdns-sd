@@ -136,6 +136,7 @@ use std::any::Any;
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
+use std::net::AddrParseError;
 use std::os::unix::io::RawFd;
 use std::str::FromStr;
 use std::time::SystemTime;
@@ -152,7 +153,7 @@ use nix::sys::time::{TimeVal, TimeValLike};
 use nix::{errno, fcntl};
 
 /// A basic error type from this library.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Error {
     /// Like a classic EAGAIN. The receiver should retry.
     Again,
@@ -1375,13 +1376,26 @@ impl<T: AsAddr> AsAddr for &T {
 
 impl AsAddr for &str {
     fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
-        self.split(',')
-            .map(std::net::Ipv4Addr::from_str)
-            .map(|addr| {
-                addr.map(|addr| Ipv4Addr::from_std(&addr))
-                    .map_err(|err| Error::ParseIpAddr(err.to_string()))
+        let res = self
+            .split(',')
+            .map(|addr| (addr, std::net::Ipv4Addr::from_str(addr)))
+            .map(|(raw, addr)| {
+                match addr {
+                    Ok(ok) => Ok(ok),
+                    // on ipnet try to parse it as an CIDR instead as a last ditch effort
+                    #[cfg(feature = "ipnet")]
+                    Err(_) => ipnet::Ipv4Net::from_str(raw)
+                        .map_err(|err| Error::ParseIpAddr(err.to_string())),
+                    #[cfg(not(feature = "ipnet"))]
+                    Err(err) => Err(Error::ParseIpAddr(err.to_string())),
+                }
             })
-            .collect::<Result<HashSet<_>>>()
+            .collect::<Result<Vec<Vec<_>>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+
+        Ok(res)
     }
 }
 
@@ -1422,14 +1436,20 @@ impl AsAddr for ipnet::Ipv4Net {
     fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
         self.subnets(0)
             .map_err(|err| Error::ParseIpAddr(err.to_string()))
-            .map(|subnets| subnets.map(|subnet| subnet.network()).collect())
+            .map(|subnets| {
+                subnets
+                    .map(|subnet| Ipv4Addr::from_std(&subnet.network()))
+                    .collect()
+            })
     }
 }
 
 #[cfg(feature = "ipnet")]
 impl AsAddr for ipnet::Ipv4AddrRange {
     fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
-        Ok(self.collect::<HashSet<_>>())
+        Ok(self
+            .map(|addr| Ipv4Addr::from_std(&addr))
+            .collect::<HashSet<_>>())
     }
 }
 
@@ -1461,11 +1481,11 @@ impl ServiceInfo {
     /// `properties` are optional key/value pairs for the service.
     ///
     /// The host TTL and other TTL are set to default values.
-    pub fn new(
+    pub fn new<Ip: AsAddr>(
         ty_domain: &str,
         my_name: &str,
         host_name: &str,
-        host_ipv4: &str,
+        host_ipv4: Ip,
         port: u16,
         properties: Option<HashMap<String, String>>,
     ) -> Self {
@@ -1474,9 +1494,9 @@ impl ServiceInfo {
         let server = host_name.to_string();
 
         let mut addresses = HashSet::new();
-        if let Ok(std_ipv4addr) = host_ipv4.parse::<std::net::Ipv4Addr>() {
-            let my_address = Ipv4Addr::from_std(&std_ipv4addr);
-            addresses.insert(my_address);
+        if let Ok(addr) = host_ipv4.as_addr() {
+            // note: we might want to return an error here, instead of silencing it
+            addresses.extend(addr);
         }
 
         let properties = properties.unwrap_or_default();
@@ -1520,6 +1540,16 @@ impl ServiceInfo {
     /// Returns the service's addresses
     pub fn get_addresses(&self) -> &HashSet<Ipv4Addr> {
         &self.addresses
+    }
+
+    /// Insert an additional address to the service
+    pub fn insert_address(&mut self, addr: Ipv4Addr) {
+        self.addresses.insert(addr);
+    }
+
+    /// Remove an address
+    pub fn remove_address(&mut self, addr: &Ipv4Addr) {
+        self.addresses.remove(addr);
     }
 
     /// Returns the service's TTL used for SRV and Address records.
