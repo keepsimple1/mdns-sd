@@ -132,30 +132,24 @@
 // In mDNS and DNS, the basic data structure is "Resource Record" (RR), where
 // in Service Discovery, the basic data structure is "Service Info". One Service Info
 // corresponds to a set of DNS Resource Records.
+use std::any::Any;
+use std::borrow::Borrow;
+use std::collections::{HashMap, HashSet};
+use std::convert::TryInto;
+use std::os::unix::io::RawFd;
+use std::str::FromStr;
+use std::time::SystemTime;
+use std::{cmp, fmt, str, thread, vec};
+
 use flume::{bounded, Sender, TrySendError};
 use log::{debug, error};
-use nix::{
-    errno, fcntl,
-    sys::{
-        select::{select, FdSet},
-        socket::{
-            bind, recvfrom, sendto, setsockopt, socket, sockopt, AddressFamily, InetAddr, IpAddr,
-            IpMembershipRequest, Ipv4Addr, MsgFlags, SockAddr, SockFlag, SockType,
-        },
-        time::{TimeVal, TimeValLike},
-    },
+use nix::sys::select::{select, FdSet};
+use nix::sys::socket::{
+    bind, recvfrom, sendto, setsockopt, socket, sockopt, AddressFamily, InetAddr, IpAddr,
+    IpMembershipRequest, Ipv4Addr, MsgFlags, SockAddr, SockFlag, SockType,
 };
-use std::{
-    any::Any,
-    cmp,
-    collections::{HashMap, HashSet},
-    convert::TryInto,
-    fmt,
-    os::unix::io::RawFd,
-    str, thread,
-    time::SystemTime,
-    vec,
-};
+use nix::sys::time::{TimeVal, TimeValLike};
+use nix::{errno, fcntl};
 
 /// A basic error type from this library.
 #[derive(Debug)]
@@ -165,12 +159,16 @@ pub enum Error {
 
     /// A generic error message.
     Msg(String),
+
+    /// Error during parsing of ip address
+    ParseIpAddr(String),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Msg(s) => write!(f, "{}", s),
+            Error::ParseIpAddr(s) => write!(f, "parsing of ip addr failed, reason: {}", s),
             Error::Again => write!(f, "try again"),
         }
     }
@@ -1362,6 +1360,76 @@ impl DnsCache {
             }
         }
         result
+    }
+}
+
+pub trait AsAddr {
+    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>>;
+}
+
+impl<T: Borrow<I>, I: AsAddr> AsAddr for T {
+    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
+        self.borrow().as_addr()
+    }
+}
+
+impl AsAddr for &str {
+    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
+        self.split(',')
+            .map(std::net::Ipv4Addr::from_str)
+            .map(|addr| {
+                addr.map(|addr| Ipv4Addr::from_std(&addr))
+                    .map_err(|err| Error::ParseIpAddr(err.to_string()))
+            })
+            .collect::<Result<HashSet<_>>>()
+    }
+}
+
+impl<I: AsAddr> AsAddr for &[I] {
+    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
+        let ips = self
+            .into_iter()
+            .map(|val| val.as_addr())
+            .collect::<Result<Vec<HashSet<_>>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+
+        Ok(ips)
+    }
+}
+
+impl AsAddr for Ipv4Addr {
+    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
+        let mut ips = HashSet::new();
+        ips.insert(*self);
+
+        Ok(ips)
+    }
+}
+
+impl AsAddr for std::net::Ipv4Addr {
+    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
+        let mut ips = HashSet::new();
+        ips.insert(Ipv4Addr::from_std(self));
+
+        Ok(ips)
+    }
+}
+
+#[cfg(feature = "ipnet")]
+impl AsAddr for ipnet::Ipv4Net {
+    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
+        self.subnets(0)
+            .map_err(|err| Error::ParseIpAddr(err.to_string()))
+            .map(|subnets| subnets.map(|subnet| subnet.network()).collect())
+    }
+}
+
+#[cfg(feature = "ipnet")]
+impl AsAddr for ipnet::Ipv4AddrRange {
+    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
+        Ok(self.collect::<HashSet<_>>())
     }
 }
 
@@ -2568,8 +2636,9 @@ fn call_listener(
 
 #[cfg(test)]
 mod tests {
-    use crate::{decode_txt, encode_txt};
     use std::collections::HashMap;
+
+    use crate::{decode_txt, encode_txt};
 
     #[test]
     fn test_txt_encode_decode() {
