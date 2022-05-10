@@ -1367,9 +1367,9 @@ pub trait AsAddr {
     fn as_addr(&self) -> Result<HashSet<Ipv4Addr>>;
 }
 
-impl<T: Borrow<I>, I: AsAddr> AsAddr for T {
+impl<T: AsAddr> AsAddr for &T {
     fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
-        self.borrow().as_addr()
+        (&self).as_addr()
     }
 }
 
