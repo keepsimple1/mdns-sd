@@ -1396,16 +1396,18 @@ impl<T: AsIpv4Addrs> AsIpv4Addrs for &T {
 
 impl AsIpv4Addrs for &str {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
-        let res = self
-            .split(',')
-            .map(|addr| std::net::Ipv4Addr::from_str(addr).map(|addr| Ipv4Addr::from_std(&addr)))
-            // this collect isn't ideal, but helps us remove the result err
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .flatten()
-            .collect();
+        let mut addrs = HashSet::new();
 
-        Ok(res)
+        let iter = self
+            .split(',')
+            .map(str::trim)
+            .map(std::net::Ipv4Addr::from_str);
+
+        for addr in iter {
+            addrs.insert(Ipv4Addr::from_std(&addr?))
+        }
+
+        Ok(addrs)
     }
 }
 
@@ -1417,15 +1419,13 @@ impl AsIpv4Addrs for String {
 
 impl<I: AsIpv4Addrs> AsIpv4Addrs for &[I] {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
-        let ips = self
-            .into_iter()
-            .map(|val| val.as_ipv4_addrs())
-            .collect::<Result<Vec<HashSet<_>>>>()?
-            .into_iter()
-            .flatten()
-            .collect();
+        let mut addrs = HashSet::new();
 
-        Ok(ips)
+        for result in self.iter().map(I::as_ipv4_addrs) {
+            addrs.extend(result?);
+        }
+
+        Ok(addrs)
     }
 }
 
@@ -2021,7 +2021,7 @@ impl PartialEq for DnsRecord {
     }
 }
 
-trait DnsRecordExt: core::fmt::Debug {
+trait DnsRecordExt: fmt::Debug {
     fn get_record(&self) -> &DnsRecord;
     fn get_record_mut(&mut self) -> &mut DnsRecord;
     fn write(&self, packet: &mut DnsOutPacket);
