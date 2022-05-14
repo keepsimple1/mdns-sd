@@ -46,7 +46,7 @@
 //! // if running in async environment.
 //! std::thread::spawn(move || {
 //!     while let Ok(event) = receiver.recv() {
-//!         match (event) {
+//!         match event {
 //!             ServiceEvent::ServiceResolved(info) => {
 //!                 println!("Resolved a new service: {}", info.get_fullname());
 //!             }
@@ -84,9 +84,9 @@
 //!     host_ipv4,
 //!     port,
 //!     Some(properties),
-//! );
+//! ).unwrap();
 //!
-//! // Register with the daemon, which publishs the service.
+//! // Register with the daemon, which publishes the service.
 //! mdns.register(my_service).expect("Failed to register our service");
 //! ```
 //!
@@ -911,6 +911,14 @@ impl Zeroconf {
             for record in records.iter() {
                 if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
                     let info = self.create_service_info_from_cache(ty_domain, &ptr.alias);
+                    let info = match info {
+                        Ok(ok) => ok,
+                        Err(err) => {
+                            error!("Error while creating service info from cache: {:?}", err);
+                            continue;
+                        }
+                    };
+
                     match sender.send(ServiceEvent::ServiceFound(
                         ty_domain.to_string(),
                         ptr.alias.clone(),
@@ -936,13 +944,17 @@ impl Zeroconf {
         }
     }
 
-    fn create_service_info_from_cache(&self, ty_domain: &str, fullname: &str) -> ServiceInfo {
+    fn create_service_info_from_cache(
+        &self,
+        ty_domain: &str,
+        fullname: &str,
+    ) -> Result<ServiceInfo> {
         let my_name = fullname
             .trim_end_matches(&ty_domain)
             .trim_end_matches('.')
             .to_string();
 
-        let mut info = ServiceInfo::new(ty_domain, &my_name, "", "", 0, None);
+        let mut info = ServiceInfo::new(ty_domain, &my_name, "", &[], 0, None)?;
 
         // resolve SRV and TXT records
         if let Some(records) = self.cache.map.get(fullname) {
@@ -964,7 +976,7 @@ impl Zeroconf {
             }
         }
 
-        info
+        Ok(info)
     }
 
     /// Try to resolve some instances based on a record (answer),
@@ -1032,10 +1044,18 @@ impl Zeroconf {
                     .trim_end_matches('.')
                     .to_string();
 
-                let service_info = ServiceInfo::new(&service_type, &my_name, "", "", 0, None);
-                debug!("Inserting service info: {:?}", &service_info);
-                self.instances_to_resolve
-                    .insert(instance.clone(), service_info);
+                let service_info = ServiceInfo::new(&service_type, &my_name, "", &[], 0, None);
+
+                match service_info {
+                    Ok(service_info) => {
+                        debug!("Inserting service info: {:?}", &service_info);
+                        self.instances_to_resolve
+                            .insert(instance.clone(), service_info);
+                    }
+                    Err(err) => {
+                        error!("Malformed service info while inserting: {:?}", err);
+                    }
+                }
             }
 
             call_listener(
