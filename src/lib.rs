@@ -1516,16 +1516,6 @@ impl ServiceInfo {
         &self.addresses
     }
 
-    /// Insert an additional address to the service
-    pub fn insert_address(&mut self, addr: Ipv4Addr) {
-        self.addresses.insert(addr);
-    }
-
-    /// Remove an address
-    pub fn remove_address(&mut self, addr: &Ipv4Addr) {
-        self.addresses.remove(addr);
-    }
-
     /// Returns the service's TTL used for SRV and Address records.
     pub fn get_host_ttl(&self) -> u32 {
         self.host_ttl
