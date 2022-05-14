@@ -1,10 +1,9 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::thread::sleep;
+use std::time::{Duration, SystemTime};
+
 use mdns_sd::{Error, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus};
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    thread::sleep,
-    time::{Duration, SystemTime},
-};
 
 /// This test covers:
 /// register(announce), browse(query), response, unregister, shutdown.
@@ -34,7 +33,8 @@ fn integration_success() {
         host_ipv4,
         port,
         Some(properties),
-    );
+    )
+    .expect("valid service info");
     let fullname = my_service.get_fullname().to_string();
     d.register(my_service)
         .expect("Failed to register our service");
@@ -153,7 +153,8 @@ fn integration_success() {
         host_ipv4,
         port,
         None,
-    );
+    )
+    .expect("valid service info");
     d.register(service2)
         .expect("Failed to register the 2nd service");
 

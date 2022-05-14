@@ -954,7 +954,7 @@ impl Zeroconf {
             .trim_end_matches('.')
             .to_string();
 
-        let mut info = ServiceInfo::new(ty_domain, &my_name, "", &[], 0, None)?;
+        let mut info = ServiceInfo::new(ty_domain, &my_name, "", (), 0, None)?;
 
         // resolve SRV and TXT records
         if let Some(records) = self.cache.map.get(fullname) {
@@ -1044,7 +1044,7 @@ impl Zeroconf {
                     .trim_end_matches('.')
                     .to_string();
 
-                let service_info = ServiceInfo::new(&service_type, &my_name, "", &[], 0, None);
+                let service_info = ServiceInfo::new(&service_type, &my_name, "", (), 0, None);
 
                 match service_info {
                     Ok(service_info) => {
@@ -1388,12 +1388,6 @@ pub trait AsIpv4Addrs {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>>;
 }
 
-impl<T: AsIpv4Addrs> AsIpv4Addrs for &T {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
-        (&self).as_ipv4_addrs()
-    }
-}
-
 impl AsIpv4Addrs for &str {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         let mut addrs = HashSet::new();
@@ -1404,7 +1398,9 @@ impl AsIpv4Addrs for &str {
             .map(std::net::Ipv4Addr::from_str);
 
         for addr in iter {
-            addrs.insert(Ipv4Addr::from_std(&addr?))
+            let addr = addr.map_err(|err| Error::ParseIpAddr(err.to_string()))?;
+
+            addrs.insert(Ipv4Addr::from_std(&addr));
         }
 
         Ok(addrs)
@@ -1426,6 +1422,20 @@ impl<I: AsIpv4Addrs> AsIpv4Addrs for &[I] {
         }
 
         Ok(addrs)
+    }
+}
+
+/// Optimization for zero sized/empty values, as `()` will never take up any space or evaluate to
+/// anything, helpful in contexts where we just want an empty value.
+impl AsIpv4Addrs for () {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+        Ok(HashSet::new())
+    }
+}
+
+impl<I: AsIpv4Addrs, const N: usize> AsIpv4Addrs for [I; N] {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+        self.as_slice().as_ipv4_addrs()
     }
 }
 
@@ -1487,7 +1497,7 @@ impl ServiceInfo {
         let ty_domain = ty_domain.to_string();
         let server = host_name.to_string();
 
-        let mut addresses = host_ipv4.as_ipv4_addrs()?;
+        let addresses = host_ipv4.as_ipv4_addrs()?;
 
         let properties = properties.unwrap_or_default();
 
