@@ -1364,18 +1364,18 @@ impl DnsCache {
     }
 }
 
-pub trait AsAddr {
-    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>>;
+pub trait AsIpv4Addrs {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>>;
 }
 
-impl<T: AsAddr> AsAddr for &T {
-    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
-        (&self).as_addr()
+impl<T: AsIpv4Addrs> AsIpv4Addrs for &T {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+        (&self).as_ipv4_addrs()
     }
 }
 
-impl AsAddr for &str {
-    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
+impl AsIpv4Addrs for &str {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         let res = self
             .split(',')
             .map(|addr| std::net::Ipv4Addr::from_str(addr).map(|addr| Ipv4Addr::from_std(&addr)))
@@ -1389,17 +1389,17 @@ impl AsAddr for &str {
     }
 }
 
-impl AsAddr for String {
-    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
-        self.as_str().as_addr()
+impl AsIpv4Addrs for String {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+        self.as_str().as_ipv4_addrs()
     }
 }
 
-impl<I: AsAddr> AsAddr for &[I] {
-    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
+impl<I: AsIpv4Addrs> AsIpv4Addrs for &[I] {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         let ips = self
             .into_iter()
-            .map(|val| val.as_addr())
+            .map(|val| val.as_ipv4_addrs())
             .collect::<Result<Vec<HashSet<_>>>>()?
             .into_iter()
             .flatten()
@@ -1409,8 +1409,8 @@ impl<I: AsAddr> AsAddr for &[I] {
     }
 }
 
-impl AsAddr for Ipv4Addr {
-    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
+impl AsIpv4Addrs for Ipv4Addr {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         let mut ips = HashSet::new();
         ips.insert(*self);
 
@@ -1418,8 +1418,8 @@ impl AsAddr for Ipv4Addr {
     }
 }
 
-impl AsAddr for std::net::Ipv4Addr {
-    fn as_addr(&self) -> Result<HashSet<Ipv4Addr>> {
+impl AsIpv4Addrs for std::net::Ipv4Addr {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         let mut ips = HashSet::new();
         ips.insert(Ipv4Addr::from_std(self));
 
@@ -1455,7 +1455,7 @@ impl ServiceInfo {
     /// `properties` are optional key/value pairs for the service.
     ///
     /// The host TTL and other TTL are set to default values.
-    pub fn new<Ip: AsAddr>(
+    pub fn new<Ip: AsIpv4Addrs>(
         ty_domain: &str,
         my_name: &str,
         host_name: &str,
@@ -1468,7 +1468,7 @@ impl ServiceInfo {
         let server = host_name.to_string();
 
         let mut addresses = HashSet::new();
-        if let Ok(addr) = host_ipv4.as_addr() {
+        if let Ok(addr) = host_ipv4.as_ipv4_addrs() {
             // note: we might want to return an error here, instead of silencing it
             addresses.extend(addr);
         }
