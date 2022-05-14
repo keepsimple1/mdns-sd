@@ -1462,20 +1462,16 @@ impl ServiceInfo {
         host_ipv4: Ip,
         port: u16,
         properties: Option<HashMap<String, String>>,
-    ) -> Self {
+    ) -> Result<Self> {
         let fullname = format!("{}.{}", my_name, ty_domain);
         let ty_domain = ty_domain.to_string();
         let server = host_name.to_string();
 
-        let mut addresses = HashSet::new();
-        if let Ok(addr) = host_ipv4.as_ipv4_addrs() {
-            // note: we might want to return an error here, instead of silencing it
-            addresses.extend(addr);
-        }
+        let mut addresses = host_ipv4.as_ipv4_addrs()?;
 
         let properties = properties.unwrap_or_default();
 
-        Self {
+        let this = Self {
             ty_domain,
             fullname,
             server,
@@ -1486,7 +1482,9 @@ impl ServiceInfo {
             priority: 0,
             weight: 0,
             properties,
-        }
+        };
+
+        Ok(this)
     }
 
     /// Returns a reference of the service fullname.
