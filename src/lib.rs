@@ -132,25 +132,31 @@
 // In mDNS and DNS, the basic data structure is "Resource Record" (RR), where
 // in Service Discovery, the basic data structure is "Service Info". One Service Info
 // corresponds to a set of DNS Resource Records.
-use std::any::Any;
-use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet};
-use std::convert::TryInto;
-use std::net::AddrParseError;
-use std::os::unix::io::RawFd;
-use std::str::FromStr;
-use std::time::SystemTime;
-use std::{cmp, fmt, str, thread, vec};
-
 use flume::{bounded, Sender, TrySendError};
 use log::{debug, error};
-use nix::sys::select::{select, FdSet};
-use nix::sys::socket::{
-    bind, recvfrom, sendto, setsockopt, socket, sockopt, AddressFamily, InetAddr, IpAddr,
-    IpMembershipRequest, Ipv4Addr, MsgFlags, SockAddr, SockFlag, SockType,
+use nix::{
+    errno, fcntl,
+    sys::{
+        select::{select, FdSet},
+        socket::{
+            bind, recvfrom, sendto, setsockopt, socket, sockopt, AddressFamily, InetAddr, IpAddr,
+            IpMembershipRequest, Ipv4Addr, MsgFlags, SockAddr, SockFlag, SockType,
+        },
+        time::{TimeVal, TimeValLike},
+    },
 };
-use nix::sys::time::{TimeVal, TimeValLike};
-use nix::{errno, fcntl};
+use std::{
+    any::Any,
+    cmp,
+    collections::{HashMap, HashSet},
+    convert::TryInto,
+    fmt,
+    os::unix::io::RawFd,
+    str::FromStr,
+    str, thread,
+    time::SystemTime,
+    vec,
+};
 
 /// A basic error type from this library.
 #[derive(Debug, PartialEq)]
