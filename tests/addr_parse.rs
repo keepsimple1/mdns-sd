@@ -24,28 +24,6 @@ fn test_addr_str() {
         ]
         .into())
     );
-
-    #[cfg(feature = "ipnet")]
-    {
-        assert_eq!(
-            "127.0.0.0/31".as_addr(),
-            Ok([
-                Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 0)),
-                Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1))
-            ]
-            .into())
-        );
-
-        assert_eq!(
-            "127.0.0.0/31,127.1.0.0".as_addr(),
-            Ok([
-                Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 0)),
-                Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)),
-                Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 1, 0, 0))
-            ]
-            .into())
-        )
-    }
 }
 
 #[test]
@@ -72,19 +50,6 @@ fn test_addr_slice() {
         ]
         .into())
     );
-
-    #[cfg(feature = "ipnet")]
-    {
-        assert_eq!(
-            ["127.0.0.0/31", "127.0.0.2"].as_slice().as_addr(),
-            Ok([
-                Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 0)),
-                Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)),
-                Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 2))
-            ]
-            .into())
-        );
-    }
 }
 
 #[test]
@@ -99,33 +64,5 @@ fn test_addr_ip() {
     assert_eq!(
         Ipv4Addr::from_std(&ip).as_addr(),
         Ok([Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)),].into())
-    );
-}
-
-#[cfg(feature = "ipnet")]
-#[test]
-fn test_addr_ipnet() {
-    let range = Ipv4AddrRange::new(
-        std::net::Ipv4Addr::new(127, 0, 0, 1),
-        std::net::Ipv4Addr::new(127, 0, 0, 2),
-    );
-
-    assert_eq!(
-        range.as_addr(),
-        Ok([
-            Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)),
-            Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 2))
-        ]
-        .into())
-    );
-
-    let net = Ipv4Net::new(std::net::Ipv4Addr::new(127, 0, 0, 0), 31).unwrap();
-    assert_eq!(
-        net.as_addr(),
-        Ok([
-            Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 0)),
-            Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1))
-        ]
-        .into())
     );
 }
