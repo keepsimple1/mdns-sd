@@ -1440,12 +1440,6 @@ impl AsIpv4Addrs for () {
     }
 }
 
-impl<I: AsIpv4Addrs, const N: usize> AsIpv4Addrs for [I; N] {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
-        self.as_slice().as_ipv4_addrs()
-    }
-}
-
 impl AsIpv4Addrs for Ipv4Addr {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         let mut ips = HashSet::new();

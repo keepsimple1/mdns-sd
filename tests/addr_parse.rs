@@ -27,12 +27,12 @@ fn test_addr_str() {
 #[test]
 fn test_addr_slice() {
     assert_eq!(
-        ["127.0.0.1"].as_slice().as_ipv4_addrs(),
+        (&["127.0.0.1"][..]).as_ipv4_addrs(),
         Ok([Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1))].into())
     );
 
     assert_eq!(
-        ["127.0.0.1", "127.0.0.2"].as_slice().as_ipv4_addrs(),
+        (&["127.0.0.1", "127.0.0.2"][..]).as_ipv4_addrs(),
         Ok([
             Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)),
             Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 2))
@@ -41,7 +41,7 @@ fn test_addr_slice() {
     );
 
     assert_eq!(
-        vec!["127.0.0.1", "127.0.0.2"].as_slice().as_ipv4_addrs(),
+        (&vec!["127.0.0.1", "127.0.0.2"][..]).as_ipv4_addrs(),
         Ok([
             Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)),
             Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 2))
