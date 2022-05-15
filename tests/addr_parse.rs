@@ -1,5 +1,3 @@
-#[cfg(feature = "ipnet")]
-use ipnet::{Ipv4AddrRange, Ipv4Net};
 use mdns_sd::AsIpv4Addrs;
 use nix::sys::socket::Ipv4Addr;
 

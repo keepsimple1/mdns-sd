@@ -152,14 +152,15 @@ use std::{
     convert::TryInto,
     fmt,
     os::unix::io::RawFd,
-    str::FromStr,
-    str, thread,
+    str::{self, FromStr},
+    thread,
     time::SystemTime,
     vec,
 };
 
 /// A basic error type from this library.
 #[derive(Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Error {
     /// Like a classic EAGAIN. The receiver should retry.
     Again,
@@ -904,7 +905,7 @@ impl Zeroconf {
                     error!("Invalid message: not query and not response");
                 }
             }
-            Err(e) => error!("Invalid incoming message: {:?}", e),
+            Err(e) => error!("Invalid incoming message: {}", e),
         }
 
         true
@@ -920,7 +921,7 @@ impl Zeroconf {
                     let info = match info {
                         Ok(ok) => ok,
                         Err(err) => {
-                            error!("Error while creating service info from cache: {:?}", err);
+                            error!("Error while creating service info from cache: {}", err);
                             continue;
                         }
                     };
