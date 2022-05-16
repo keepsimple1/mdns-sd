@@ -19,9 +19,12 @@ fn test_addr_str() {
     let addr = "127.0.0.1".to_string();
     assert_eq!(
         addr.as_ipv4_addrs(),
-        Ok(HashSet::from_iter([Ipv4Addr::from_std(
-            &std::net::Ipv4Addr::new(127, 0, 0, 1)
-        )]))
+        Ok({
+            let mut set = HashSet::new();
+            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
+
+            set
+        })
     );
 
     assert_eq!(
