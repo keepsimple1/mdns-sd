@@ -46,7 +46,7 @@
 //! // if running in async environment.
 //! std::thread::spawn(move || {
 //!     while let Ok(event) = receiver.recv() {
-//!         match (event) {
+//!         match event {
 //!             ServiceEvent::ServiceResolved(info) => {
 //!                 println!("Resolved a new service: {}", info.get_fullname());
 //!             }
@@ -84,9 +84,9 @@
 //!     host_ipv4,
 //!     port,
 //!     Some(properties),
-//! );
+//! ).unwrap();
 //!
-//! // Register with the daemon, which publishs the service.
+//! // Register with the daemon, which publishes the service.
 //! mdns.register(my_service).expect("Failed to register our service");
 //! ```
 //!
@@ -152,25 +152,31 @@ use std::{
     convert::TryInto,
     fmt,
     os::unix::io::RawFd,
-    str, thread,
+    str::{self, FromStr},
+    thread,
     time::SystemTime,
     vec,
 };
 
 /// A basic error type from this library.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Error {
     /// Like a classic EAGAIN. The receiver should retry.
     Again,
 
     /// A generic error message.
     Msg(String),
+
+    /// Error during parsing of ip address
+    ParseIpAddr(String),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Msg(s) => write!(f, "{}", s),
+            Error::ParseIpAddr(s) => write!(f, "parsing of ip addr failed, reason: {}", s),
             Error::Again => write!(f, "try again"),
         }
     }
@@ -899,7 +905,7 @@ impl Zeroconf {
                     error!("Invalid message: not query and not response");
                 }
             }
-            Err(e) => error!("Invalid incoming message: {:?}", e),
+            Err(e) => error!("Invalid incoming message: {}", e),
         }
 
         true
@@ -912,6 +918,14 @@ impl Zeroconf {
             for record in records.iter() {
                 if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
                     let info = self.create_service_info_from_cache(ty_domain, &ptr.alias);
+                    let info = match info {
+                        Ok(ok) => ok,
+                        Err(err) => {
+                            error!("Error while creating service info from cache: {}", err);
+                            continue;
+                        }
+                    };
+
                     match sender.send(ServiceEvent::ServiceFound(
                         ty_domain.to_string(),
                         ptr.alias.clone(),
@@ -937,13 +951,17 @@ impl Zeroconf {
         }
     }
 
-    fn create_service_info_from_cache(&self, ty_domain: &str, fullname: &str) -> ServiceInfo {
+    fn create_service_info_from_cache(
+        &self,
+        ty_domain: &str,
+        fullname: &str,
+    ) -> Result<ServiceInfo> {
         let my_name = fullname
             .trim_end_matches(&ty_domain)
             .trim_end_matches('.')
             .to_string();
 
-        let mut info = ServiceInfo::new(ty_domain, &my_name, "", "", 0, None);
+        let mut info = ServiceInfo::new(ty_domain, &my_name, "", (), 0, None)?;
 
         // resolve SRV and TXT records
         if let Some(records) = self.cache.map.get(fullname) {
@@ -965,7 +983,7 @@ impl Zeroconf {
             }
         }
 
-        info
+        Ok(info)
     }
 
     /// Try to resolve some instances based on a record (answer),
@@ -1033,10 +1051,18 @@ impl Zeroconf {
                     .trim_end_matches('.')
                     .to_string();
 
-                let service_info = ServiceInfo::new(&service_type, &my_name, "", "", 0, None);
-                debug!("Inserting service info: {:?}", &service_info);
-                self.instances_to_resolve
-                    .insert(instance.clone(), service_info);
+                let service_info = ServiceInfo::new(&service_type, &my_name, "", (), 0, None);
+
+                match service_info {
+                    Ok(service_info) => {
+                        debug!("Inserting service info: {:?}", &service_info);
+                        self.instances_to_resolve
+                            .insert(instance.clone(), service_info);
+                    }
+                    Err(err) => {
+                        error!("Malformed service info while inserting: {:?}", err);
+                    }
+                }
             }
 
             call_listener(
@@ -1365,6 +1391,73 @@ impl DnsCache {
     }
 }
 
+pub trait AsIpv4Addrs {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>>;
+}
+
+impl AsIpv4Addrs for &str {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+        let mut addrs = HashSet::new();
+
+        let iter = self
+            .split(',')
+            .map(str::trim)
+            .map(std::net::Ipv4Addr::from_str);
+
+        for addr in iter {
+            let addr = addr.map_err(|err| Error::ParseIpAddr(err.to_string()))?;
+
+            addrs.insert(Ipv4Addr::from_std(&addr));
+        }
+
+        Ok(addrs)
+    }
+}
+
+impl AsIpv4Addrs for String {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+        self.as_str().as_ipv4_addrs()
+    }
+}
+
+impl<I: AsIpv4Addrs> AsIpv4Addrs for &[I] {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+        let mut addrs = HashSet::new();
+
+        for result in self.iter().map(I::as_ipv4_addrs) {
+            addrs.extend(result?);
+        }
+
+        Ok(addrs)
+    }
+}
+
+/// Optimization for zero sized/empty values, as `()` will never take up any space or evaluate to
+/// anything, helpful in contexts where we just want an empty value.
+impl AsIpv4Addrs for () {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+        Ok(HashSet::new())
+    }
+}
+
+impl AsIpv4Addrs for Ipv4Addr {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+        let mut ips = HashSet::new();
+        ips.insert(*self);
+
+        Ok(ips)
+    }
+}
+
+impl AsIpv4Addrs for std::net::Ipv4Addr {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+        let mut ips = HashSet::new();
+        ips.insert(Ipv4Addr::from_std(self));
+
+        Ok(ips)
+    }
+}
+
 /// Complete info about a Service Instance.
 ///
 /// We can construct one PTR, one SRV and one TXT record from this info,
@@ -1393,27 +1486,23 @@ impl ServiceInfo {
     /// `properties` are optional key/value pairs for the service.
     ///
     /// The host TTL and other TTL are set to default values.
-    pub fn new(
+    pub fn new<Ip: AsIpv4Addrs>(
         ty_domain: &str,
         my_name: &str,
         host_name: &str,
-        host_ipv4: &str,
+        host_ipv4: Ip,
         port: u16,
         properties: Option<HashMap<String, String>>,
-    ) -> Self {
+    ) -> Result<Self> {
         let fullname = format!("{}.{}", my_name, ty_domain);
         let ty_domain = ty_domain.to_string();
         let server = host_name.to_string();
 
-        let mut addresses = HashSet::new();
-        if let Ok(std_ipv4addr) = host_ipv4.parse::<std::net::Ipv4Addr>() {
-            let my_address = Ipv4Addr::from_std(&std_ipv4addr);
-            addresses.insert(my_address);
-        }
+        let addresses = host_ipv4.as_ipv4_addrs()?;
 
         let properties = properties.unwrap_or_default();
 
-        Self {
+        let this = Self {
             ty_domain,
             fullname,
             server,
@@ -1424,7 +1513,9 @@ impl ServiceInfo {
             priority: 0,
             weight: 0,
             properties,
-        }
+        };
+
+        Ok(this)
     }
 
     /// Returns a reference of the service fullname.
@@ -1941,7 +2032,7 @@ impl PartialEq for DnsRecord {
     }
 }
 
-trait DnsRecordExt: core::fmt::Debug {
+trait DnsRecordExt: fmt::Debug {
     fn get_record(&self) -> &DnsRecord;
     fn get_record_mut(&mut self) -> &mut DnsRecord;
     fn write(&self, packet: &mut DnsOutPacket);
@@ -2568,8 +2659,9 @@ fn call_listener(
 
 #[cfg(test)]
 mod tests {
-    use crate::{decode_txt, encode_txt};
     use std::collections::HashMap;
+
+    use crate::{decode_txt, encode_txt};
 
     #[test]
     fn test_txt_encode_decode() {

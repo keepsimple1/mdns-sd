@@ -32,7 +32,8 @@ fn main() {
         service_host_ipv4,
         port,
         None,
-    );
+    )
+    .expect("valid service info");
 
     mdns.register(service_info)
         .expect("Failed to register mDNS service");
