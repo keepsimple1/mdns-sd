@@ -1395,6 +1395,12 @@ pub trait AsIpv4Addrs {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>>;
 }
 
+impl<T: AsIpv4Addrs> AsIpv4Addrs for &T {
+    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+        (*self).as_ipv4_addrs()
+    }
+}
+
 impl AsIpv4Addrs for &str {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         let mut addrs = HashSet::new();

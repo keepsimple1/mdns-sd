@@ -1,8 +1,6 @@
-use std::collections::HashSet;
-use std::iter::FromIterator;
-
 use mdns_sd::AsIpv4Addrs;
 use nix::sys::socket::Ipv4Addr;
+use std::collections::HashSet;
 
 #[test]
 fn test_addr_str() {
@@ -19,6 +17,17 @@ fn test_addr_str() {
     let addr = "127.0.0.1".to_string();
     assert_eq!(
         addr.as_ipv4_addrs(),
+        Ok({
+            let mut set = HashSet::new();
+            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
+
+            set
+        })
+    );
+
+    // verify that `&String` also works.
+    assert_eq!(
+        (&addr).as_ipv4_addrs(),
         Ok({
             let mut set = HashSet::new();
             set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
