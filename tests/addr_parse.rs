@@ -16,6 +16,17 @@ fn test_addr_str() {
 
     let addr = "127.0.0.1".to_string();
     assert_eq!(
+        addr.as_ipv4_addrs(),
+        Ok({
+            let mut set = HashSet::new();
+            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
+
+            set
+        })
+    );
+
+    // verify that `&String` also works.
+    assert_eq!(
         (&addr).as_ipv4_addrs(),
         Ok({
             let mut set = HashSet::new();
@@ -77,7 +88,7 @@ fn test_addr_ip() {
     let ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
 
     assert_eq!(
-        (&ip).as_ipv4_addrs(),
+        ip.as_ipv4_addrs(),
         Ok({
             let mut set = HashSet::new();
             set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
@@ -87,7 +98,7 @@ fn test_addr_ip() {
     );
 
     assert_eq!(
-        (&Ipv4Addr::from_std(&ip)).as_ipv4_addrs(),
+        Ipv4Addr::from_std(&ip).as_ipv4_addrs(),
         Ok({
             let mut set = HashSet::new();
             set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
