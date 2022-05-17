@@ -1391,6 +1391,7 @@ impl DnsCache {
     }
 }
 
+/// This trait allows for parsing an input into a set of one or multiple [`Ipv4Addr`].
 pub trait AsIpv4Addrs {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>>;
 }
@@ -1401,6 +1402,8 @@ impl<T: AsIpv4Addrs> AsIpv4Addrs for &T {
     }
 }
 
+/// Supports one address or multiple addresses separated by `,`.
+/// For example: "127.0.0.1,127.0.0.2"
 impl AsIpv4Addrs for &str {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         let mut addrs = HashSet::new();
@@ -1426,6 +1429,7 @@ impl AsIpv4Addrs for String {
     }
 }
 
+/// Support slice. Example: &["127.0.0.1", "127.0.0.2"]
 impl<I: AsIpv4Addrs> AsIpv4Addrs for &[I] {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         let mut addrs = HashSet::new();
@@ -1490,6 +1494,9 @@ impl ServiceInfo {
     ///
     /// `my_name` is the instance name, without the service type suffix.
     /// `properties` are optional key/value pairs for the service.
+    ///
+    /// `host_ipv4` can be one or more IPv4 addresses, in a type that implements
+    /// [`AsIpv4Addrs`] trait.
     ///
     /// The host TTL and other TTL are set to default values.
     pub fn new<Ip: AsIpv4Addrs>(
