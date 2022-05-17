@@ -1414,7 +1414,7 @@ impl AsIpv4Addrs for &str {
     }
 }
 
-impl AsIpv4Addrs for String {
+impl AsIpv4Addrs for &String {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         self.as_str().as_ipv4_addrs()
     }
@@ -1440,16 +1440,16 @@ impl AsIpv4Addrs for () {
     }
 }
 
-impl AsIpv4Addrs for Ipv4Addr {
+impl AsIpv4Addrs for &Ipv4Addr {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         let mut ips = HashSet::new();
-        ips.insert(*self);
+        ips.insert(**self);
 
         Ok(ips)
     }
 }
 
-impl AsIpv4Addrs for std::net::Ipv4Addr {
+impl AsIpv4Addrs for &std::net::Ipv4Addr {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         let mut ips = HashSet::new();
         ips.insert(Ipv4Addr::from_std(self));
