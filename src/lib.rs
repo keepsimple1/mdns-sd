@@ -139,8 +139,8 @@ use nix::{
     sys::{
         select::{select, FdSet},
         socket::{
-            bind, recvfrom, sendto, setsockopt, socket, sockopt, AddressFamily, InetAddr, IpAddr,
-            IpMembershipRequest, Ipv4Addr, MsgFlags, SockAddr, SockFlag, SockType,
+            bind, recvfrom, sendto, setsockopt, socket, sockopt, AddressFamily,
+            IpMembershipRequest, MsgFlags, SockFlag, SockType, SockaddrIn,
         },
         time::{TimeVal, TimeValLike},
     },
@@ -151,6 +151,7 @@ use std::{
     collections::{HashMap, HashSet},
     convert::TryInto,
     fmt,
+    net::Ipv4Addr,
     os::unix::io::RawFd,
     str::{self, FromStr},
     thread,
@@ -599,12 +600,10 @@ fn new_socket(port: u16, non_block: bool) -> Result<RawFd> {
             .map_err(|e| e_fmt!("nix::fcntl O_NONBLOCK: {}", e))?;
     }
 
-    let ipv4_any = IpAddr::new_v4(0, 0, 0, 0);
-    let inet_addr = InetAddr::new(ipv4_any, port);
-    bind(fd, &SockAddr::Inet(inet_addr))
-        .map_err(|e| e_fmt!("nix::sys::socket::bind failed: {}", e))?;
+    let ipv4_any = SockaddrIn::new(0, 0, 0, 0, port);
+    bind(fd, &ipv4_any).map_err(|e| e_fmt!("nix::sys::socket::bind failed: {}", e))?;
 
-    debug!("new socket {} bind to {}", &fd, &inet_addr);
+    debug!("new socket {} bind to {}", &fd, &ipv4_any);
     Ok(fd)
 }
 
@@ -638,7 +637,7 @@ struct Zeroconf {
     my_services: HashMap<String, ServiceInfo>,
 
     /// Well-known mDNS IPv4 address and port
-    broadcast_addr: SockAddr,
+    broadcast_addr: SockaddrIn,
 
     cache: DnsCache,
 
@@ -670,8 +669,7 @@ impl Zeroconf {
         let respond_socket = new_socket(udp_port, false)?;
         respond_sockets.push(respond_socket);
 
-        let broadcast_addr =
-            SockAddr::new_inet(InetAddr::new(IpAddr::new_v4(224, 0, 0, 251), MDNS_PORT));
+        let broadcast_addr = SockaddrIn::new(224, 0, 0, 251, MDNS_PORT);
 
         Ok(Self {
             listen_socket,
@@ -831,7 +829,7 @@ impl Zeroconf {
     }
 
     /// Sends an outgoing packet, and returns the packet bytes.
-    fn send(&self, out: &DnsOutgoing, addr: &SockAddr) -> Vec<u8> {
+    fn send(&self, out: &DnsOutgoing, addr: &SockaddrIn) -> Vec<u8> {
         let qtype = if out.is_query() { "query" } else { "response" };
         debug!(
             "Sending {} to {}: {} questions {} answers {} authorities {} additional",
@@ -852,7 +850,7 @@ impl Zeroconf {
         packet
     }
 
-    fn send_packet(&self, packet: &[u8], addr: &SockAddr) {
+    fn send_packet(&self, packet: &[u8], addr: &SockaddrIn) {
         for s in self.respond_sockets.iter() {
             match sendto(*s, packet, addr, MsgFlags::empty()) {
                 Ok(sz) => debug!("sent out {} bytes on socket {}", sz, s),
@@ -1087,7 +1085,7 @@ impl Zeroconf {
 
     /// Deal with incoming response packets.  All answers
     /// are held in the cache, and listeners are notified.
-    fn handle_response(&mut self, mut msg: DnsIncoming, src: &SockAddr) {
+    fn handle_response(&mut self, mut msg: DnsIncoming, src: &SockaddrIn) {
         debug!(
             "handle_response from {}: {} answers {} authorities {} additionals",
             src, &msg.num_answers, &msg.num_authorities, &msg.num_additionals
@@ -1116,7 +1114,7 @@ impl Zeroconf {
         }
     }
 
-    fn handle_query(&mut self, msg: DnsIncoming, addr: &SockAddr) {
+    fn handle_query(&mut self, msg: DnsIncoming, addr: &SockaddrIn) {
         debug!("handle_query from {}", &addr);
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
 
@@ -1415,8 +1413,7 @@ impl AsIpv4Addrs for &str {
 
         for addr in iter {
             let addr = addr.map_err(|err| Error::ParseIpAddr(err.to_string()))?;
-
-            addrs.insert(Ipv4Addr::from_std(&addr));
+            addrs.insert(addr);
         }
 
         Ok(addrs)
@@ -1450,19 +1447,10 @@ impl AsIpv4Addrs for () {
     }
 }
 
-impl AsIpv4Addrs for Ipv4Addr {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
-        let mut ips = HashSet::new();
-        ips.insert(*self);
-
-        Ok(ips)
-    }
-}
-
 impl AsIpv4Addrs for std::net::Ipv4Addr {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         let mut ips = HashSet::new();
-        ips.insert(Ipv4Addr::from_std(self));
+        ips.insert(*self);
 
         Ok(ips)
     }
