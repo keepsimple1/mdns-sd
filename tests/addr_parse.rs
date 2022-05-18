@@ -1,6 +1,6 @@
 use mdns_sd::AsIpv4Addrs;
-use nix::sys::socket::Ipv4Addr;
 use std::collections::HashSet;
+use std::net::Ipv4Addr;
 
 #[test]
 fn test_addr_str() {
@@ -8,7 +8,7 @@ fn test_addr_str() {
         "127.0.0.1".as_ipv4_addrs(),
         Ok({
             let mut set = HashSet::new();
-            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
+            set.insert(Ipv4Addr::new(127, 0, 0, 1));
 
             set
         })
@@ -19,7 +19,7 @@ fn test_addr_str() {
         addr.as_ipv4_addrs(),
         Ok({
             let mut set = HashSet::new();
-            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
+            set.insert(Ipv4Addr::new(127, 0, 0, 1));
 
             set
         })
@@ -30,7 +30,7 @@ fn test_addr_str() {
         (&addr).as_ipv4_addrs(),
         Ok({
             let mut set = HashSet::new();
-            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
+            set.insert(Ipv4Addr::new(127, 0, 0, 1));
 
             set
         })
@@ -40,8 +40,8 @@ fn test_addr_str() {
         "127.0.0.1,127.0.0.2".as_ipv4_addrs(),
         Ok({
             let mut set = HashSet::new();
-            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
-            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 2)));
+            set.insert(Ipv4Addr::new(127, 0, 0, 1));
+            set.insert(Ipv4Addr::new(127, 0, 0, 2));
 
             set
         })
@@ -54,7 +54,7 @@ fn test_addr_slice() {
         (&["127.0.0.1"][..]).as_ipv4_addrs(),
         Ok({
             let mut set = HashSet::new();
-            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
+            set.insert(Ipv4Addr::new(127, 0, 0, 1));
 
             set
         })
@@ -64,8 +64,8 @@ fn test_addr_slice() {
         (&["127.0.0.1", "127.0.0.2"][..]).as_ipv4_addrs(),
         Ok({
             let mut set = HashSet::new();
-            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
-            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 2)));
+            set.insert(Ipv4Addr::new(127, 0, 0, 1));
+            set.insert(Ipv4Addr::new(127, 0, 0, 2));
 
             set
         })
@@ -75,8 +75,8 @@ fn test_addr_slice() {
         (&vec!["127.0.0.1", "127.0.0.2"][..]).as_ipv4_addrs(),
         Ok({
             let mut set = HashSet::new();
-            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
-            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 2)));
+            set.insert(Ipv4Addr::new(127, 0, 0, 1));
+            set.insert(Ipv4Addr::new(127, 0, 0, 2));
 
             set
         })
@@ -85,23 +85,23 @@ fn test_addr_slice() {
 
 #[test]
 fn test_addr_ip() {
-    let ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
+    let ip = Ipv4Addr::new(127, 0, 0, 1);
 
     assert_eq!(
         ip.as_ipv4_addrs(),
         Ok({
             let mut set = HashSet::new();
-            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
+            set.insert(Ipv4Addr::new(127, 0, 0, 1));
 
             set
         })
     );
 
     assert_eq!(
-        Ipv4Addr::from_std(&ip).as_ipv4_addrs(),
+        (&ip).as_ipv4_addrs(),
         Ok({
             let mut set = HashSet::new();
-            set.insert(Ipv4Addr::from_std(&std::net::Ipv4Addr::new(127, 0, 0, 1)));
+            set.insert(Ipv4Addr::new(127, 0, 0, 1));
 
             set
         })

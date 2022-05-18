@@ -1,3 +1,9 @@
+# Version 0.5.0
+
+- Allow multiple formats for host_ipv4 to create ServiceInfo.
+- A breaking change: change `ServiceInfo::new()` to return a `Result<>`.
+- Update `nix` dependency to version 0.24.1.
+
 # Version 0.4.3
 
 - Fix a bug in stop-browse
