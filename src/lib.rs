@@ -143,7 +143,8 @@ use std::{
     convert::TryInto,
     fmt,
     net::{Ipv4Addr, SocketAddrV4},
-    str, thread,
+    str::{self, FromStr},
+    thread,
     time::{Duration, SystemTime},
     vec,
 };
@@ -631,7 +632,7 @@ struct Zeroconf {
     my_services: HashMap<String, ServiceInfo>,
 
     /// Well-known mDNS IPv4 address and port
-    broadcast_addr: SockaddrIn,
+    broadcast_addr: SockAddr,
 
     cache: DnsCache,
 
@@ -827,7 +828,7 @@ impl Zeroconf {
     }
 
     /// Sends an outgoing packet, and returns the packet bytes.
-    fn send(&self, out: &DnsOutgoing, addr: &SockaddrIn) -> Vec<u8> {
+    fn send(&self, out: &DnsOutgoing, addr: &SockAddr) -> Vec<u8> {
         let qtype = if out.is_query() { "query" } else { "response" };
         debug!(
             "Sending {} to {:?}: {} questions {} answers {} authorities {} additional",
@@ -848,7 +849,7 @@ impl Zeroconf {
         packet
     }
 
-    fn send_packet(&self, packet: &[u8], addr: &SockaddrIn) {
+    fn send_packet(&self, packet: &[u8], addr: &SockAddr) {
         for s in self.respond_sockets.iter() {
             match s.send_to(packet, addr) {
                 Ok(sz) => debug!("sent out {} bytes on socket {:?}", sz, s),
@@ -1074,7 +1075,7 @@ impl Zeroconf {
 
     /// Deal with incoming response packets.  All answers
     /// are held in the cache, and listeners are notified.
-    fn handle_response(&mut self, mut msg: DnsIncoming, src: &SockaddrIn) {
+    fn handle_response(&mut self, mut msg: DnsIncoming, src: &SockAddr) {
         debug!(
             "handle_response from {:?}: {} answers {} authorities {} additionals",
             src, &msg.num_answers, &msg.num_authorities, &msg.num_additionals
@@ -1395,10 +1396,7 @@ impl AsIpv4Addrs for &str {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         let mut addrs = HashSet::new();
 
-        let iter = self
-            .split(',')
-            .map(str::trim)
-            .map(std::net::Ipv4Addr::from_str);
+        let iter = self.split(',').map(str::trim).map(Ipv4Addr::from_str);
 
         for addr in iter {
             let addr = addr.map_err(|err| Error::ParseIpAddr(err.to_string()))?;
