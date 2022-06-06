@@ -183,6 +183,8 @@ impl fmt::Display for Error {
     }
 }
 
+impl std::error::Error for Error {}
+
 /// One and only `Result` type from this library crate.
 pub type Result<T> = core::result::Result<T, Error>;
 
