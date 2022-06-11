@@ -142,6 +142,7 @@ use std::{
     collections::{HashMap, HashSet},
     convert::TryInto,
     fmt,
+    io::Read,
     net::{Ipv4Addr, SocketAddrV4},
     str::{self, FromStr},
     thread,
@@ -579,7 +580,7 @@ impl ServiceDaemon {
 /// Creates a new UDP socket to bind to `port` with REUSEPORT option.
 /// `non_block` indicates whether to set O_NONBLOCK for the socket.
 fn new_socket(port: u16, non_block: bool) -> Result<Socket> {
-    let fd = Socket::new(socket2::Domain::ipv4(), socket2::Type::dgram(), None)
+    let fd = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)
         .map_err(|e| e_fmt!("create socket failed: {}", e))?;
 
     fd.set_reuse_address(true)
@@ -867,28 +868,26 @@ impl Zeroconf {
 
     /// Returns false if failed to receive a packet,
     /// otherwise returns true.
-    /// `sockfd` is expected to be connectionless (i.e. UDP socket).
     fn handle_read(&mut self) -> bool {
-        let sockfd = &self.listen_socket;
         let mut buf = vec![0u8; MAX_MSG_ABSOLUTE];
-        let (sz, src_addr) = match sockfd.recv_from(&mut buf) {
-            Ok((sz, addr)) => (sz, addr),
+        let sz = match self.listen_socket.read(&mut buf) {
+            Ok(sz) => sz,
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::WouldBlock {
-                    error!("recvfrom failed: {}", e);
+                    error!("listening socket read failed: {}", e);
                 }
                 return false;
             }
         };
 
-        debug!("received {} bytes from {:?}", sz, &src_addr);
+        debug!("received {} bytes", sz);
 
         match DnsIncoming::new(buf) {
             Ok(msg) => {
                 if msg.is_query() {
-                    self.handle_query(msg, &src_addr);
+                    self.handle_query(msg);
                 } else if msg.is_response() {
-                    self.handle_response(msg, &src_addr);
+                    self.handle_response(msg);
                 } else {
                     error!("Invalid message: not query and not response");
                 }
@@ -1075,10 +1074,10 @@ impl Zeroconf {
 
     /// Deal with incoming response packets.  All answers
     /// are held in the cache, and listeners are notified.
-    fn handle_response(&mut self, mut msg: DnsIncoming, src: &SockAddr) {
+    fn handle_response(&mut self, mut msg: DnsIncoming) {
         debug!(
-            "handle_response from {:?}: {} answers {} authorities {} additionals",
-            src, &msg.num_answers, &msg.num_authorities, &msg.num_additionals
+            "handle_response: {} answers {} authorities {} additionals",
+            &msg.num_answers, &msg.num_authorities, &msg.num_additionals
         );
         let now = current_time_millis();
 
@@ -1104,8 +1103,7 @@ impl Zeroconf {
         }
     }
 
-    fn handle_query(&mut self, msg: DnsIncoming, addr: &SockAddr) {
-        debug!("handle_query from {:?}", &addr);
+    fn handle_query(&mut self, msg: DnsIncoming) {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
 
         // Special meta-query "_services._dns-sd._udp.<Domain>".
