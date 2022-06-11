@@ -382,7 +382,7 @@ impl ServiceDaemon {
     /// 4. announce its registered services.
     /// 5. process retransmissions if any.
     fn run(mut zc: Zeroconf, receiver: Receiver<Command>) {
-        let poller_key = 7;
+        let poller_key = 17;
         if let Err(e) = zc
             .poller
             .add(&zc.listen_socket, polling::Event::readable(poller_key))
@@ -396,7 +396,8 @@ impl ServiceDaemon {
         loop {
             events.clear();
             match zc.poller.wait(&mut events, Some(timeout)) {
-                Ok(count) => {
+                Ok(_) => {
+                    let count = events.iter().filter(|ev| ev.key == poller_key).count();
                     if count > 0 {
                         // Read until no more packets available.
                         loop {
