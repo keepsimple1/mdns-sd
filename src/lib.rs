@@ -547,11 +547,13 @@ impl ServiceDaemon {
                 None => error!("StopBrowse: cannot find querier for {}", &ty_domain),
                 Some((ty, sender)) => {
                     // Remove pending browse commands in the reruns.
+                    debug!("StopBrowse: removed queryer for {}", &ty);
                     let mut i = 0;
                     while i < zc.retransmissions.len() {
                         if let Command::Browse(t, _, _) = &zc.retransmissions[i].command {
                             if t == &ty {
                                 zc.retransmissions.remove(i);
+                                debug!("StopBrowse: removed retransmission for {}", &ty);
                                 continue;
                             }
                         }
