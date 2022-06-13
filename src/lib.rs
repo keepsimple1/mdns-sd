@@ -382,7 +382,7 @@ impl ServiceDaemon {
     /// 4. announce its registered services.
     /// 5. process retransmissions if any.
     fn run(mut zc: Zeroconf, receiver: Receiver<Command>) {
-        let poller_key = 17;
+        let poller_key = 17; // An arbitrary number to identify the events we are interested in.
         if let Err(e) = zc
             .poller
             .add(&zc.listen_socket, polling::Event::readable(poller_key))
