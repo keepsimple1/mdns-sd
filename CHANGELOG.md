@@ -1,3 +1,9 @@
+# Version 0.5.1
+
+- Fix missing info in the license files.
+- Add docs.rs badge.
+- Make Error implement std::error::Error.
+
 # Version 0.5.0
 
 - Allow multiple formats for host_ipv4 to create ServiceInfo.
