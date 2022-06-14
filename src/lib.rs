@@ -1542,13 +1542,13 @@ impl ServiceInfo {
         self.other_ttl
     }
 
+    /// Returns whether the service info is ready to be resolved.
     fn is_ready(&self) -> bool {
         let some_missing = self.ty_domain.is_empty()
             || self.fullname.is_empty()
             || self.server.is_empty()
             || self.port == 0
-            || self.addresses.is_empty()
-            || self.properties.is_empty();
+            || self.addresses.is_empty();
         !some_missing
     }
 
