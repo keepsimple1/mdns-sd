@@ -109,7 +109,7 @@ fn integration_success() {
     }
 
     // Wait a bit to let the daemon process commands in the channel.
-    sleep(Duration::from_secs(1));
+    sleep(Duration::from_millis(1200));
 
     // Unregister the service
     let receiver = d.unregister(&fullname).unwrap();
@@ -186,5 +186,50 @@ fn integration_success() {
     }
 
     // Shutdown
+    d.shutdown().unwrap();
+}
+
+#[test]
+fn service_without_properties() {
+    // Create a daemon
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+    // Register a service without properties.
+    let ty_domain = "_serv-no-prop._tcp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string(); // Create a unique name.
+    let host_ipv4 = "192.168.1.13";
+    let host_name = "192.168.1.13.";
+    let port = 5201;
+    let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, host_ipv4, port, None)
+        .expect("valid service info");
+    let fullname = my_service.get_fullname().to_string();
+    d.register(my_service)
+        .expect("Failed to register our service");
+
+    // Browse for a service
+    let browse_chan = d.browse(ty_domain).unwrap();
+    let timeout = Duration::from_secs(2);
+    loop {
+        match browse_chan.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    println!("Resolved a service of {}", &info.get_fullname());
+                    assert_eq!(fullname.as_str(), info.get_fullname());
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            },
+            Err(e) => {
+                println!("browse error: {}", e);
+                assert!(false);
+            }
+        }
+    }
+
     d.shutdown().unwrap();
 }
