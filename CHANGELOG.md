@@ -1,3 +1,7 @@
+# Version 0.5.2
+
+- Add support for Windows platform.
+
 # Version 0.5.1
 
 - Fix missing info in the license files.
