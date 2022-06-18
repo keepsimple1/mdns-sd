@@ -7,6 +7,7 @@
 This is a small implementation of mDNS (Multicast DNS) based service discovery in safe Rust, with a small set of dependencies. Some highlights:
 
 - supports both the client (querier) and the server (responder) uses.
+- supports macOS, Linux and Windows.
 - works with both sync and async code.
 - no dependency on any async runtimes.
 
@@ -28,7 +29,6 @@ This is still beta software. We focus on the common use cases at hand. And we te
 Currently this library has the following limitations:
 - Only support IPv4, not IPv6.
 - Only support multicast, no unicast send/recv.
-- Only tested on Linux and MacOS, not on Windows or other OSes.
 
 ## Minimum Rust version
 
