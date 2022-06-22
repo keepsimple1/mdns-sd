@@ -735,6 +735,20 @@ impl Zeroconf {
             0,
         );
 
+        if let Some(sub) = &info.sub_domain {
+            debug!("Adding subdomain {}", sub);
+            out.add_answer_at_time(
+                Box::new(DnsPointer::new(
+                    &sub,
+                    TYPE_PTR,
+                    CLASS_IN,
+                    info.other_ttl,
+                    info.fullname.clone(),
+                )),
+                0,
+            );
+        }
+
         out.add_answer_at_time(
             Box::new(DnsSrv::new(
                 &info.fullname,
@@ -786,6 +800,20 @@ impl Zeroconf {
             )),
             0,
         );
+
+        if let Some(sub) = &info.sub_domain {
+            debug!("Adding subdomain {}", sub);
+            out.add_answer_at_time(
+                Box::new(DnsPointer::new(
+                    &sub,
+                    TYPE_PTR,
+                    CLASS_IN,
+                    0,
+                    info.fullname.clone(),
+                )),
+                0,
+            );
+        }
 
         out.add_answer_at_time(
             Box::new(DnsSrv::new(
@@ -949,7 +977,7 @@ impl Zeroconf {
         fullname: &str,
     ) -> Result<ServiceInfo> {
         let my_name = fullname
-            .trim_end_matches(&ty_domain)
+            .trim_end_matches(split_sub_domain(ty_domain).0)
             .trim_end_matches('.')
             .to_string();
 
@@ -1039,7 +1067,7 @@ impl Zeroconf {
                 }
 
                 let my_name = instance
-                    .trim_end_matches(&service_type)
+                    .trim_end_matches(split_sub_domain(&service_type).0)
                     .trim_end_matches('.')
                     .to_string();
 
@@ -1068,11 +1096,26 @@ impl Zeroconf {
 
         for instance in resolved.iter() {
             let info = self.instances_to_resolve.remove(instance).unwrap();
-            if let Some(listener) = self.queriers.get(&info.ty_domain) {
+            fn s(listener: &Sender<ServiceEvent>, info: ServiceInfo) {
                 match listener.send(ServiceEvent::ServiceResolved(info)) {
                     Ok(()) => debug!("sent service info successfully"),
-                    Err(e) => println!("failed to send service info: {}", e),
+                    Err(e) => error!("failed to send service info: {}", e),
                 }
+            }
+            let sub_query = info
+                .sub_domain
+                .as_ref()
+                .map(|s| self.queriers.get(s))
+                .flatten();
+            let query = self.queriers.get(&info.ty_domain);
+            match (sub_query, query) {
+                (Some(sub_listener), Some(listener)) => {
+                    s(sub_listener, info.clone());
+                    s(listener, info);
+                }
+                (None, Some(listener)) => s(listener, info),
+                (Some(listener), None) => s(listener, info),
+                _ => {}
             }
         }
     }
@@ -1121,7 +1164,12 @@ impl Zeroconf {
 
             if qtype == TYPE_PTR {
                 for service in self.my_services.values() {
-                    if question.entry.name == service.ty_domain {
+                    if question.entry.name == service.ty_domain
+                        || service
+                            .sub_domain
+                            .as_ref()
+                            .map_or(false, |v| v == &question.entry.name)
+                    {
                         out.add_answer_with_additionals(&msg, service);
                     } else if question.entry.name == META_QUERY {
                         let ptr_added = out.add_answer(
@@ -1448,13 +1496,14 @@ impl AsIpv4Addrs for std::net::Ipv4Addr {
 
 /// Complete info about a Service Instance.
 ///
-/// We can construct one PTR, one SRV and one TXT record from this info,
+/// We can construct some PTR, one SRV and one TXT record from this info,
 /// as well as A (IPv4 Address) records.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ServiceInfo {
-    ty_domain: String, // <service>.<domain>
-    fullname: String,  // <instance>.<service>.<domain>
-    server: String,    // fully qualified name for service host
+    ty_domain: String,          // <service>.<domain>
+    sub_domain: Option<String>, // <subservice>._sub.<service>.<domain>
+    fullname: String,           // <instance>.<service>.<domain>
+    server: String,             // fully qualified name for service host
     addresses: HashSet<Ipv4Addr>,
     port: u16,
     host_ttl: u32,  // used for SRV and Address records
@@ -1462,6 +1511,15 @@ pub struct ServiceInfo {
     priority: u16,
     weight: u16,
     properties: HashMap<String, String>,
+}
+
+/// Returns a tuple of (service_type_domain, optional_sub_domain)
+fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
+    if let Some((_, ty_domain)) = domain.rsplit_once("._sub.") {
+        (ty_domain, Some(domain))
+    } else {
+        (domain, None)
+    }
 }
 
 impl ServiceInfo {
@@ -1485,14 +1543,18 @@ impl ServiceInfo {
         port: u16,
         properties: Option<HashMap<String, String>>,
     ) -> Result<Self> {
+        let (ty_domain, sub_domain) = split_sub_domain(ty_domain);
+
         let fullname = format!("{}.{}", my_name, ty_domain);
         let ty_domain = ty_domain.to_string();
+        let sub_domain = sub_domain.map(str::to_string);
         let server = host_name.to_string();
         let addresses = host_ipv4.as_ipv4_addrs()?;
         let properties = properties.unwrap_or_default();
 
         let this = Self {
             ty_domain,
+            sub_domain,
             fullname,
             server,
             addresses,
@@ -1678,6 +1740,17 @@ impl DnsOutgoing {
         if !ptr_added {
             debug!("answer was not added for msg {:?}", msg);
             return;
+        }
+
+        if let Some(sub) = &service.sub_domain {
+            debug!("Adding subdomain {}", sub);
+            self.add_additional_answer(Box::new(DnsPointer::new(
+                &sub,
+                TYPE_PTR,
+                CLASS_IN,
+                service.other_ttl,
+                service.fullname.clone(),
+            )));
         }
 
         // Add recommended additional answers according to
