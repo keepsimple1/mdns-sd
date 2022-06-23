@@ -16,6 +16,7 @@ default = ["async"]
 
 [dependencies]
 flume = { version = "0.10", default-features = false } # channel between threads
+if-addrs = "0.7"                                       # get local IP addresses
 log = "0.4.14"                                         # logging
 polling = "2.1.0"                                      # select/poll sockets
 socket2 = { version = "0.4", features = ["all"] }      # socket APIs

@@ -143,7 +143,7 @@ use std::{
     convert::TryInto,
     fmt,
     io::Read,
-    net::{Ipv4Addr, SocketAddrV4},
+    net::{IpAddr, Ipv4Addr, SocketAddrV4},
     str::{self, FromStr},
     thread,
     time::{Duration, SystemTime},
@@ -584,7 +584,7 @@ impl ServiceDaemon {
 
 /// Creates a new UDP socket to bind to `port` with REUSEPORT option.
 /// `non_block` indicates whether to set O_NONBLOCK for the socket.
-fn new_socket(port: u16, non_block: bool) -> Result<Socket> {
+fn new_socket(ipv4: Ipv4Addr, port: u16, non_block: bool) -> Result<Socket> {
     let fd = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)
         .map_err(|e| e_fmt!("create socket failed: {}", e))?;
 
@@ -599,13 +599,41 @@ fn new_socket(port: u16, non_block: bool) -> Result<Socket> {
             .map_err(|e| e_fmt!("set O_NONBLOCK: {}", e))?;
     }
 
-    let ipv4_any = Ipv4Addr::new(0, 0, 0, 0);
-    let inet_addr = SocketAddrV4::new(ipv4_any, port);
+    let inet_addr = SocketAddrV4::new(ipv4, port);
     fd.bind(&inet_addr.into())
         .map_err(|e| e_fmt!("socket bind failed: {}", e))?;
 
     debug!("new socket bind to {}", &inet_addr);
     Ok(fd)
+}
+
+/// Returns the list of IPv4 addrs assigned to this host, excluding loopback or multicast addrs.
+/// If something goes wrong, returns an empty list and logs an error message.
+fn my_ipv4_addrs() -> Vec<Ipv4Addr> {
+    let mut result = Vec::new();
+
+    match if_addrs::get_if_addrs() {
+        Ok(addr_list) => {
+            for addr in addr_list {
+                if addr.is_loopback() {
+                    continue;
+                }
+                match addr.ip() {
+                    IpAddr::V4(v4_addr) => {
+                        if v4_addr.is_multicast() {
+                            continue;
+                        }
+                        result.push(v4_addr);
+                    }
+                    IpAddr::V6(_) => {}
+                }
+            }
+        }
+        Err(e) => error!("get_if_addrs: {}", e),
+    }
+    debug!("IPv4 addrs: {:?}", &result);
+
+    result
 }
 
 fn current_time_millis() -> u64 {
@@ -628,10 +656,8 @@ struct Zeroconf {
     /// This socket will not be able to read unicast packets.
     listen_socket: Socket,
 
-    /// Sockets for outgoing packets.
-    /// NOTE: For now we only support multicast and this Vec has only one socket.
-    /// If we support unicast, we will have one respond socket for each
-    /// valid interface, and read unicast packets from these sockets.
+    /// Sockets for outgoing packets. One socket for each non-loopback assigned IPv4.
+    /// NOTE: For now we only support multicast.
     respond_sockets: Vec<Socket>,
 
     /// Local registered services
@@ -659,7 +685,7 @@ struct Zeroconf {
 impl Zeroconf {
     fn new(udp_port: u16) -> Result<Self> {
         let poller = Poller::new().map_err(|e| e_fmt!("create Poller: {}", e))?;
-        let listen_socket = new_socket(udp_port, true)?;
+        let listen_socket = new_socket(Ipv4Addr::new(0, 0, 0, 0), udp_port, true)?;
         debug!("created listening socket: {:?}", &listen_socket);
 
         let group_addr = Ipv4Addr::new(224, 0, 0, 251);
@@ -667,11 +693,12 @@ impl Zeroconf {
             .join_multicast_v4(&group_addr, &Ipv4Addr::new(0, 0, 0, 0))
             .map_err(|e| e_fmt!("join multicast group: {}", e))?;
 
-        // We are not setting specific outgoing interface for this socket.
-        // It will use the default outgoing interface set by the OS.
+        // We create a socket for every outgoing IPv4 interface.
         let mut respond_sockets = Vec::new();
-        let respond_socket = new_socket(udp_port, false)?;
-        respond_sockets.push(respond_socket);
+        for ipv4_addr in my_ipv4_addrs() {
+            let respond_socket = new_socket(ipv4_addr, udp_port, false)?;
+            respond_sockets.push(respond_socket);
+        }
 
         let broadcast_addr = SocketAddrV4::new(group_addr, MDNS_PORT).into();
 
