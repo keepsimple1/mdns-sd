@@ -2746,7 +2746,7 @@ fn call_listener(
 mod tests {
     use std::collections::HashMap;
 
-    use crate::{decode_txt, encode_txt};
+    use crate::{decode_txt, encode_txt, my_ipv4_addrs};
 
     #[test]
     fn test_txt_encode_decode() {
@@ -2765,5 +2765,19 @@ mod tests {
         // test decode
         let decoded = decode_txt(&encoded);
         assert_eq!(map, decoded);
+    }
+
+    #[test]
+    fn test_my_ipv4_addrs() {
+        let addrs = my_ipv4_addrs();
+
+        // The test host should have at least one IPv4 addr.
+        assert!(!addrs.is_empty());
+
+        // Verify the address attributes.
+        for addr in addrs {
+            assert!(!addr.is_loopback());
+            assert!(!addr.is_multicast());
+        }
     }
 }
