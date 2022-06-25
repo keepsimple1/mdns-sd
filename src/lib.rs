@@ -766,7 +766,7 @@ impl Zeroconf {
             debug!("Adding subdomain {}", sub);
             out.add_answer_at_time(
                 Box::new(DnsPointer::new(
-                    &sub,
+                    sub,
                     TYPE_PTR,
                     CLASS_IN,
                     info.other_ttl,
@@ -832,7 +832,7 @@ impl Zeroconf {
             debug!("Adding subdomain {}", sub);
             out.add_answer_at_time(
                 Box::new(DnsPointer::new(
-                    &sub,
+                    sub,
                     TYPE_PTR,
                     CLASS_IN,
                     0,
@@ -1129,11 +1129,7 @@ impl Zeroconf {
                     Err(e) => error!("failed to send service info: {}", e),
                 }
             }
-            let sub_query = info
-                .sub_domain
-                .as_ref()
-                .map(|s| self.queriers.get(s))
-                .flatten();
+            let sub_query = info.sub_domain.as_ref().and_then(|s| self.queriers.get(s));
             let query = self.queriers.get(&info.ty_domain);
             match (sub_query, query) {
                 (Some(sub_listener), Some(listener)) => {
@@ -1772,7 +1768,7 @@ impl DnsOutgoing {
         if let Some(sub) = &service.sub_domain {
             debug!("Adding subdomain {}", sub);
             self.add_additional_answer(Box::new(DnsPointer::new(
-                &sub,
+                sub,
                 TYPE_PTR,
                 CLASS_IN,
                 service.other_ttl,
@@ -2750,7 +2746,7 @@ fn call_listener(
 mod tests {
     use std::collections::HashMap;
 
-    use crate::{decode_txt, encode_txt};
+    use crate::{decode_txt, encode_txt, my_ipv4_addrs};
 
     #[test]
     fn test_txt_encode_decode() {
@@ -2769,5 +2765,19 @@ mod tests {
         // test decode
         let decoded = decode_txt(&encoded);
         assert_eq!(map, decoded);
+    }
+
+    #[test]
+    fn test_my_ipv4_addrs() {
+        let addrs = my_ipv4_addrs();
+
+        // The test host should have at least one IPv4 addr.
+        assert!(!addrs.is_empty());
+
+        // Verify the address attributes.
+        for addr in addrs {
+            assert!(!addr.is_loopback());
+            assert!(!addr.is_multicast());
+        }
     }
 }
