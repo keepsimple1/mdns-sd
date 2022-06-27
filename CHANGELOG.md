@@ -1,3 +1,9 @@
+# Version 0.5.3
+
+- Support subtypes.
+- Bind every valid IPv4 interface for outgoing sockets.
+- Include windows and macOS in GitHub Actions.
+
 # Version 0.5.2
 
 - Add support for Windows platform.
