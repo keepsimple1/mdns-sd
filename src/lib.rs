@@ -108,8 +108,10 @@ mod error;
 mod service_info;
 
 pub use error::{Error, Result};
-pub use service_info::AsIpv4Addrs;
-pub use service_info::ServiceInfo;
+pub use service_info::{AsIpv4Addrs, ServiceInfo};
+
+/// A handler to receive messages from [ServiceDaemon]. Re-export from `flume`.
+pub use flume::Receiver;
 
 // What DNS-based Service Discovery works in a nutshell:
 //
@@ -139,7 +141,7 @@ pub use service_info::ServiceInfo;
 // In mDNS and DNS, the basic data structure is "Resource Record" (RR), where
 // in Service Discovery, the basic data structure is "Service Info". One Service Info
 // corresponds to a set of DNS Resource Records.
-use crate::service_info::split_sub_domain;
+use crate::{error::e_fmt, service_info::split_sub_domain};
 use flume::{bounded, Sender, TrySendError};
 use log::{debug, error};
 use polling::Poller;
@@ -155,16 +157,6 @@ use std::{
     time::{Duration, SystemTime},
     vec,
 };
-
-/// Re-export from `flume`.
-pub use flume::Receiver;
-
-/// A simple macro to report all kinds of errors.
-macro_rules! e_fmt {
-  ($($arg:tt)+) => {
-      Error::Msg(format!($($arg)+))
-  };
-}
 
 const TYPE_A: u16 = 1; // IPv4 address
 const TYPE_CNAME: u16 = 5;
