@@ -77,55 +77,75 @@ impl ServiceInfo {
         Ok(this)
     }
 
-    pub fn get_ty_domain(&self) -> &str {
+    /// Returns the service type including the domain label.
+    ///
+    /// For example: "_my-service._udp.local.".
+    #[inline]
+    pub fn get_type(&self) -> &str {
         &self.ty_domain
     }
 
-    pub fn get_sub_domain(&self) -> &Option<String> {
+    /// Returns the service subtype including the domain label,
+    /// if subtype has been defined.
+    ///
+    /// For example: "_printer._sub._http._tcp.local.".
+    #[inline]
+    pub fn get_subtype(&self) -> &Option<String> {
         &self.sub_domain
     }
 
     /// Returns a reference of the service fullname.
     ///
     /// This is useful, for example, in unregister.
+    #[inline]
     pub fn get_fullname(&self) -> &str {
         &self.fullname
     }
 
     /// Returns a reference of the properties from TXT records.
+    #[inline]
     pub fn get_properties(&self) -> &HashMap<String, String> {
         &self.properties
     }
 
     /// Returns the service's hostname.
+    #[inline]
     pub fn get_hostname(&self) -> &str {
         &self.server
     }
 
     /// Returns the service's port.
+    #[inline]
     pub fn get_port(&self) -> u16 {
         self.port
     }
 
     /// Returns the service's addresses
+    #[inline]
     pub fn get_addresses(&self) -> &HashSet<Ipv4Addr> {
         &self.addresses
     }
 
     /// Returns the service's TTL used for SRV and Address records.
+    #[inline]
     pub fn get_host_ttl(&self) -> u32 {
         self.host_ttl
     }
 
     /// Returns the service's TTL used for PTR and TXT records.
+    #[inline]
     pub fn get_other_ttl(&self) -> u32 {
         self.other_ttl
     }
 
+    /// Returns the service's priority used in SRV records.
+    #[inline]
     pub fn get_priority(&self) -> u16 {
         self.priority
     }
 
+    /// Returns the service's weight used in SRV records.
+    #[inline]
     pub fn get_weight(&self) -> u16 {
         self.weight
     }

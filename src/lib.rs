@@ -718,7 +718,7 @@ impl Zeroconf {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         out.add_answer_at_time(
             Box::new(DnsPointer::new(
-                info.get_ty_domain(),
+                info.get_type(),
                 TYPE_PTR,
                 CLASS_IN,
                 info.get_other_ttl(),
@@ -727,7 +727,7 @@ impl Zeroconf {
             0,
         );
 
-        if let Some(sub) = info.get_sub_domain() {
+        if let Some(sub) = info.get_subtype() {
             debug!("Adding subdomain {}", sub);
             out.add_answer_at_time(
                 Box::new(DnsPointer::new(
@@ -784,7 +784,7 @@ impl Zeroconf {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         out.add_answer_at_time(
             Box::new(DnsPointer::new(
-                info.get_ty_domain(),
+                info.get_type(),
                 TYPE_PTR,
                 CLASS_IN,
                 0,
@@ -793,7 +793,7 @@ impl Zeroconf {
             0,
         );
 
-        if let Some(sub) = info.get_sub_domain() {
+        if let Some(sub) = info.get_subtype() {
             debug!("Adding subdomain {}", sub);
             out.add_answer_at_time(
                 Box::new(DnsPointer::new(
@@ -1095,10 +1095,10 @@ impl Zeroconf {
                 }
             }
             let sub_query = info
-                .get_sub_domain()
+                .get_subtype()
                 .as_ref()
                 .and_then(|s| self.queriers.get(s));
-            let query = self.queriers.get(info.get_ty_domain());
+            let query = self.queriers.get(info.get_type());
             match (sub_query, query) {
                 (Some(sub_listener), Some(listener)) => {
                     s(sub_listener, info.clone());
@@ -1155,9 +1155,9 @@ impl Zeroconf {
 
             if qtype == TYPE_PTR {
                 for service in self.my_services.values() {
-                    if question.entry.name == service.get_ty_domain()
+                    if question.entry.name == service.get_type()
                         || service
-                            .get_sub_domain()
+                            .get_subtype()
                             .as_ref()
                             .map_or(false, |v| v == &question.entry.name)
                     {
@@ -1170,7 +1170,7 @@ impl Zeroconf {
                                 TYPE_PTR,
                                 CLASS_IN,
                                 service.get_other_ttl(),
-                                service.get_ty_domain().to_string(),
+                                service.get_type().to_string(),
                             )),
                         );
                         if !ptr_added {
@@ -1525,7 +1525,7 @@ impl DnsOutgoing {
         let ptr_added = self.add_answer(
             msg,
             Box::new(DnsPointer::new(
-                service.get_ty_domain(),
+                service.get_type(),
                 TYPE_PTR,
                 CLASS_IN,
                 service.get_other_ttl(),
@@ -1538,7 +1538,7 @@ impl DnsOutgoing {
             return;
         }
 
-        if let Some(sub) = service.get_sub_domain() {
+        if let Some(sub) = service.get_subtype() {
             debug!("Adding subdomain {}", sub);
             self.add_additional_answer(Box::new(DnsPointer::new(
                 sub,
