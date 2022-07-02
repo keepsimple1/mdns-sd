@@ -28,12 +28,3 @@ impl std::error::Error for Error {}
 
 /// One and only `Result` type from this library crate.
 pub type Result<T> = core::result::Result<T, Error>;
-
-/// A simple macro to report all kinds of errors.
-macro_rules! e_fmt {
-  ($($arg:tt)+) => {
-      Error::Msg(format!($($arg)+))
-  };
-}
-
-pub(crate) use e_fmt;

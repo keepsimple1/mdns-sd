@@ -141,7 +141,7 @@ pub use flume::Receiver;
 // In mDNS and DNS, the basic data structure is "Resource Record" (RR), where
 // in Service Discovery, the basic data structure is "Service Info". One Service Info
 // corresponds to a set of DNS Resource Records.
-use crate::{error::e_fmt, service_info::split_sub_domain};
+use crate::service_info::split_sub_domain;
 use flume::{bounded, Sender, TrySendError};
 use log::{debug, error};
 use polling::Poller;
@@ -157,6 +157,13 @@ use std::{
     time::{Duration, SystemTime},
     vec,
 };
+
+/// A simple macro to report all kinds of errors.
+macro_rules! e_fmt {
+  ($($arg:tt)+) => {
+      Error::Msg(format!($($arg)+))
+  };
+}
 
 const TYPE_A: u16 = 1; // IPv4 address
 const TYPE_CNAME: u16 = 5;
