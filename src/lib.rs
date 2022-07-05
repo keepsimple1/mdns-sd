@@ -104,6 +104,15 @@
 
 #![forbid(unsafe_code)]
 
+mod error;
+mod service_info;
+
+pub use error::{Error, Result};
+pub use service_info::{AsIpv4Addrs, ServiceInfo};
+
+/// A handler to receive messages from [ServiceDaemon]. Re-export from `flume`.
+pub use flume::Receiver;
+
 // What DNS-based Service Discovery works in a nutshell:
 //
 // (excerpt from RFC 6763)
@@ -132,6 +141,7 @@
 // In mDNS and DNS, the basic data structure is "Resource Record" (RR), where
 // in Service Discovery, the basic data structure is "Service Info". One Service Info
 // corresponds to a set of DNS Resource Records.
+use crate::service_info::split_sub_domain;
 use flume::{bounded, Sender, TrySendError};
 use log::{debug, error};
 use polling::Poller;
@@ -139,48 +149,14 @@ use socket2::{SockAddr, Socket};
 use std::{
     any::Any,
     cmp,
-    collections::{HashMap, HashSet},
-    convert::TryInto,
+    collections::HashMap,
     fmt,
     io::Read,
     net::{IpAddr, Ipv4Addr, SocketAddrV4},
-    str::{self, FromStr},
-    thread,
+    str, thread,
     time::{Duration, SystemTime},
     vec,
 };
-
-/// A basic error type from this library.
-#[derive(Debug, PartialEq)]
-#[non_exhaustive]
-pub enum Error {
-    /// Like a classic EAGAIN. The receiver should retry.
-    Again,
-
-    /// A generic error message.
-    Msg(String),
-
-    /// Error during parsing of ip address
-    ParseIpAddr(String),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::Msg(s) => write!(f, "{}", s),
-            Error::ParseIpAddr(s) => write!(f, "parsing of ip addr failed, reason: {}", s),
-            Error::Again => write!(f, "try again"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-/// One and only `Result` type from this library crate.
-pub type Result<T> = core::result::Result<T, Error>;
-
-/// Re-export from `flume`.
-pub use flume::Receiver;
 
 /// A simple macro to report all kinds of errors.
 macro_rules! e_fmt {
@@ -217,10 +193,6 @@ const FLAGS_QR_MASK: u16 = 0x8000; // mask for query/response bit
 const FLAGS_QR_QUERY: u16 = 0x0000;
 const FLAGS_QR_RESPONSE: u16 = 0x8000;
 const FLAGS_AA: u16 = 0x0400; // mask for Authoritative answer bit
-
-/// Default TTL values in seconds
-const DNS_HOST_TTL: u32 = 120; // 2 minutes for host records (A, SRV etc) per RFC6762
-const DNS_OTHER_TTL: u32 = 4500; // 75 minutes for non-host records (PTR, TXT etc) per RFC6762
 
 /// Response status code for the service `unregister` call.
 #[derive(Debug)]
@@ -725,7 +697,7 @@ impl Zeroconf {
     ///
     /// Zeroconf will then respond to requests for information about this service.
     fn register_service(&mut self, info: ServiceInfo) {
-        if let Err(e) = check_service_name(&info.fullname) {
+        if let Err(e) = check_service_name(info.get_fullname()) {
             error!("check service name failed: {}", e);
             return;
         }
@@ -739,7 +711,7 @@ impl Zeroconf {
 
         // The key has to be lower case letter as DNS record name is case insensitive.
         // The info will have the original name.
-        let service_fullname = info.fullname.to_lowercase();
+        let service_fullname = info.get_fullname().to_lowercase();
         self.retransmissions.push(ReRun {
             next_time,
             command: Command::RegisterResend(service_fullname.clone()),
@@ -749,28 +721,28 @@ impl Zeroconf {
 
     /// Send an unsolicited response for owned service
     fn broadcast_service(&self, info: &ServiceInfo) {
-        debug!("broadcast service {}", &info.fullname);
+        debug!("broadcast service {}", info.get_fullname());
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         out.add_answer_at_time(
             Box::new(DnsPointer::new(
-                &info.ty_domain,
+                info.get_type(),
                 TYPE_PTR,
                 CLASS_IN,
-                info.other_ttl,
-                info.fullname.clone(),
+                info.get_other_ttl(),
+                info.get_fullname().to_string(),
             )),
             0,
         );
 
-        if let Some(sub) = &info.sub_domain {
+        if let Some(sub) = info.get_subtype() {
             debug!("Adding subdomain {}", sub);
             out.add_answer_at_time(
                 Box::new(DnsPointer::new(
                     sub,
                     TYPE_PTR,
                     CLASS_IN,
-                    info.other_ttl,
-                    info.fullname.clone(),
+                    info.get_other_ttl(),
+                    info.get_fullname().to_string(),
                 )),
                 0,
             );
@@ -778,34 +750,34 @@ impl Zeroconf {
 
         out.add_answer_at_time(
             Box::new(DnsSrv::new(
-                &info.fullname,
+                info.get_fullname(),
                 CLASS_IN | CLASS_UNIQUE,
-                info.host_ttl,
-                info.priority,
-                info.weight,
-                info.port,
-                info.server.clone(),
+                info.get_host_ttl(),
+                info.get_priority(),
+                info.get_weight(),
+                info.get_port(),
+                info.get_hostname().to_string(),
             )),
             0,
         );
         out.add_answer_at_time(
             Box::new(DnsTxt::new(
-                &info.fullname,
+                info.get_fullname(),
                 TYPE_TXT,
                 CLASS_IN | CLASS_UNIQUE,
-                info.other_ttl,
+                info.get_other_ttl(),
                 info.generate_txt(),
             )),
             0,
         );
 
-        for addr in &info.addresses {
+        for addr in info.get_addresses() {
             out.add_answer_at_time(
                 Box::new(DnsAddress::new(
-                    &info.server,
+                    info.get_hostname(),
                     TYPE_A,
                     CLASS_IN | CLASS_UNIQUE,
-                    info.host_ttl,
+                    info.get_host_ttl(),
                     *addr,
                 )),
                 0,
@@ -819,16 +791,16 @@ impl Zeroconf {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         out.add_answer_at_time(
             Box::new(DnsPointer::new(
-                &info.ty_domain,
+                info.get_type(),
                 TYPE_PTR,
                 CLASS_IN,
                 0,
-                info.fullname.clone(),
+                info.get_fullname().to_string(),
             )),
             0,
         );
 
-        if let Some(sub) = &info.sub_domain {
+        if let Some(sub) = info.get_subtype() {
             debug!("Adding subdomain {}", sub);
             out.add_answer_at_time(
                 Box::new(DnsPointer::new(
@@ -836,7 +808,7 @@ impl Zeroconf {
                     TYPE_PTR,
                     CLASS_IN,
                     0,
-                    info.fullname.clone(),
+                    info.get_fullname().to_string(),
                 )),
                 0,
             );
@@ -844,19 +816,19 @@ impl Zeroconf {
 
         out.add_answer_at_time(
             Box::new(DnsSrv::new(
-                &info.fullname,
+                info.get_fullname(),
                 CLASS_IN | CLASS_UNIQUE,
                 0,
-                info.priority,
-                info.weight,
-                info.port,
-                info.server.clone(),
+                info.get_priority(),
+                info.get_weight(),
+                info.get_port(),
+                info.get_hostname().to_string(),
             )),
             0,
         );
         out.add_answer_at_time(
             Box::new(DnsTxt::new(
-                &info.fullname,
+                info.get_fullname(),
                 TYPE_TXT,
                 CLASS_IN | CLASS_UNIQUE,
                 0,
@@ -865,10 +837,10 @@ impl Zeroconf {
             0,
         );
 
-        for addr in &info.addresses {
+        for addr in info.get_addresses() {
             out.add_answer_at_time(
                 Box::new(DnsAddress::new(
-                    &info.server,
+                    info.get_hostname(),
                     TYPE_A,
                     CLASS_IN | CLASS_UNIQUE,
                     0,
@@ -989,7 +961,7 @@ impl Zeroconf {
                             Ok(()) => debug!("sent service resolved"),
                             Err(e) => error!("failed to send service resolved: {}", e),
                         }
-                    } else if !self.instances_to_resolve.contains_key(&info.fullname) {
+                    } else if !self.instances_to_resolve.contains_key(info.get_fullname()) {
                         self.instances_to_resolve
                             .insert(ty_domain.to_string(), info);
                     }
@@ -1014,18 +986,18 @@ impl Zeroconf {
         if let Some(records) = self.cache.map.get(fullname) {
             for answer in records.iter() {
                 if let Some(dns_srv) = answer.any().downcast_ref::<DnsSrv>() {
-                    info.server = dns_srv.host.clone();
-                    info.port = dns_srv.port;
+                    info.set_hostname(dns_srv.host.clone());
+                    info.set_port(dns_srv.port);
                 } else if let Some(dns_txt) = answer.any().downcast_ref::<DnsTxt>() {
                     info.set_properties_from_txt(&dns_txt.text);
                 }
             }
         }
 
-        if let Some(records) = self.cache.map.get(&info.server) {
+        if let Some(records) = self.cache.map.get(info.get_hostname()) {
             for answer in records.iter() {
                 if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {
-                    info.addresses.insert(dns_a.address);
+                    info.insert_ipv4addr(dns_a.address);
                 }
             }
         }
@@ -1043,8 +1015,8 @@ impl Zeroconf {
         if let Some(dns_srv) = answer.any().downcast_ref::<DnsSrv>() {
             if let Some(info) = instances_to_resolve.get_mut(answer.get_name()) {
                 debug!("setting server and port for service info");
-                info.server = dns_srv.host.clone();
-                info.port = dns_srv.port;
+                info.set_hostname(dns_srv.host.clone());
+                info.set_port(dns_srv.port);
                 if info.is_ready() {
                     resolved.push(answer.get_name().to_string());
                 }
@@ -1059,11 +1031,11 @@ impl Zeroconf {
             }
         } else if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {
             for (_k, info) in instances_to_resolve.iter_mut() {
-                if info.server == answer.get_name() {
-                    debug!("setting address in server {}", &info.server);
-                    info.addresses.insert(dns_a.address);
+                if info.get_hostname() == answer.get_name() {
+                    debug!("setting address in server {}", info.get_hostname());
+                    info.insert_ipv4addr(dns_a.address);
                     if info.is_ready() {
-                        resolved.push(info.fullname.clone());
+                        resolved.push(info.get_fullname().to_string());
                     }
                 }
             }
@@ -1129,8 +1101,11 @@ impl Zeroconf {
                     Err(e) => error!("failed to send service info: {}", e),
                 }
             }
-            let sub_query = info.sub_domain.as_ref().and_then(|s| self.queriers.get(s));
-            let query = self.queriers.get(&info.ty_domain);
+            let sub_query = info
+                .get_subtype()
+                .as_ref()
+                .and_then(|s| self.queriers.get(s));
+            let query = self.queriers.get(info.get_type());
             match (sub_query, query) {
                 (Some(sub_listener), Some(listener)) => {
                     s(sub_listener, info.clone());
@@ -1187,9 +1162,9 @@ impl Zeroconf {
 
             if qtype == TYPE_PTR {
                 for service in self.my_services.values() {
-                    if question.entry.name == service.ty_domain
+                    if question.entry.name == service.get_type()
                         || service
-                            .sub_domain
+                            .get_subtype()
                             .as_ref()
                             .map_or(false, |v| v == &question.entry.name)
                     {
@@ -1201,8 +1176,8 @@ impl Zeroconf {
                                 &question.entry.name,
                                 TYPE_PTR,
                                 CLASS_IN,
-                                service.other_ttl,
-                                service.ty_domain.clone(),
+                                service.get_other_ttl(),
+                                service.get_type().to_string(),
                             )),
                         );
                         if !ptr_added {
@@ -1213,15 +1188,15 @@ impl Zeroconf {
             } else {
                 if qtype == TYPE_A || qtype == TYPE_ANY {
                     for service in self.my_services.values() {
-                        if service.server == question.entry.name.to_lowercase() {
-                            for address in &service.addresses {
+                        if service.get_hostname() == question.entry.name.to_lowercase() {
+                            for address in service.get_addresses() {
                                 out.add_answer(
                                     &msg,
                                     Box::new(DnsAddress::new(
                                         &question.entry.name,
                                         TYPE_A,
                                         CLASS_IN | CLASS_UNIQUE,
-                                        service.host_ttl,
+                                        service.get_host_ttl(),
                                         *address,
                                     )),
                                 );
@@ -1242,11 +1217,11 @@ impl Zeroconf {
                         Box::new(DnsSrv::new(
                             &question.entry.name,
                             CLASS_IN | CLASS_UNIQUE,
-                            service.host_ttl,
-                            service.priority,
-                            service.weight,
-                            service.port,
-                            service.server.clone(),
+                            service.get_host_ttl(),
+                            service.get_priority(),
+                            service.get_weight(),
+                            service.get_port(),
+                            service.get_hostname().to_string(),
                         )),
                     );
                 }
@@ -1258,19 +1233,19 @@ impl Zeroconf {
                             &question.entry.name,
                             TYPE_TXT,
                             CLASS_IN | CLASS_UNIQUE,
-                            service.host_ttl,
+                            service.get_host_ttl(),
                             service.generate_txt(),
                         )),
                     );
                 }
 
                 if qtype == TYPE_SRV {
-                    for address in &service.addresses {
+                    for address in service.get_addresses() {
                         out.add_additional_answer(Box::new(DnsAddress::new(
-                            &service.server,
+                            service.get_hostname(),
                             TYPE_A,
                             CLASS_IN | CLASS_UNIQUE,
-                            service.host_ttl,
+                            service.get_host_ttl(),
                             *address,
                         )));
                     }
@@ -1453,201 +1428,6 @@ impl DnsCache {
     }
 }
 
-/// This trait allows for parsing an input into a set of one or multiple [`Ipv4Addr`].
-pub trait AsIpv4Addrs {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>>;
-}
-
-impl<T: AsIpv4Addrs> AsIpv4Addrs for &T {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
-        (*self).as_ipv4_addrs()
-    }
-}
-
-/// Supports one address or multiple addresses separated by `,`.
-/// For example: "127.0.0.1,127.0.0.2"
-impl AsIpv4Addrs for &str {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
-        let mut addrs = HashSet::new();
-
-        let iter = self.split(',').map(str::trim).map(Ipv4Addr::from_str);
-
-        for addr in iter {
-            let addr = addr.map_err(|err| Error::ParseIpAddr(err.to_string()))?;
-            addrs.insert(addr);
-        }
-
-        Ok(addrs)
-    }
-}
-
-impl AsIpv4Addrs for String {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
-        self.as_str().as_ipv4_addrs()
-    }
-}
-
-/// Support slice. Example: &["127.0.0.1", "127.0.0.2"]
-impl<I: AsIpv4Addrs> AsIpv4Addrs for &[I] {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
-        let mut addrs = HashSet::new();
-
-        for result in self.iter().map(I::as_ipv4_addrs) {
-            addrs.extend(result?);
-        }
-
-        Ok(addrs)
-    }
-}
-
-/// Optimization for zero sized/empty values, as `()` will never take up any space or evaluate to
-/// anything, helpful in contexts where we just want an empty value.
-impl AsIpv4Addrs for () {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
-        Ok(HashSet::new())
-    }
-}
-
-impl AsIpv4Addrs for std::net::Ipv4Addr {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
-        let mut ips = HashSet::new();
-        ips.insert(*self);
-
-        Ok(ips)
-    }
-}
-
-/// Complete info about a Service Instance.
-///
-/// We can construct some PTR, one SRV and one TXT record from this info,
-/// as well as A (IPv4 Address) records.
-#[derive(Debug, Clone)]
-pub struct ServiceInfo {
-    ty_domain: String,          // <service>.<domain>
-    sub_domain: Option<String>, // <subservice>._sub.<service>.<domain>
-    fullname: String,           // <instance>.<service>.<domain>
-    server: String,             // fully qualified name for service host
-    addresses: HashSet<Ipv4Addr>,
-    port: u16,
-    host_ttl: u32,  // used for SRV and Address records
-    other_ttl: u32, // used for PTR and TXT records
-    priority: u16,
-    weight: u16,
-    properties: HashMap<String, String>,
-}
-
-/// Returns a tuple of (service_type_domain, optional_sub_domain)
-fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
-    if let Some((_, ty_domain)) = domain.rsplit_once("._sub.") {
-        (ty_domain, Some(domain))
-    } else {
-        (domain, None)
-    }
-}
-
-impl ServiceInfo {
-    /// Creates a new service info.
-    ///
-    /// `ty_domain` is the service type and the domain label, for example
-    /// "_my-service._udp.local.".
-    ///
-    /// `my_name` is the instance name, without the service type suffix.
-    /// `properties` are optional key/value pairs for the service.
-    ///
-    /// `host_ipv4` can be one or more IPv4 addresses, in a type that implements
-    /// [`AsIpv4Addrs`] trait.
-    ///
-    /// The host TTL and other TTL are set to default values.
-    pub fn new<Ip: AsIpv4Addrs>(
-        ty_domain: &str,
-        my_name: &str,
-        host_name: &str,
-        host_ipv4: Ip,
-        port: u16,
-        properties: Option<HashMap<String, String>>,
-    ) -> Result<Self> {
-        let (ty_domain, sub_domain) = split_sub_domain(ty_domain);
-
-        let fullname = format!("{}.{}", my_name, ty_domain);
-        let ty_domain = ty_domain.to_string();
-        let sub_domain = sub_domain.map(str::to_string);
-        let server = host_name.to_string();
-        let addresses = host_ipv4.as_ipv4_addrs()?;
-        let properties = properties.unwrap_or_default();
-
-        let this = Self {
-            ty_domain,
-            sub_domain,
-            fullname,
-            server,
-            addresses,
-            port,
-            host_ttl: DNS_HOST_TTL,
-            other_ttl: DNS_OTHER_TTL,
-            priority: 0,
-            weight: 0,
-            properties,
-        };
-
-        Ok(this)
-    }
-
-    /// Returns a reference of the service fullname.
-    ///
-    /// This is useful, for example, in unregister.
-    pub fn get_fullname(&self) -> &str {
-        &self.fullname
-    }
-
-    /// Returns a reference of the properties from TXT records.
-    pub fn get_properties(&self) -> &HashMap<String, String> {
-        &self.properties
-    }
-
-    /// Returns the service's hostname.
-    pub fn get_hostname(&self) -> &str {
-        &self.server
-    }
-
-    /// Returns the service's port.
-    pub fn get_port(&self) -> u16 {
-        self.port
-    }
-
-    /// Returns the service's addresses
-    pub fn get_addresses(&self) -> &HashSet<Ipv4Addr> {
-        &self.addresses
-    }
-
-    /// Returns the service's TTL used for SRV and Address records.
-    pub fn get_host_ttl(&self) -> u32 {
-        self.host_ttl
-    }
-
-    /// Returns the service's TTL used for PTR and TXT records.
-    pub fn get_other_ttl(&self) -> u32 {
-        self.other_ttl
-    }
-
-    /// Returns whether the service info is ready to be resolved.
-    fn is_ready(&self) -> bool {
-        let some_missing = self.ty_domain.is_empty()
-            || self.fullname.is_empty()
-            || self.server.is_empty()
-            || self.port == 0
-            || self.addresses.is_empty();
-        !some_missing
-    }
-
-    fn generate_txt(&self) -> Vec<u8> {
-        encode_txt(&self.properties)
-    }
-
-    fn set_properties_from_txt(&mut self, txt: &[u8]) {
-        self.properties = decode_txt(txt);
-    }
-}
-
 #[derive(PartialEq)]
 enum PacketState {
     Init = 0,
@@ -1752,11 +1532,11 @@ impl DnsOutgoing {
         let ptr_added = self.add_answer(
             msg,
             Box::new(DnsPointer::new(
-                &service.ty_domain,
+                service.get_type(),
                 TYPE_PTR,
                 CLASS_IN,
-                service.other_ttl,
-                service.fullname.clone(),
+                service.get_other_ttl(),
+                service.get_fullname().to_string(),
             )),
         );
 
@@ -1765,43 +1545,43 @@ impl DnsOutgoing {
             return;
         }
 
-        if let Some(sub) = &service.sub_domain {
+        if let Some(sub) = service.get_subtype() {
             debug!("Adding subdomain {}", sub);
             self.add_additional_answer(Box::new(DnsPointer::new(
                 sub,
                 TYPE_PTR,
                 CLASS_IN,
-                service.other_ttl,
-                service.fullname.clone(),
+                service.get_other_ttl(),
+                service.get_fullname().to_string(),
             )));
         }
 
         // Add recommended additional answers according to
         // https://tools.ietf.org/html/rfc6763#section-12.1.
         self.add_additional_answer(Box::new(DnsSrv::new(
-            &service.fullname,
+            service.get_fullname(),
             CLASS_IN | CLASS_UNIQUE,
-            service.host_ttl,
-            service.priority,
-            service.weight,
-            service.port,
-            service.server.clone(),
+            service.get_host_ttl(),
+            service.get_priority(),
+            service.get_weight(),
+            service.get_port(),
+            service.get_hostname().to_string(),
         )));
 
         self.add_additional_answer(Box::new(DnsTxt::new(
-            &service.fullname,
+            service.get_fullname(),
             TYPE_TXT,
             CLASS_IN | CLASS_UNIQUE,
-            service.host_ttl,
+            service.get_host_ttl(),
             service.generate_txt(),
         )));
 
-        for address in &service.addresses {
+        for address in service.get_addresses() {
             self.add_additional_answer(Box::new(DnsAddress::new(
-                &service.server,
+                service.get_hostname(),
                 TYPE_A,
                 CLASS_IN | CLASS_UNIQUE,
-                service.host_ttl,
+                service.get_host_ttl(),
                 *address,
             )));
         }
@@ -2688,47 +2468,6 @@ fn u32_from_be_slice(s: &[u8]) -> u32 {
     u32::from_be_bytes(u8_array)
 }
 
-// Convert from properties key/value pairs to DNS TXT record content
-fn encode_txt(map: &HashMap<String, String>) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for (k, v) in map {
-        let s = format!("{}={}", k, v);
-        bytes.push(s.len().try_into().unwrap());
-        bytes.extend_from_slice(s.as_bytes());
-    }
-    if bytes.is_empty() {
-        bytes.push(0);
-    }
-    bytes
-}
-
-// Convert from DNS TXT record content to key/value pairs
-fn decode_txt(txt: &[u8]) -> HashMap<String, String> {
-    let mut kv_map = HashMap::new();
-    let mut offset = 0;
-    while offset < txt.len() {
-        let length = txt[offset] as usize;
-        if length == 0 {
-            break; // reached the end
-        }
-        offset += 1; // move over the length byte
-        match String::from_utf8(txt[offset..offset + length].to_vec()) {
-            Ok(kv_string) => match kv_string.find('=') {
-                Some(idx) => {
-                    let k = &kv_string[..idx];
-                    let v = &kv_string[idx + 1..];
-                    kv_map.insert(k.to_string(), v.to_string());
-                }
-                None => error!("cannot find = sign inside {}", &kv_string),
-            },
-            Err(e) => error!("failed to convert to String from key/value pair: {}", e),
-        }
-        offset += length;
-    }
-
-    kv_map
-}
-
 fn call_listener(
     listeners_map: &HashMap<String, Sender<ServiceEvent>>,
     ty_domain: &str,
@@ -2744,28 +2483,7 @@ fn call_listener(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
-    use crate::{decode_txt, encode_txt, my_ipv4_addrs};
-
-    #[test]
-    fn test_txt_encode_decode() {
-        let mut map = HashMap::new();
-        map.insert("key1".to_string(), "value1".to_string());
-        map.insert("key2".to_string(), "value2".to_string());
-
-        // test encode
-        let encoded = encode_txt(&map);
-        assert_eq!(
-            encoded.len(),
-            "key1=".len() + "value1".len() + "key2=".len() + "value2".len() + 2
-        );
-        assert_eq!(encoded[0] as usize, "key1=".len() + "value1".len());
-
-        // test decode
-        let decoded = decode_txt(&encoded);
-        assert_eq!(map, decoded);
-    }
+    use super::my_ipv4_addrs;
 
     #[test]
     fn test_my_ipv4_addrs() {
