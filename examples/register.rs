@@ -20,7 +20,7 @@ fn main() {
     let instance_name = std::env::args()
         .nth(2)
         .expect("require a instance_name as the 2nd argument");
-    let service_host_ipv4 = "192.168.1.111";
+    let service_host_ipv4 = "192.168.1.111,192.168.1.112";
     let service_hostname = "192.168.1.111.local.";
     let port = 3456;
 
