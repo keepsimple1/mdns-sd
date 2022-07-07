@@ -40,7 +40,12 @@ impl ServiceInfo {
     /// `properties` are optional key/value pairs for the service.
     ///
     /// `host_ipv4` can be one or more IPv4 addresses, in a type that implements
-    /// [`AsIpv4Addrs`] trait.
+    /// [`AsIpv4Addrs`] trait. It supports:
+    ///
+    /// - Single IPv4: `"192.168.0.1"`
+    /// - Multiple IPv4 separated by comma: `"192.168.0.1,192.168.0.2"`
+    /// - A slice of IPv4: `&["192.168.0.1", "192.168.0.2"]`
+    /// - All the above formats with [Ipv4Addr] or `String` instead of `&str`.
     ///
     /// The host TTL and other TTL are set to default values.
     pub fn new<Ip: AsIpv4Addrs>(

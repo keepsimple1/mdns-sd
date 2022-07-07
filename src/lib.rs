@@ -1014,7 +1014,8 @@ impl Zeroconf {
         resolved
     }
 
-    fn handle_answer(&mut self, record: DnsRecordBox) {
+    /// Returns a list of instances that have resolved by the answer.
+    fn handle_answer(&mut self, record: DnsRecordBox) -> Vec<String> {
         let (record_ext, existing) = self.cache.add_or_update(record);
         let dns_entry = &record_ext.get_record().entry;
         let mut resolved = Vec::new();
@@ -1026,14 +1027,14 @@ impl Zeroconf {
 
             if !self.queriers.contains_key(&service_type) {
                 debug!("Not interested for any querier");
-                return;
+                return resolved;
             }
 
             // Insert into services_to_resolve if this is a new instance
             if !self.instances_to_resolve.contains_key(&instance) {
                 if existing {
                     debug!("already knew: {}", &instance);
-                    return;
+                    return resolved;
                 }
 
                 let my_name = instance
@@ -1064,8 +1065,53 @@ impl Zeroconf {
             resolved = Self::resolve_by_answer(&mut self.instances_to_resolve, record_ext);
         }
 
+        resolved
+    }
+
+    /// Deal with incoming response packets.  All answers
+    /// are held in the cache, and listeners are notified.
+    fn handle_response(&mut self, mut msg: DnsIncoming) {
+        debug!(
+            "handle_response: {} answers {} authorities {} additionals",
+            &msg.num_answers, &msg.num_authorities, &msg.num_additionals
+        );
+        let now = current_time_millis();
+        let mut resolved = Vec::new();
+        while !msg.answers.is_empty() {
+            let record = msg.answers.remove(0);
+            if record.get_record().is_expired(now) {
+                if self.cache.remove(&record) {
+                    // for PTR records, send event to listeners
+                    if let Some(dns_ptr) = record.any().downcast_ref::<DnsPointer>() {
+                        call_listener(
+                            &self.queriers,
+                            dns_ptr.get_name(),
+                            ServiceEvent::ServiceRemoved(
+                                dns_ptr.get_name().to_string(),
+                                dns_ptr.alias.clone(),
+                            ),
+                        );
+                    }
+                }
+            } else {
+                let mut newly_resolved = self.handle_answer(record);
+                resolved.append(&mut newly_resolved);
+            }
+        }
+        self.process_resolved(resolved);
+    }
+
+    /// Process resolved instances and send out notifications.
+    /// It is OK to have duplicated instances in `resolved`.
+    fn process_resolved(&mut self, resolved: Vec<String>) {
         for instance in resolved.iter() {
-            let info = self.instances_to_resolve.remove(instance).unwrap();
+            let info = match self.instances_to_resolve.remove(instance) {
+                Some(i) => i,
+                None => {
+                    debug!("Instance {} already resolved", instance);
+                    continue;
+                }
+            };
             fn s(listener: &Sender<ServiceEvent>, info: ServiceInfo) {
                 match listener.send(ServiceEvent::ServiceResolved(info)) {
                     Ok(()) => debug!("sent service info successfully"),
@@ -1085,37 +1131,6 @@ impl Zeroconf {
                 (None, Some(listener)) => s(listener, info),
                 (Some(listener), None) => s(listener, info),
                 _ => {}
-            }
-        }
-    }
-
-    /// Deal with incoming response packets.  All answers
-    /// are held in the cache, and listeners are notified.
-    fn handle_response(&mut self, mut msg: DnsIncoming) {
-        debug!(
-            "handle_response: {} answers {} authorities {} additionals",
-            &msg.num_answers, &msg.num_authorities, &msg.num_additionals
-        );
-        let now = current_time_millis();
-
-        while !msg.answers.is_empty() {
-            let record = msg.answers.remove(0);
-            if record.get_record().is_expired(now) {
-                if self.cache.remove(&record) {
-                    // for PTR records, send event to listeners
-                    if let Some(dns_ptr) = record.any().downcast_ref::<DnsPointer>() {
-                        call_listener(
-                            &self.queriers,
-                            dns_ptr.get_name(),
-                            ServiceEvent::ServiceRemoved(
-                                dns_ptr.get_name().to_string(),
-                                dns_ptr.alias.clone(),
-                            ),
-                        );
-                    }
-                }
-            } else {
-                self.handle_answer(record);
             }
         }
     }

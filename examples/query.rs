@@ -30,7 +30,11 @@ fn main() {
     while let Ok(event) = receiver.recv() {
         match event {
             ServiceEvent::ServiceResolved(info) => {
-                println!("Resolved a new service: {}", info.get_fullname());
+                println!(
+                    "Resolved a new service: {} IP: {:?}",
+                    info.get_fullname(),
+                    info.get_addresses()
+                );
             }
             other_event => {
                 println!("Received other event: {:?}", &other_event);
