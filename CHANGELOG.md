@@ -1,3 +1,8 @@
+# Version 0.5.4
+
+- Fix a bug in resolving multiple IPs for a host.
+- Code reorg: separate modules out of lib.rs.
+
 # Version 0.5.3
 
 - Support subtypes.
