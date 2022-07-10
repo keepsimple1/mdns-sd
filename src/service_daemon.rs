@@ -520,13 +520,14 @@ impl Zeroconf {
         debug!("created listening socket: {:?}", &listen_socket);
 
         let group_addr = Ipv4Addr::new(224, 0, 0, 251);
-        listen_socket
-            .join_multicast_v4(&group_addr, &Ipv4Addr::new(0, 0, 0, 0))
-            .map_err(|e| e_fmt!("join multicast group: {}", e))?;
 
         // We create a socket for every outgoing IPv4 interface.
         let mut respond_sockets = Vec::new();
         for ipv4_addr in my_ipv4_addrs() {
+            listen_socket
+                .join_multicast_v4(&group_addr, &ipv4_addr)
+                .map_err(|e| e_fmt!("join multicast group on addr {}: {}", &ipv4_addr, e))?;
+
             let respond_socket = new_socket(ipv4_addr, udp_port, false)?;
             respond_sockets.push(respond_socket);
         }
