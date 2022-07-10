@@ -526,7 +526,7 @@ impl Zeroconf {
         for ipv4_addr in my_ipv4_addrs() {
             listen_socket
                 .join_multicast_v4(&group_addr, &ipv4_addr)
-                .map_err(|e| e_fmt!("join multicast group: {}", e))?;
+                .map_err(|e| e_fmt!("join multicast group on addr {}: {}", &ipv4_addr, e))?;
 
             let respond_socket = new_socket(ipv4_addr, udp_port, false)?;
             respond_sockets.push(respond_socket);
