@@ -35,10 +35,11 @@ use crate::{
         FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_ANY, TYPE_PTR, TYPE_SRV, TYPE_TXT,
     },
     error::{Error, Result},
-    service_info::{split_sub_domain, ServiceInfo},
+    service_info::{split_sub_domain, valid_ipv4_on_intf, ServiceInfo},
     Receiver,
 };
 use flume::{bounded, Sender, TrySendError};
+use if_addrs::{IfAddr, Ifv4Addr};
 use log::{debug, error};
 use polling::Poller;
 use socket2::{SockAddr, Socket};
@@ -47,7 +48,7 @@ use std::{
     collections::HashMap,
     fmt,
     io::Read,
-    net::{IpAddr, Ipv4Addr, SocketAddrV4},
+    net::{Ipv4Addr, SocketAddrV4},
     str, thread,
     time::Duration,
     vec,
@@ -224,13 +225,17 @@ impl ServiceDaemon {
     /// 4. announce its registered services.
     /// 5. process retransmissions if any.
     fn run(mut zc: Zeroconf, receiver: Receiver<Command>) {
-        let poller_key = 17; // An arbitrary number to identify the events we are interested in.
-        if let Err(e) = zc
-            .poller
-            .add(&zc.listen_socket, polling::Event::readable(poller_key))
-        {
-            error!("failed to add socket to poller: {}", e);
-            return;
+        for idx in 0..zc.intf_socks.len() {
+            if let Err(e) = zc
+                .poller
+                .add(&zc.intf_socks[idx].sock, polling::Event::readable(idx))
+            {
+                error!(
+                    "failed to add socket of {:?} to poller: {}",
+                    zc.intf_socks[idx].intf, e
+                );
+                return;
+            }
         }
         let mut events = Vec::new();
         let timeout = Duration::from_millis(10);
@@ -239,22 +244,22 @@ impl ServiceDaemon {
             events.clear();
             match zc.poller.wait(&mut events, Some(timeout)) {
                 Ok(_) => {
-                    let count = events.iter().filter(|ev| ev.key == poller_key).count();
-                    if count > 0 {
+                    for ev in events.iter() {
                         // Read until no more packets available.
                         loop {
-                            let rc = zc.handle_read();
+                            let rc = zc.handle_read(ev.key);
                             if !rc {
                                 break;
                             }
                         }
-                    }
-                    if let Err(e) = zc
-                        .poller
-                        .modify(&zc.listen_socket, polling::Event::readable(poller_key))
-                    {
-                        error!("failed to poll listen_socket again: {}", e);
-                        break;
+
+                        if let Err(e) = zc.poller.modify(
+                            &zc.intf_socks[ev.key].sock,
+                            polling::Event::readable(ev.key),
+                        ) {
+                            error!("failed to poll listen_socket again: {}", e);
+                            break;
+                        }
                     }
                 }
                 Err(e) => error!("failed to select from sockets: {}", e),
@@ -346,7 +351,9 @@ impl ServiceDaemon {
                 debug!("announce service: {}", &fullname);
                 match zc.my_services.get(&fullname) {
                     Some(info) => {
-                        zc.broadcast_service(info);
+                        for intf_sock in zc.intf_socks.iter() {
+                            zc.broadcast_service_on_intf(info, intf_sock);
+                        }
                         zc.increase_counter(Counter::RegisterResend, 1);
                     }
                     None => debug!("announce: cannot find such service {}", &fullname),
@@ -361,15 +368,17 @@ impl ServiceDaemon {
                         UnregisterStatus::NotFound
                     }
                     Some((_k, info)) => {
-                        let packet = zc.unregister_service(&info);
-                        zc.increase_counter(Counter::Unregister, 1);
-                        // repeat for one time just in case some peers miss the message
-                        if !repeating && !packet.is_empty() {
-                            let next_time = current_time_millis() + 120;
-                            zc.retransmissions.push(ReRun {
-                                next_time,
-                                command: Command::UnregisterResend(packet),
-                            });
+                        for i in 0..zc.intf_socks.len() {
+                            let packet = zc.unregister_service(&info, &zc.intf_socks[i]);
+                            zc.increase_counter(Counter::Unregister, 1);
+                            // repeat for one time just in case some peers miss the message
+                            if !repeating && !packet.is_empty() {
+                                let next_time = current_time_millis() + 120;
+                                zc.retransmissions.push(ReRun {
+                                    next_time,
+                                    command: Command::UnregisterResend(packet, i),
+                                });
+                            }
                         }
                         UnregisterStatus::OK
                     }
@@ -379,9 +388,9 @@ impl ServiceDaemon {
                 }
             }
 
-            Command::UnregisterResend(packet) => {
+            Command::UnregisterResend(packet, idx) => {
                 debug!("Send a packet length of {}", packet.len());
-                zc.send_packet(&packet[..], &zc.broadcast_addr);
+                zc.send_packet(&packet[..], &zc.broadcast_addr, &zc.intf_socks[idx]);
                 zc.increase_counter(Counter::UnregisterResend, 1);
             }
 
@@ -441,39 +450,10 @@ fn new_socket(ipv4: Ipv4Addr, port: u16, non_block: bool) -> Result<Socket> {
 
     let inet_addr = SocketAddrV4::new(ipv4, port);
     fd.bind(&inet_addr.into())
-        .map_err(|e| e_fmt!("socket bind failed: {}", e))?;
+        .map_err(|e| e_fmt!("socket bind to {} failed: {}", &inet_addr, e))?;
 
     debug!("new socket bind to {}", &inet_addr);
     Ok(fd)
-}
-
-/// Returns the list of IPv4 addrs assigned to this host, excluding loopback or multicast addrs.
-/// If something goes wrong, returns an empty list and logs an error message.
-fn my_ipv4_addrs() -> Vec<Ipv4Addr> {
-    let mut result = Vec::new();
-
-    match if_addrs::get_if_addrs() {
-        Ok(addr_list) => {
-            for addr in addr_list {
-                if addr.is_loopback() {
-                    continue;
-                }
-                match addr.ip() {
-                    IpAddr::V4(v4_addr) => {
-                        if v4_addr.is_multicast() {
-                            continue;
-                        }
-                        result.push(v4_addr);
-                    }
-                    IpAddr::V6(_) => {}
-                }
-            }
-        }
-        Err(e) => error!("get_if_addrs: {}", e),
-    }
-    debug!("IPv4 addrs: {:?}", &result);
-
-    result
 }
 
 struct ReRun {
@@ -481,15 +461,16 @@ struct ReRun {
     command: Command,
 }
 
+#[derive(Debug)]
+struct IntfSock {
+    intf: Ifv4Addr,
+    sock: Socket,
+}
+
 /// A struct holding the state. It was inspired by `zeroconf` package in Python.
 struct Zeroconf {
-    /// One socket to receive all mDNS packets incoming, regardless interface.
-    /// This socket will not be able to read unicast packets.
-    listen_socket: Socket,
-
-    /// Sockets for outgoing packets. One socket for each non-loopback assigned IPv4.
-    /// NOTE: For now we only support multicast.
-    respond_sockets: Vec<Socket>,
+    // respond_sockets: HashMap<Ifv4Addr, Socket>,
+    intf_socks: Vec<IntfSock>,
 
     /// Local registered services
     my_services: HashMap<String, ServiceInfo>,
@@ -516,27 +497,32 @@ struct Zeroconf {
 impl Zeroconf {
     fn new(udp_port: u16) -> Result<Self> {
         let poller = Poller::new().map_err(|e| e_fmt!("create Poller: {}", e))?;
-        let listen_socket = new_socket(Ipv4Addr::new(0, 0, 0, 0), udp_port, true)?;
-        debug!("created listening socket: {:?}", &listen_socket);
-
         let group_addr = Ipv4Addr::new(224, 0, 0, 251);
 
-        // We create a socket for every outgoing IPv4 interface.
-        let mut respond_sockets = Vec::new();
-        for ipv4_addr in my_ipv4_addrs() {
-            listen_socket
-                .join_multicast_v4(&group_addr, &ipv4_addr)
-                .map_err(|e| e_fmt!("join multicast group on addr {}: {}", &ipv4_addr, e))?;
+        // Get IPv4 interfaces.
+        let my_ifv4addrs = my_ipv4_interfaces();
 
-            let respond_socket = new_socket(ipv4_addr, udp_port, false)?;
-            respond_sockets.push(respond_socket);
+        // Create a socket for every IPv4 interface.
+        let mut intf_socks = Vec::new();
+        for intf in my_ifv4addrs {
+            // Use the same socket for receiving and sending multicast packets.
+            // Such socket has to bind to INADDR_ANY.
+            let sock = new_socket(Ipv4Addr::new(0, 0, 0, 0), udp_port, true)?;
+
+            // Join mDNS group to receive packets.
+            sock.join_multicast_v4(&group_addr, &intf.ip)
+                .map_err(|e| e_fmt!("join multicast group on addr {}: {}", &intf.ip, e))?;
+
+            // Set IP_MULTICAST_IF to send packets.
+            sock.set_multicast_if_v4(&intf.ip)
+                .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", &intf.ip, e))?;
+            intf_socks.push(IntfSock { intf, sock });
         }
 
         let broadcast_addr = SocketAddrV4::new(group_addr, MDNS_PORT).into();
 
         Ok(Self {
-            listen_socket,
-            respond_sockets,
+            intf_socks,
             my_services: HashMap::new(),
             broadcast_addr,
             cache: DnsCache::new(),
@@ -562,7 +548,9 @@ impl Zeroconf {
             return;
         }
 
-        self.broadcast_service(&info);
+        for intf in self.intf_socks.iter() {
+            self.broadcast_service_on_intf(&info, intf);
+        }
 
         // RFC 6762 section 8.3.
         // ..The Multicast DNS responder MUST send at least two unsolicited
@@ -580,7 +568,7 @@ impl Zeroconf {
     }
 
     /// Send an unsolicited response for owned service
-    fn broadcast_service(&self, info: &ServiceInfo) {
+    fn broadcast_service_on_intf(&self, info: &ServiceInfo, intf_sock: &IntfSock) {
         debug!("broadcast service {}", info.get_fullname());
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         out.add_answer_at_time(
@@ -632,6 +620,9 @@ impl Zeroconf {
         );
 
         for addr in info.get_addresses() {
+            if !valid_ipv4_on_intf(addr, &intf_sock.intf) {
+                continue;
+            }
             out.add_answer_at_time(
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
@@ -644,10 +635,10 @@ impl Zeroconf {
             );
         }
 
-        self.send(&out, &self.broadcast_addr);
+        self.send(&out, &self.broadcast_addr, intf_sock);
     }
 
-    fn unregister_service(&self, info: &ServiceInfo) -> Vec<u8> {
+    fn unregister_service(&self, info: &ServiceInfo, intf_sock: &IntfSock) -> Vec<u8> {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         out.add_answer_at_time(
             Box::new(DnsPointer::new(
@@ -698,6 +689,9 @@ impl Zeroconf {
         );
 
         for addr in info.get_addresses() {
+            if !valid_ipv4_on_intf(addr, &intf_sock.intf) {
+                continue;
+            }
             out.add_answer_at_time(
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
@@ -710,7 +704,7 @@ impl Zeroconf {
             );
         }
 
-        self.send(&out, &self.broadcast_addr)
+        self.send(&out, &self.broadcast_addr, intf_sock)
     }
 
     /// Binds a channel `listener` to querying mDNS domain type `ty`.
@@ -721,7 +715,7 @@ impl Zeroconf {
     }
 
     /// Sends an outgoing packet, and returns the packet bytes.
-    fn send(&self, out: &DnsOutgoing, addr: &SockAddr) -> Vec<u8> {
+    fn send(&self, out: &DnsOutgoing, addr: &SockAddr, intf: &IntfSock) -> Vec<u8> {
         let qtype = if out.is_query() { "query" } else { "response" };
         debug!(
             "Sending {} to {:?}: {} questions {} answers {} authorities {} additional",
@@ -738,16 +732,14 @@ impl Zeroconf {
             return Vec::new();
         }
 
-        self.send_packet(&packet[..], addr);
+        self.send_packet(&packet[..], addr, intf);
         packet
     }
 
-    fn send_packet(&self, packet: &[u8], addr: &SockAddr) {
-        for s in self.respond_sockets.iter() {
-            match s.send_to(packet, addr) {
-                Ok(sz) => debug!("sent out {} bytes on socket {:?}", sz, s),
-                Err(e) => error!("send failed: {}", e),
-            }
+    fn send_packet(&self, packet: &[u8], addr: &SockAddr, intf_sock: &IntfSock) {
+        match intf_sock.sock.send_to(packet, addr) {
+            Ok(sz) => debug!("sent out {} bytes on interface {:?}", sz, &intf_sock.intf),
+            Err(e) => error!("send failed: {}", e),
         }
     }
 
@@ -755,14 +747,17 @@ impl Zeroconf {
         debug!("Sending multicast query for {}", name);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         out.add_question(name, qtype);
-        self.send(&out, &self.broadcast_addr);
+        for intf_sock in self.intf_socks.iter() {
+            self.send(&out, &self.broadcast_addr, intf_sock);
+        }
     }
 
     /// Returns false if failed to receive a packet,
     /// otherwise returns true.
-    fn handle_read(&mut self) -> bool {
+    fn handle_read(&mut self, idx: usize) -> bool {
+        let intf_sock = &mut self.intf_socks[idx];
         let mut buf = vec![0u8; MAX_MSG_ABSOLUTE];
-        let sz = match self.listen_socket.read(&mut buf) {
+        let sz = match intf_sock.sock.read(&mut buf) {
             Ok(sz) => sz,
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::WouldBlock {
@@ -777,7 +772,7 @@ impl Zeroconf {
         match DnsIncoming::new(buf) {
             Ok(msg) => {
                 if msg.is_query() {
-                    self.handle_query(msg);
+                    self.handle_query(msg, idx);
                 } else if msg.is_response() {
                     self.handle_response(msg);
                 } else {
@@ -1024,7 +1019,8 @@ impl Zeroconf {
         }
     }
 
-    fn handle_query(&mut self, msg: DnsIncoming) {
+    fn handle_query(&mut self, msg: DnsIncoming, intf_idx: usize) {
+        let intf_sock = &self.intf_socks[intf_idx];
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
 
         // Special meta-query "_services._dns-sd._udp.<Domain>".
@@ -1043,7 +1039,7 @@ impl Zeroconf {
                             .as_ref()
                             .map_or(false, |v| v == &question.entry.name)
                     {
-                        out.add_answer_with_additionals(&msg, service);
+                        out.add_answer_with_additionals(&msg, service, &intf_sock.intf);
                     } else if question.entry.name == META_QUERY {
                         let ptr_added = out.add_answer(
                             &msg,
@@ -1065,6 +1061,9 @@ impl Zeroconf {
                     for service in self.my_services.values() {
                         if service.get_hostname() == question.entry.name.to_lowercase() {
                             for address in service.get_addresses() {
+                                if !valid_ipv4_on_intf(address, &intf_sock.intf) {
+                                    continue;
+                                }
                                 out.add_answer(
                                     &msg,
                                     Box::new(DnsAddress::new(
@@ -1116,6 +1115,10 @@ impl Zeroconf {
 
                 if qtype == TYPE_SRV {
                     for address in service.get_addresses() {
+                        if !valid_ipv4_on_intf(address, &intf_sock.intf) {
+                            continue;
+                        }
+
                         out.add_additional_answer(Box::new(DnsAddress::new(
                             service.get_hostname(),
                             TYPE_A,
@@ -1130,7 +1133,7 @@ impl Zeroconf {
 
         if !out.answers.is_empty() {
             out.id = msg.id;
-            self.send(&out, &self.broadcast_addr);
+            self.send(&out, &self.broadcast_addr, intf_sock);
 
             self.increase_counter(Counter::Respond, 1);
         }
@@ -1179,7 +1182,7 @@ enum Command {
     RegisterResend(String), // (fullname)
 
     /// Resend unregister packet.
-    UnregisterResend(Vec<u8>), // (packet content)
+    UnregisterResend(Vec<u8>, usize), // (packet content)
 
     /// Stop browsing a service type
     StopBrowse(String), // (ty_domain)
@@ -1360,21 +1363,19 @@ fn call_listener(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::my_ipv4_addrs;
-
-    #[test]
-    fn test_my_ipv4_addrs() {
-        let addrs = my_ipv4_addrs();
-
-        // The test host should have at least one IPv4 addr.
-        assert!(!addrs.is_empty());
-
-        // Verify the address attributes.
-        for addr in addrs {
-            assert!(!addr.is_loopback());
-            assert!(!addr.is_multicast());
-        }
-    }
+fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
+    if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|i| {
+            if i.is_loopback() {
+                None
+            } else {
+                match i.addr {
+                    IfAddr::V4(ifv4) => Some(ifv4),
+                    _ => None,
+                }
+            }
+        })
+        .collect()
 }

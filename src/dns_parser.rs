@@ -4,7 +4,8 @@
 //! [DnsOutgoing] is the logic representation of an outgoing DNS packet.
 //! [DnsOutPacket] is the encoded packet for [DnsOutgoing].
 
-use crate::{Error, Result, ServiceInfo};
+use crate::{service_info::valid_ipv4_on_intf, Error, Result, ServiceInfo};
+use if_addrs::Ifv4Addr;
 use log::{debug, error};
 use std::{any::Any, cmp, collections::HashMap, fmt, net::Ipv4Addr, str, time::SystemTime};
 
@@ -640,7 +641,7 @@ impl DnsOutgoing {
     }
 
     /// Returns true if `answer` is added to the outgoing msg.
-    /// Returns false if `answer` was not added as it expired or suppressed by `msg`.
+    /// Returns false if `answer` was not added as it expired or suppressed by the incoming `msg`.
     pub(crate) fn add_answer(&mut self, msg: &DnsIncoming, answer: Box<dyn DnsRecordExt>) -> bool {
         debug!("Check for add_answer");
         if !answer.suppressed_by(msg) {
@@ -663,7 +664,12 @@ impl DnsOutgoing {
 
     /// Adds PTR answer and SRV, TXT, ADDR answers.
     /// See https://tools.ietf.org/html/rfc6763#section-12.1
-    pub(crate) fn add_answer_with_additionals(&mut self, msg: &DnsIncoming, service: &ServiceInfo) {
+    pub(crate) fn add_answer_with_additionals(
+        &mut self,
+        msg: &DnsIncoming,
+        service: &ServiceInfo,
+        intf: &Ifv4Addr,
+    ) {
         let ptr_added = self.add_answer(
             msg,
             Box::new(DnsPointer::new(
@@ -712,6 +718,9 @@ impl DnsOutgoing {
         )));
 
         for address in service.get_addresses() {
+            if !valid_ipv4_on_intf(address, intf) {
+                continue;
+            }
             self.add_additional_answer(Box::new(DnsAddress::new(
                 service.get_hostname(),
                 TYPE_A,

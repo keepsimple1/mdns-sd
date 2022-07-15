@@ -1,4 +1,5 @@
 use crate::{Error, Result};
+use if_addrs::Ifv4Addr;
 use log::error;
 use std::{
     collections::{HashMap, HashSet},
@@ -292,12 +293,20 @@ fn decode_txt(txt: &[u8]) -> HashMap<String, String> {
 }
 
 /// Returns a tuple of (service_type_domain, optional_sub_domain)
-pub fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
+pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
     if let Some((_, ty_domain)) = domain.rsplit_once("._sub.") {
         (ty_domain, Some(domain))
     } else {
         (domain, None)
     }
+}
+
+/// Returns true if `addr` is in the same network of `intf`.
+pub(crate) fn valid_ipv4_on_intf(addr: &Ipv4Addr, intf: &Ifv4Addr) -> bool {
+    let netmask = u32::from(intf.netmask);
+    let intf_net = u32::from(intf.ip) & netmask;
+    let addr_net = u32::from(*addr) & netmask;
+    addr_net == intf_net
 }
 
 #[cfg(test)]
