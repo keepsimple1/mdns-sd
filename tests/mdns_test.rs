@@ -21,6 +21,8 @@ fn integration_success() {
     let instance_name = now.as_micros().to_string(); // Create a unique name.
 
     let my_ifaddrs = my_ipv4_interfaces();
+    println!("My IPv4 addr(s): {:?}", &my_ifaddrs);
+
     let host_ipv4 = my_ifaddrs[0].ip.to_string();
     let host_name = "my_host.";
     let port = 5200;
