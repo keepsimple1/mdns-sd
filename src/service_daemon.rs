@@ -471,7 +471,7 @@ struct IntfSock {
 
 /// A struct holding the state. It was inspired by `zeroconf` package in Python.
 struct Zeroconf {
-    // respond_sockets: HashMap<Ifv4Addr, Socket>,
+    /// Local interfaces with sockets to recv/send on these interfaces.
     intf_socks: Vec<IntfSock>,
 
     /// Local registered services
