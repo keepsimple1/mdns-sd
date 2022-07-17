@@ -35,7 +35,7 @@ use crate::{
         FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_ANY, TYPE_PTR, TYPE_SRV, TYPE_TXT,
     },
     error::{Error, Result},
-    service_info::{split_sub_domain, valid_ipv4_on_intf, ServiceInfo},
+    service_info::{split_sub_domain, ServiceInfo},
     Receiver,
 };
 use flume::{bounded, Sender, TrySendError};
@@ -461,6 +461,8 @@ struct ReRun {
     command: Command,
 }
 
+/// Represents a local IP interface and a socket to recv/send
+/// multicast packets on the interface.
 #[derive(Debug)]
 struct IntfSock {
     intf: Ifv4Addr,
@@ -619,17 +621,19 @@ impl Zeroconf {
             0,
         );
 
-        for addr in info.get_addresses() {
-            if !valid_ipv4_on_intf(addr, &intf_sock.intf) {
-                continue;
-            }
+        let intf_addrs = info.get_addrs_on_intf(&intf_sock.intf);
+        if intf_addrs.is_empty() {
+            debug!("No valid addrs to add on intf {:?}", &intf_sock.intf);
+            return;
+        }
+        for addr in intf_addrs {
             out.add_answer_at_time(
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
                     TYPE_A,
                     CLASS_IN | CLASS_UNIQUE,
                     info.get_host_ttl(),
-                    *addr,
+                    addr,
                 )),
                 0,
             );
@@ -688,17 +692,14 @@ impl Zeroconf {
             0,
         );
 
-        for addr in info.get_addresses() {
-            if !valid_ipv4_on_intf(addr, &intf_sock.intf) {
-                continue;
-            }
+        for addr in info.get_addrs_on_intf(&intf_sock.intf) {
             out.add_answer_at_time(
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
                     TYPE_A,
                     CLASS_IN | CLASS_UNIQUE,
                     0,
-                    *addr,
+                    addr,
                 )),
                 0,
             );
@@ -1060,10 +1061,15 @@ impl Zeroconf {
                 if qtype == TYPE_A || qtype == TYPE_ANY {
                     for service in self.my_services.values() {
                         if service.get_hostname() == question.entry.name.to_lowercase() {
-                            for address in service.get_addresses() {
-                                if !valid_ipv4_on_intf(address, &intf_sock.intf) {
-                                    continue;
-                                }
+                            let intf_addrs = service.get_addrs_on_intf(&intf_sock.intf);
+                            if intf_addrs.is_empty() && qtype == TYPE_A {
+                                error!(
+                                    "Cannot find valid addrs for TYPE_A response on intf {:?}",
+                                    &intf_sock.intf
+                                );
+                                return;
+                            }
+                            for address in intf_addrs {
                                 out.add_answer(
                                     &msg,
                                     Box::new(DnsAddress::new(
@@ -1071,7 +1077,7 @@ impl Zeroconf {
                                         TYPE_A,
                                         CLASS_IN | CLASS_UNIQUE,
                                         service.get_host_ttl(),
-                                        *address,
+                                        address,
                                     )),
                                 );
                             }
@@ -1114,17 +1120,21 @@ impl Zeroconf {
                 }
 
                 if qtype == TYPE_SRV {
-                    for address in service.get_addresses() {
-                        if !valid_ipv4_on_intf(address, &intf_sock.intf) {
-                            continue;
-                        }
-
+                    let intf_addrs = service.get_addrs_on_intf(&intf_sock.intf);
+                    if intf_addrs.is_empty() {
+                        error!(
+                            "Cannot find valid addrs for TYPE_SRV response on intf {:?}",
+                            &intf_sock.intf
+                        );
+                        return;
+                    }
+                    for address in intf_addrs {
                         out.add_additional_answer(Box::new(DnsAddress::new(
                             service.get_hostname(),
                             TYPE_A,
                             CLASS_IN | CLASS_UNIQUE,
                             service.get_host_ttl(),
-                            *address,
+                            address,
                         )));
                     }
                 }

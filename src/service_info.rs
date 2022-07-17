@@ -156,6 +156,16 @@ impl ServiceInfo {
         self.weight
     }
 
+    /// Returns a list of addresses that are in the same LAN as
+    /// the interface `intf`.
+    pub(crate) fn get_addrs_on_intf(&self, intf: &Ifv4Addr) -> Vec<Ipv4Addr> {
+        self.addresses
+            .iter()
+            .filter(|a| valid_ipv4_on_intf(a, intf))
+            .copied()
+            .collect()
+    }
+
     /// Returns whether the service info is ready to be resolved.
     pub(crate) fn is_ready(&self) -> bool {
         let some_missing = self.ty_domain.is_empty()

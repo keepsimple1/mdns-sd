@@ -4,7 +4,7 @@
 //! [DnsOutgoing] is the logic representation of an outgoing DNS packet.
 //! [DnsOutPacket] is the encoded packet for [DnsOutgoing].
 
-use crate::{service_info::valid_ipv4_on_intf, Error, Result, ServiceInfo};
+use crate::{Error, Result, ServiceInfo};
 use if_addrs::Ifv4Addr;
 use log::{debug, error};
 use std::{any::Any, cmp, collections::HashMap, fmt, net::Ipv4Addr, str, time::SystemTime};
@@ -717,16 +717,13 @@ impl DnsOutgoing {
             service.generate_txt(),
         )));
 
-        for address in service.get_addresses() {
-            if !valid_ipv4_on_intf(address, intf) {
-                continue;
-            }
+        for address in service.get_addrs_on_intf(intf) {
             self.add_additional_answer(Box::new(DnsAddress::new(
                 service.get_hostname(),
                 TYPE_A,
                 CLASS_IN | CLASS_UNIQUE,
                 service.get_host_ttl(),
-                *address,
+                address,
             )));
         }
     }
