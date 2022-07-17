@@ -260,6 +260,67 @@ fn service_without_properties_with_alter_net() {
 }
 
 #[test]
+fn service_with_invalid_addr() {
+    // Create a daemon
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+    // Register a service without properties.
+    let ty_domain = "_serv-invalid-addr._tcp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string(); // Create a unique name.
+    let ifv4_addrs = &my_ipv4_interfaces();
+    let alter_ipv4 = ipv4_alter_net(ifv4_addrs);
+    let host_name = "my_host.";
+    let port = 5201;
+    let my_service = ServiceInfo::new(
+        ty_domain,
+        &instance_name,
+        host_name,
+        &alter_ipv4,
+        port,
+        None,
+    )
+    .expect("valid service info");
+    d.register(my_service)
+        .expect("Failed to register our service");
+
+    // Browse for a service
+    let browse_chan = d.browse(ty_domain).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+    loop {
+        match browse_chan.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    println!(
+                        "Resolved a service of {} addr(s): {:?}",
+                        &info.get_fullname(),
+                        info.get_addresses()
+                    );
+                    resolved = true;
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            },
+            Err(e) => {
+                println!("browse error: {}", e);
+                break;
+            }
+        }
+    }
+
+    d.shutdown().unwrap();
+
+    // We cannot resolve the service because the published address
+    // is not valid in the LAN.
+    assert_eq!(resolved, false);
+}
+
+#[test]
 fn subtype() {
     // Create a daemon
     let d = ServiceDaemon::new().expect("Failed to create daemon");
