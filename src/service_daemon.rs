@@ -370,7 +370,6 @@ impl ServiceDaemon {
                     Some((_k, info)) => {
                         for i in 0..zc.intf_socks.len() {
                             let packet = zc.unregister_service(&info, &zc.intf_socks[i]);
-                            zc.increase_counter(Counter::Unregister, 1);
                             // repeat for one time just in case some peers miss the message
                             if !repeating && !packet.is_empty() {
                                 let next_time = current_time_millis() + 120;
@@ -380,6 +379,7 @@ impl ServiceDaemon {
                                 });
                             }
                         }
+                        zc.increase_counter(Counter::Unregister, 1);
                         UnregisterStatus::OK
                     }
                 };
