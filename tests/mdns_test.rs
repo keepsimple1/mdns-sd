@@ -61,7 +61,11 @@ fn integration_success() {
                     println!("Found a new service: {}", &fullname);
                 }
                 ServiceEvent::ServiceResolved(info) => {
-                    println!("Resolved a new service: {}", info.get_fullname());
+                    println!(
+                        "Resolved a new service: {} addr(s): {:?}",
+                        info.get_fullname(),
+                        info.get_addresses()
+                    );
                     if info.get_fullname().contains(&instance_name) {
                         let mut num = resolve_count_clone.lock().unwrap();
                         *num += 1;
@@ -193,7 +197,7 @@ fn integration_success() {
 }
 
 #[test]
-fn service_without_properties_with_multi_ips() {
+fn service_without_properties_with_alter_net() {
     // Create a daemon
     let d = ServiceDaemon::new().expect("Failed to create daemon");
 
@@ -205,9 +209,8 @@ fn service_without_properties_with_multi_ips() {
     let instance_name = now.as_micros().to_string(); // Create a unique name.
     let ifv4_addrs = &my_ipv4_interfaces();
     let first_ipv4 = ifv4_addrs[0].ip;
-    let new_ipv4 = ipv4_next(&first_ipv4);
     let alter_ipv4 = ipv4_alter_net(ifv4_addrs);
-    let host_ipv4 = vec![first_ipv4, new_ipv4, alter_ipv4];
+    let host_ipv4 = vec![first_ipv4, alter_ipv4];
     let host_name = "my_host.";
     let port = 5201;
     let my_service = ServiceInfo::new(
@@ -237,7 +240,7 @@ fn service_without_properties_with_multi_ips() {
                     );
                     assert_eq!(fullname.as_str(), info.get_fullname());
                     let addrs = info.get_addresses();
-                    assert_eq!(addrs.len(), 2); // first_ipv4 and new_ipv4, but no alter_ipv4.
+                    assert_eq!(addrs.len(), 1); // first_ipv4 but no alter_ipv4.
                     break;
                 }
                 e => {
@@ -335,12 +338,4 @@ fn ipv4_alter_net(ifv4_addrs: &Vec<Ifv4Addr>) -> Ipv4Addr {
         }
     }
     Ipv4Addr::new(net_max + 1, 1, 1, 1)
-}
-
-fn ipv4_next(ipv4: &Ipv4Addr) -> Ipv4Addr {
-    let octets = ipv4.octets();
-    let last_octet = octets[3];
-    let new_octet = if last_octet < 255 { last_octet + 1 } else { 1 };
-
-    Ipv4Addr::new(octets[0], octets[1], octets[2], new_octet)
 }
