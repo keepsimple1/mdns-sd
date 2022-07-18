@@ -664,12 +664,21 @@ impl DnsOutgoing {
 
     /// Adds PTR answer and SRV, TXT, ADDR answers.
     /// See https://tools.ietf.org/html/rfc6763#section-12.1
+    ///
+    /// If there are no addresses on the LAN of `intf`, we will not
+    /// add any answers for `service`.
     pub(crate) fn add_answer_with_additionals(
         &mut self,
         msg: &DnsIncoming,
         service: &ServiceInfo,
         intf: &Ifv4Addr,
     ) {
+        let intf_addrs = service.get_addrs_on_intf(intf);
+        if intf_addrs.is_empty() {
+            debug!("No addrs on LAN of intf {:?}", intf);
+            return;
+        }
+
         let ptr_added = self.add_answer(
             msg,
             Box::new(DnsPointer::new(
@@ -717,7 +726,7 @@ impl DnsOutgoing {
             service.generate_txt(),
         )));
 
-        for address in service.get_addrs_on_intf(intf) {
+        for address in intf_addrs {
             self.add_additional_answer(Box::new(DnsAddress::new(
                 service.get_hostname(),
                 TYPE_A,
