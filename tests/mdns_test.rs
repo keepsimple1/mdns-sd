@@ -1,9 +1,10 @@
+use if_addrs::{IfAddr, Ifv4Addr};
+use mdns_sd::{Error, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus};
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
-
-use mdns_sd::{Error, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus};
 
 /// This test covers:
 /// register(announce), browse(query), response, unregister, shutdown.
@@ -18,8 +19,12 @@ fn integration_success() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
-    let host_ipv4 = "192.168.1.12";
-    let host_name = "192.168.1.12.";
+
+    let my_ifaddrs = my_ipv4_interfaces();
+    println!("My IPv4 addr(s): {:?}", &my_ifaddrs);
+
+    let host_ipv4 = my_ifaddrs[0].ip.to_string();
+    let host_name = "my_host.";
     let port = 5200;
     let mut properties = HashMap::new();
     properties.insert("property_1".to_string(), "test".to_string());
@@ -30,7 +35,7 @@ fn integration_success() {
         ty_domain,
         &instance_name,
         host_name,
-        host_ipv4,
+        &host_ipv4,
         port,
         Some(properties),
     )
@@ -58,7 +63,11 @@ fn integration_success() {
                     println!("Found a new service: {}", &fullname);
                 }
                 ServiceEvent::ServiceResolved(info) => {
-                    println!("Resolved a new service: {}", info.get_fullname());
+                    println!(
+                        "Resolved a new service: {} addr(s): {:?}",
+                        info.get_fullname(),
+                        info.get_addresses()
+                    );
                     if info.get_fullname().contains(&instance_name) {
                         let mut num = resolve_count_clone.lock().unwrap();
                         *num += 1;
@@ -139,7 +148,7 @@ fn integration_success() {
     assert_eq!(metrics["register"], 1);
     assert_eq!(metrics["unregister"], 1);
     assert_eq!(metrics["register-resend"], 1);
-    assert_eq!(metrics["unregister-resend"], 1);
+    assert_eq!(metrics["unregister-resend"], my_ifaddrs.len() as i64);
     assert!(metrics["browse"] >= 2); // browse has been retransmitted.
     assert!(metrics["respond"] >= 2); // respond has been sent for every browse.
 
@@ -190,7 +199,7 @@ fn integration_success() {
 }
 
 #[test]
-fn service_without_properties() {
+fn service_without_properties_with_alter_net() {
     // Create a daemon
     let d = ServiceDaemon::new().expect("Failed to create daemon");
 
@@ -200,11 +209,21 @@ fn service_without_properties() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
-    let host_ipv4 = "192.168.1.13";
-    let host_name = "192.168.1.13.";
+    let ifv4_addrs = &my_ipv4_interfaces();
+    let first_ipv4 = ifv4_addrs[0].ip;
+    let alter_ipv4 = ipv4_alter_net(ifv4_addrs);
+    let host_ipv4 = vec![first_ipv4, alter_ipv4];
+    let host_name = "my_host.";
     let port = 5201;
-    let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, host_ipv4, port, None)
-        .expect("valid service info");
+    let my_service = ServiceInfo::new(
+        ty_domain,
+        &instance_name,
+        host_name,
+        &host_ipv4[..],
+        port,
+        None,
+    )
+    .expect("valid service info");
     let fullname = my_service.get_fullname().to_string();
     d.register(my_service)
         .expect("Failed to register our service");
@@ -216,8 +235,14 @@ fn service_without_properties() {
         match browse_chan.recv_timeout(timeout) {
             Ok(event) => match event {
                 ServiceEvent::ServiceResolved(info) => {
-                    println!("Resolved a service of {}", &info.get_fullname());
+                    println!(
+                        "Resolved a service of {} addr(s): {:?}",
+                        &info.get_fullname(),
+                        info.get_addresses()
+                    );
                     assert_eq!(fullname.as_str(), info.get_fullname());
+                    let addrs = info.get_addresses();
+                    assert_eq!(addrs.len(), 1); // first_ipv4 but no alter_ipv4.
                     break;
                 }
                 e => {
@@ -235,6 +260,67 @@ fn service_without_properties() {
 }
 
 #[test]
+fn service_with_invalid_addr() {
+    // Create a daemon
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+    // Register a service without properties.
+    let ty_domain = "_serv-invalid-addr._tcp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string(); // Create a unique name.
+    let ifv4_addrs = &my_ipv4_interfaces();
+    let alter_ipv4 = ipv4_alter_net(ifv4_addrs);
+    let host_name = "my_host.";
+    let port = 5201;
+    let my_service = ServiceInfo::new(
+        ty_domain,
+        &instance_name,
+        host_name,
+        &alter_ipv4,
+        port,
+        None,
+    )
+    .expect("valid service info");
+    d.register(my_service)
+        .expect("Failed to register our service");
+
+    // Browse for a service
+    let browse_chan = d.browse(ty_domain).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+    loop {
+        match browse_chan.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    println!(
+                        "Resolved a service of {} addr(s): {:?}",
+                        &info.get_fullname(),
+                        info.get_addresses()
+                    );
+                    resolved = true;
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            },
+            Err(e) => {
+                println!("browse error: {}", e);
+                break;
+            }
+        }
+    }
+
+    d.shutdown().unwrap();
+
+    // We cannot resolve the service because the published address
+    // is not valid in the LAN.
+    assert_eq!(resolved, false);
+}
+
+#[test]
 fn subtype() {
     // Create a daemon
     let d = ServiceDaemon::new().expect("Failed to create daemon");
@@ -246,14 +332,14 @@ fn subtype() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
-    let host_ipv4 = "192.168.1.13";
-    let host_name = "192.168.1.13.";
+    let host_ipv4 = my_ipv4_interfaces()[0].ip.to_string();
+    let host_name = "my_host.";
     let port = 5201;
     let my_service = ServiceInfo::new(
         subtype_domain,
         &instance_name,
         host_name,
-        host_ipv4,
+        &host_ipv4,
         port,
         None,
     )
@@ -287,4 +373,32 @@ fn subtype() {
     }
 
     d.shutdown().unwrap();
+}
+
+fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
+    if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|i| {
+            if i.is_loopback() {
+                None
+            } else {
+                match i.addr {
+                    IfAddr::V4(ifv4) => Some(ifv4),
+                    _ => None,
+                }
+            }
+        })
+        .collect()
+}
+
+fn ipv4_alter_net(ifv4_addrs: &Vec<Ifv4Addr>) -> Ipv4Addr {
+    let mut net_max = 0;
+    for ifv4_addr in ifv4_addrs.iter() {
+        let net = ifv4_addr.ip.octets()[0];
+        if net > net_max {
+            net_max = net;
+        }
+    }
+    Ipv4Addr::new(net_max + 1, 1, 1, 1)
 }

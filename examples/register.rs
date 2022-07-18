@@ -9,7 +9,9 @@
 //! cargo run --example register _my-hello._udp.local. test1
 //!
 
+use if_addrs::{IfAddr, Ifv4Addr};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
+use std::net::Ipv4Addr;
 
 fn main() {
     // Create a new mDNS daemon.
@@ -20,8 +22,8 @@ fn main() {
     let instance_name = std::env::args()
         .nth(2)
         .expect("require a instance_name as the 2nd argument");
-    let service_host_ipv4 = "192.168.1.111,192.168.1.112";
-    let service_hostname = "192.168.1.111.local.";
+    let my_addrs: Vec<Ipv4Addr> = my_ipv4_interfaces().iter().map(|i| i.ip).collect();
+    let service_hostname = "mdns-example.local.";
     let port = 3456;
 
     // Register a service.
@@ -29,7 +31,7 @@ fn main() {
         &service_type,
         &instance_name,
         service_hostname,
-        service_host_ipv4,
+        &my_addrs[..],
         port,
         None,
     )
@@ -44,4 +46,21 @@ fn main() {
     loop {
         std::thread::sleep(std::time::Duration::from_millis(100))
     }
+}
+
+fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
+    if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|i| {
+            if i.is_loopback() {
+                None
+            } else {
+                match i.addr {
+                    IfAddr::V4(ifv4) => Some(ifv4),
+                    _ => None,
+                }
+            }
+        })
+        .collect()
 }
