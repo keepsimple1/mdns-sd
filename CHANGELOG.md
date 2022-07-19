@@ -1,3 +1,7 @@
+# Version 0.5.5
+
+- track IPv4 interfaces with sockets to support multiple LANs (#48)
+
 # Version 0.5.4
 
 - Fix a bug in resolving multiple IPs for a host.
