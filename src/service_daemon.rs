@@ -512,12 +512,16 @@ impl Zeroconf {
             let sock = new_socket(Ipv4Addr::new(0, 0, 0, 0), udp_port, true)?;
 
             // Join mDNS group to receive packets.
-            sock.join_multicast_v4(&group_addr, &intf.ip)
-                .map_err(|e| e_fmt!("join multicast group on addr {}: {}", &intf.ip, e))?;
+            if let Err(e) = sock.join_multicast_v4(&group_addr, &intf.ip) {
+                error!("join multicast group on addr {}: {}", &intf.ip, e);
+                continue;
+            }
 
             // Set IP_MULTICAST_IF to send packets.
-            sock.set_multicast_if_v4(&intf.ip)
-                .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", &intf.ip, e))?;
+            if let Err(e) = sock.set_multicast_if_v4(&intf.ip) {
+                error!("set multicast_if on addr {}: {}", &intf.ip, e);
+                continue;
+            }
             intf_socks.push(IntfSock { intf, sock });
         }
 
