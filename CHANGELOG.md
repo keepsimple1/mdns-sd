@@ -1,3 +1,7 @@
+# Verison 0.5.6
+
+- handle join_multicast_v4 error gracefully (#53)
+
 # Version 0.5.5
 
 - track IPv4 interfaces with sockets to support multiple LANs (#48)
