@@ -835,10 +835,10 @@ impl Zeroconf {
         ty_domain: &str,
         fullname: &str,
     ) -> Result<ServiceInfo> {
-        let my_name = fullname
-            .trim_end_matches(split_sub_domain(ty_domain).0)
-            .trim_end_matches('.')
-            .to_string();
+        let my_name = {
+            let name = fullname.trim_end_matches(split_sub_domain(ty_domain).0);
+            name.strip_suffix('.').unwrap_or(name).to_string()
+        };
 
         let mut info = ServiceInfo::new(ty_domain, &my_name, "", (), 0, None)?;
 
@@ -926,10 +926,10 @@ impl Zeroconf {
                     return resolved;
                 }
 
-                let my_name = instance
-                    .trim_end_matches(split_sub_domain(&service_type).0)
-                    .trim_end_matches('.')
-                    .to_string();
+                let my_name = {
+                    let name = instance.trim_end_matches(split_sub_domain(&service_type).0);
+                    name.strip_suffix('.').unwrap_or(name).to_string()
+                };
 
                 let service_info = ServiceInfo::new(&service_type, &my_name, "", (), 0, None);
 
