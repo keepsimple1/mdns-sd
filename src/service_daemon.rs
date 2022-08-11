@@ -238,20 +238,16 @@ impl ServiceDaemon {
             }
         }
         let mut events = Vec::new();
-        let timeout = Duration::from_millis(10);
+        let timeout = Duration::from_millis(20); // moderate frequency for polling.
 
         loop {
+            // process incoming packets.
             events.clear();
             match zc.poller.wait(&mut events, Some(timeout)) {
                 Ok(_) => {
                     for ev in events.iter() {
                         // Read until no more packets available.
-                        loop {
-                            let rc = zc.handle_read(ev.key);
-                            if !rc {
-                                break;
-                            }
-                        }
+                        while zc.handle_read(ev.key) {}
 
                         if let Err(e) = zc.poller.modify(
                             &zc.intf_socks[ev.key].sock,
@@ -264,6 +260,10 @@ impl ServiceDaemon {
                 }
                 Err(e) => error!("failed to select from sockets: {}", e),
             }
+
+            // Send out additional queries for unresolved instances, where
+            // the early responses did not have SRV records.
+            zc.query_unresolved();
 
             // process commands from the command channel
             match receiver.try_recv() {
@@ -390,7 +390,7 @@ impl ServiceDaemon {
 
             Command::UnregisterResend(packet, idx) => {
                 debug!("Send a packet length of {}", packet.len());
-                zc.send_packet(&packet[..], &zc.broadcast_addr, &zc.intf_socks[idx]);
+                send_packet(&packet[..], &zc.broadcast_addr, &zc.intf_socks[idx]);
                 zc.increase_counter(Counter::UnregisterResend, 1);
             }
 
@@ -493,6 +493,7 @@ struct Zeroconf {
 
     counters: Metrics,
 
+    /// Waits for incoming packets.
     poller: Poller,
 }
 
@@ -737,15 +738,8 @@ impl Zeroconf {
             return Vec::new();
         }
 
-        self.send_packet(&packet[..], addr, intf);
+        send_packet(&packet[..], addr, intf);
         packet
-    }
-
-    fn send_packet(&self, packet: &[u8], addr: &SockAddr, intf_sock: &IntfSock) {
-        match intf_sock.sock.send_to(packet, addr) {
-            Ok(sz) => debug!("sent out {} bytes on interface {:?}", sz, &intf_sock.intf),
-            Err(e) => error!("send failed: {}", e),
-        }
     }
 
     fn send_query(&self, name: &str, qtype: u16) {
@@ -788,6 +782,33 @@ impl Zeroconf {
         }
 
         true
+    }
+
+    /// Sends query TYPE_ANY for instances that are unresolved for a while.
+    fn query_unresolved(&mut self) {
+        let now = current_time_millis();
+        let wait_in_millis = 800;
+        let unresolved: Vec<String> = self
+            .instances_to_resolve
+            .iter()
+            .filter(|(name, info)| {
+                valid_instance_name(name) && now > (info.get_last_update() + wait_in_millis)
+            })
+            .map(|(name, _)| name.to_string())
+            .collect();
+
+        for instance_name in unresolved.iter() {
+            debug!(
+                "{}: send query for unresolved instance {}",
+                &now, instance_name
+            );
+            self.send_query(instance_name, TYPE_ANY);
+
+            // update the info timestamp.
+            if let Some(info) = self.instances_to_resolve.get_mut(instance_name) {
+                info.set_last_update(now);
+            }
+        }
     }
 
     /// Checks if `ty_domain` has records in the cache. If yes, sends the
@@ -1392,4 +1413,30 @@ fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
             }
         })
         .collect()
+}
+
+fn send_packet(packet: &[u8], addr: &SockAddr, intf_sock: &IntfSock) {
+    match intf_sock.sock.send_to(packet, addr) {
+        Ok(sz) => debug!("sent out {} bytes on interface {:?}", sz, &intf_sock.intf),
+        Err(e) => error!("send failed: {}", e),
+    }
+}
+
+/// Returns true if `name` is a valid instance name of format:
+/// <instance>.<service_type>.<_udp|_tcp>.local.
+/// Note: <instance> could contain '.' as well.
+fn valid_instance_name(name: &str) -> bool {
+    name.split('.').count() >= 5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_instance_name;
+
+    #[test]
+    fn test_instance_name() {
+        assert_eq!(valid_instance_name("my-laser._printer._tcp.local."), true);
+        assert_eq!(valid_instance_name("my-laser.._printer._tcp.local."), true);
+        assert_eq!(valid_instance_name("_printer._tcp.local."), false);
+    }
 }

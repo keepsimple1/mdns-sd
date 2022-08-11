@@ -1034,6 +1034,7 @@ impl DnsIncoming {
     }
 }
 
+/// Returns UNIX time in millis
 pub(crate) fn current_time_millis() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)

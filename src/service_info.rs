@@ -1,4 +1,4 @@
-use crate::{Error, Result};
+use crate::{dns_parser::current_time_millis, Error, Result};
 use if_addrs::Ifv4Addr;
 use log::error;
 use std::{
@@ -29,6 +29,7 @@ pub struct ServiceInfo {
     priority: u16,
     weight: u16,
     properties: HashMap<String, String>,
+    last_update: u64, // UNIX time in millis
 }
 
 impl ServiceInfo {
@@ -65,6 +66,7 @@ impl ServiceInfo {
         let server = host_name.to_string();
         let addresses = host_ipv4.as_ipv4_addrs()?;
         let properties = properties.unwrap_or_default();
+        let last_update = current_time_millis();
 
         let this = Self {
             ty_domain,
@@ -78,6 +80,7 @@ impl ServiceInfo {
             priority: 0,
             weight: 0,
             properties,
+            last_update,
         };
 
         Ok(this)
@@ -194,6 +197,14 @@ impl ServiceInfo {
 
     pub(crate) fn set_properties_from_txt(&mut self, txt: &[u8]) {
         self.properties = decode_txt(txt);
+    }
+
+    pub(crate) fn get_last_update(&self) -> u64 {
+        self.last_update
+    }
+
+    pub(crate) fn set_last_update(&mut self, update: u64) {
+        self.last_update = update;
     }
 }
 
