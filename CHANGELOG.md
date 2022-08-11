@@ -1,3 +1,8 @@
+# Version 0.5.7
+
+- Allow service names with trailing '.' (#56)
+- query unresolved instances (#58)
+
 # Verison 0.5.6
 
 - handle join_multicast_v4 error gracefully (#53)
