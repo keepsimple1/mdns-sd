@@ -14,7 +14,7 @@ fn integration_success() {
     let d = ServiceDaemon::new().expect("Failed to create daemon");
 
     // Register a service
-    let ty_domain = "_mdns-sd-my-test._udp.local.";
+    let ty_domain = "_mdns-sd-it._udp.local.";
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
@@ -116,6 +116,7 @@ fn integration_success() {
             Err(_e) => assert!(false), // Should not happen.
         }
     }
+    println!("Service browse ({}) returns Error::Again", &ty_domain);
 
     // Wait a bit to let the daemon process commands in the channel.
     sleep(Duration::from_millis(1200));
@@ -265,7 +266,7 @@ fn service_with_invalid_addr() {
     let d = ServiceDaemon::new().expect("Failed to create daemon");
 
     // Register a service without properties.
-    let ty_domain = "_serv-invalid-addr._tcp.local.";
+    let ty_domain = "_invalid-addr._tcp.local.";
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
@@ -373,6 +374,34 @@ fn subtype() {
     }
 
     d.shutdown().unwrap();
+}
+
+/// Verify service name has to be valid.
+#[test]
+fn service_name_check() {
+    // Create a daemon for the server.
+    let server_daemon = ServiceDaemon::new().expect("Failed to create server daemon");
+    // Register a service with a name len > 15.
+    let service_name_too_long = "_service-name-too-long._udp.local.";
+    let host_ipv4 = "127.0.0.1";
+    let host_name = "my_host.";
+    let port = 5200;
+    let my_service = ServiceInfo::new(
+        service_name_too_long,
+        "my_instance",
+        host_name,
+        &host_ipv4,
+        port,
+        None,
+    )
+    .expect("valid service info");
+    let result = server_daemon.register(my_service);
+    assert!(result.is_err());
+    if let Err(e) = result {
+        println!("register error: {}", &e);
+    }
+
+    server_daemon.shutdown().unwrap();
 }
 
 fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {

@@ -64,7 +64,9 @@ pub(crate) struct DnsQuestion {
     pub(crate) entry: DnsEntry,
 }
 
-/// A DNS record - like a DNS entry, but has a TTL
+/// A DNS Resource Record - like a DNS entry, but has a TTL.
+/// RFC: https://www.rfc-editor.org/rfc/rfc1035#section-3.2.1
+///      https://www.rfc-editor.org/rfc/rfc1035#section-4.1.3
 #[derive(Debug)]
 pub(crate) struct DnsRecord {
     pub(crate) entry: DnsEntry,
@@ -94,7 +96,7 @@ impl DnsRecord {
     }
 
     /// Updates the refresh time to be the same as the expire time so that
-    /// there is no more refresh for this record.
+    /// this record will not refresh again and will just expire.
     pub(crate) fn refresh_no_more(&mut self) {
         self.refresh = get_expiration_time(self.created, self.ttl, 100);
     }

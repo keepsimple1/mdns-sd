@@ -163,6 +163,7 @@ impl ServiceDaemon {
 
     /// Registers a service provided by this host.
     pub fn register(&self, service_info: ServiceInfo) -> Result<()> {
+        check_service_name(service_info.get_fullname())?;
         self.sender
             .try_send(Command::Register(service_info))
             .map_err(|e| match e {
@@ -320,7 +321,10 @@ impl ServiceDaemon {
         match command {
             Command::Browse(ty, next_delay, listener) => {
                 if let Err(e) = listener.send(ServiceEvent::SearchStarted(ty.clone())) {
-                    error!("Failed to send SearchStarted: {}", e);
+                    error!(
+                        "Failed to send SearchStarted({})(repeating:{}): {}",
+                        &ty, repeating, e
+                    );
                     return;
                 }
                 if !repeating {
@@ -550,11 +554,6 @@ impl Zeroconf {
     ///
     /// Zeroconf will then respond to requests for information about this service.
     fn register_service(&mut self, info: ServiceInfo) {
-        if let Err(e) = check_service_name(info.get_fullname()) {
-            error!("check service name failed: {}", e);
-            return;
-        }
-
         for intf in self.intf_socks.iter() {
             self.broadcast_service_on_intf(&info, intf);
         }
@@ -1364,7 +1363,7 @@ fn check_service_name(fullname: &str) -> Result<()> {
     let name = &name[1..];
 
     if name.len() > 15 {
-        return Err(e_fmt!("Service name must be <= 15 bytes"));
+        return Err(e_fmt!("Service name (\"{}\") must be <= 15 bytes", name));
     }
 
     if name.contains("--") {

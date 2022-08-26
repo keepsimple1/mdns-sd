@@ -27,17 +27,23 @@ fn main() {
     service_type.push_str(".local.");
     let receiver = mdns.browse(&service_type).expect("Failed to browse");
 
+    let now = std::time::Instant::now();
     while let Ok(event) = receiver.recv() {
         match event {
             ServiceEvent::ServiceResolved(info) => {
                 println!(
-                    "Resolved a new service: {} IP: {:?}",
+                    "At {:?}: Resolved a new service: {} IP: {:?}",
+                    now.elapsed(),
                     info.get_fullname(),
                     info.get_addresses()
                 );
             }
             other_event => {
-                println!("Received other event: {:?}", &other_event);
+                println!(
+                    "At {:?} : Received other event: {:?}",
+                    now.elapsed(),
+                    &other_event
+                );
             }
         }
     }
