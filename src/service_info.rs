@@ -1,6 +1,7 @@
 use crate::{dns_parser::current_time_millis, Error, Result};
 use if_addrs::Ifv4Addr;
-use log::error;
+#[cfg(feature = "logging")]
+use crate::log::error;
 use std::{
     collections::{HashMap, HashSet},
     convert::TryInto,

@@ -40,7 +40,8 @@ use crate::{
 };
 use flume::{bounded, Sender, TrySendError};
 use if_addrs::{IfAddr, Ifv4Addr};
-use log::{debug, error};
+#[cfg(feature = "logging")]
+use crate::log::{debug, error};
 use polling::Poller;
 use socket2::{SockAddr, Socket};
 use std::{
