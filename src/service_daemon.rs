@@ -28,6 +28,8 @@
 // In mDNS and DNS, the basic data structure is "Resource Record" (RR), where
 // in Service Discovery, the basic data structure is "Service Info". One Service Info
 // corresponds to a set of DNS Resource Records.
+#[cfg(feature = "logging")]
+use crate::log::{debug, error};
 use crate::{
     dns_parser::{
         current_time_millis, DnsAddress, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
@@ -40,8 +42,6 @@ use crate::{
 };
 use flume::{bounded, Sender, TrySendError};
 use if_addrs::{IfAddr, Ifv4Addr};
-#[cfg(feature = "logging")]
-use crate::log::{debug, error};
 use polling::Poller;
 use socket2::{SockAddr, Socket};
 use std::{

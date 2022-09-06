@@ -12,8 +12,8 @@ description = "mDNS Service Discovery library with no async runtime dependency"
 
 [features]
 async = ["flume/async"]
-default = ["async", "logging"]
 logging = ["log"]
+default = ["async", "logging"]
 
 [dependencies]
 flume = { version = "0.10", default-features = false } # channel between threads
