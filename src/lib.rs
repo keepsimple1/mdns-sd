@@ -103,6 +103,7 @@
 //! - Only tested on Linux and MacOS, not on Windows or other OSes.
 
 #![forbid(unsafe_code)]
+#![allow(clippy::single_component_path_imports)]
 
 // log for logging (optional).
 #[cfg(feature = "logging")]
