@@ -4,9 +4,10 @@
 //! [DnsOutgoing] is the logic representation of an outgoing DNS packet.
 //! [DnsOutPacket] is the encoded packet for [DnsOutgoing].
 
+#[cfg(feature = "logging")]
+use crate::log::{debug, error};
 use crate::{Error, Result, ServiceInfo};
 use if_addrs::Ifv4Addr;
-use log::{debug, error};
 use std::{any::Any, cmp, collections::HashMap, fmt, net::Ipv4Addr, str, time::SystemTime};
 
 pub(crate) const TYPE_A: u16 = 1; // IPv4 address
