@@ -771,6 +771,11 @@ impl Zeroconf {
 
         debug!("received {} bytes", sz);
 
+        if sz == 0 {
+            error!("socket {:?} was likely shutdown", intf_sock);
+            return false;
+        }
+
         match DnsIncoming::new(buf) {
             Ok(msg) => {
                 if msg.is_query() {
