@@ -1,3 +1,10 @@
+# Version 0.5.8
+
+- call check_service_name before sending the cmd to the daemon. (#60)
+- Changed dependency on 'log' crate to be optional (#64)
+- configure mDNS daemon thread a name (#66)
+- log an error if socket read returns 0 and reset the socket (#67)
+
 # Version 0.5.7
 
 - Allow service names with trailing '.' (#56)
