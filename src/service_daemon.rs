@@ -124,7 +124,10 @@ impl ServiceDaemon {
         let (sender, receiver) = bounded(100);
 
         // Spawn the daemon thread
-        thread::spawn(move || Self::run(zc, receiver));
+        thread::Builder::new()
+            .name("mDNS_daemon".to_string())
+            .spawn(move || Self::run(zc, receiver))
+            .map_err(|e| e_fmt!("thread builder failed to spawn: {}", e))?;
 
         Ok(Self { sender })
     }
