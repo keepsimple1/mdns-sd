@@ -63,6 +63,7 @@ macro_rules! e_fmt {
 }
 
 const MDNS_PORT: u16 = 5353;
+const GROUP_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 
 /// Response status code for the service `unregister` call.
 #[derive(Debug)]
@@ -119,8 +120,7 @@ impl ServiceDaemon {
     /// The daemon (re)uses the default mDNS port 5353. To keep it simple, we don't
     /// ask callers to set the port.
     pub fn new() -> Result<Self> {
-        let udp_port = MDNS_PORT;
-        let zc = Zeroconf::new(udp_port)?;
+        let zc = Zeroconf::new()?;
         let (sender, receiver) = bounded(100);
 
         // Spawn the daemon thread
@@ -439,6 +439,23 @@ impl ServiceDaemon {
     }
 }
 
+/// Creates a new UDP socket that uses `intf_ip` to send and recv multicast.
+fn new_socket_bind(intf_ip: &Ipv4Addr) -> Result<Socket> {
+    // Use the same socket for receiving and sending multicast packets.
+    // Such socket has to bind to INADDR_ANY.
+    let sock = new_socket(Ipv4Addr::new(0, 0, 0, 0), MDNS_PORT, true)?;
+
+    // Join mDNS group to receive packets.
+    sock.join_multicast_v4(&GROUP_ADDR, intf_ip)
+        .map_err(|e| e_fmt!("join multicast group on addr {}: {}", intf_ip, e))?;
+
+    // Set IP_MULTICAST_IF to send packets.
+    sock.set_multicast_if_v4(intf_ip)
+        .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", intf_ip, e))?;
+
+    Ok(sock)
+}
+
 /// Creates a new UDP socket to bind to `port` with REUSEPORT option.
 /// `non_block` indicates whether to set O_NONBLOCK for the socket.
 fn new_socket(ipv4: Ipv4Addr, port: u16, non_block: bool) -> Result<Socket> {
@@ -506,9 +523,8 @@ struct Zeroconf {
 }
 
 impl Zeroconf {
-    fn new(udp_port: u16) -> Result<Self> {
+    fn new() -> Result<Self> {
         let poller = Poller::new().map_err(|e| e_fmt!("create Poller: {}", e))?;
-        let group_addr = Ipv4Addr::new(224, 0, 0, 251);
 
         // Get IPv4 interfaces.
         let my_ifv4addrs = my_ipv4_interfaces();
@@ -516,25 +532,11 @@ impl Zeroconf {
         // Create a socket for every IPv4 interface.
         let mut intf_socks = Vec::new();
         for intf in my_ifv4addrs {
-            // Use the same socket for receiving and sending multicast packets.
-            // Such socket has to bind to INADDR_ANY.
-            let sock = new_socket(Ipv4Addr::new(0, 0, 0, 0), udp_port, true)?;
-
-            // Join mDNS group to receive packets.
-            if let Err(e) = sock.join_multicast_v4(&group_addr, &intf.ip) {
-                error!("join multicast group on addr {}: {}", &intf.ip, e);
-                continue;
-            }
-
-            // Set IP_MULTICAST_IF to send packets.
-            if let Err(e) = sock.set_multicast_if_v4(&intf.ip) {
-                error!("set multicast_if on addr {}: {}", &intf.ip, e);
-                continue;
-            }
+            let sock = new_socket_bind(&intf.ip)?;
             intf_socks.push(IntfSock { intf, sock });
         }
 
-        let broadcast_addr = SocketAddrV4::new(group_addr, MDNS_PORT).into();
+        let broadcast_addr = SocketAddrV4::new(GROUP_ADDR, MDNS_PORT).into();
 
         Ok(Self {
             intf_socks,
@@ -547,6 +549,11 @@ impl Zeroconf {
             counters: HashMap::new(),
             poller,
         })
+    }
+
+    /// Replaces the socket at `idx` with a new one.
+    fn replace_intf_sock(&mut self, idx: usize, new_sock: IntfSock) {
+        self.intf_socks[idx] = new_sock;
     }
 
     /// Registers a service.
@@ -770,6 +777,22 @@ impl Zeroconf {
         };
 
         debug!("received {} bytes", sz);
+
+        // If sz is 0, it means sock reached End-of-File.
+        if sz == 0 {
+            error!("socket {:?} was likely shutdown", intf_sock);
+            if let Err(e) = self.poller.delete(&intf_sock.sock) {
+                error!("failed to remove sock {:?} from poller: {}", intf_sock, &e);
+            }
+
+            // Replace the closed socket with a new one.
+            if let Ok(sock) = new_socket_bind(&intf_sock.intf.ip) {
+                let intf = intf_sock.intf.clone();
+                self.replace_intf_sock(idx, IntfSock { intf, sock });
+                debug!("reset socket at idx {}", idx);
+            }
+            return false;
+        }
 
         match DnsIncoming::new(buf) {
             Ok(msg) => {
