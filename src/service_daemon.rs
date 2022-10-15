@@ -552,7 +552,7 @@ impl Zeroconf {
     }
 
     /// Replaces the socket at `idx` with a new one.
-    fn reset_sock(&mut self, idx: usize, new_sock: IntfSock) {
+    fn replace_intf_sock(&mut self, idx: usize, new_sock: IntfSock) {
         self.intf_socks[idx] = new_sock;
     }
 
@@ -788,7 +788,7 @@ impl Zeroconf {
             // Replace the closed socket with a new one.
             if let Ok(sock) = new_socket_bind(&intf_sock.intf.ip) {
                 let intf = intf_sock.intf.clone();
-                self.reset_sock(idx, IntfSock { intf, sock });
+                self.replace_intf_sock(idx, IntfSock { intf, sock });
                 debug!("reset socket at idx {}", idx);
             }
             return false;
