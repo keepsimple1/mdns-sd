@@ -439,6 +439,7 @@ impl ServiceDaemon {
     }
 }
 
+/// Creates a new UDP socket that uses `intf_ip` to send and recv multicast.
 fn new_socket_bind(intf_ip: &Ipv4Addr) -> Result<Socket> {
     // Use the same socket for receiving and sending multicast packets.
     // Such socket has to bind to INADDR_ANY.
