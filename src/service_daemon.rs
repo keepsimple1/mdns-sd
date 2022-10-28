@@ -1444,7 +1444,10 @@ fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
 fn send_packet(packet: &[u8], addr: &SockAddr, intf_sock: &IntfSock) {
     match intf_sock.sock.send_to(packet, addr) {
         Ok(sz) => debug!("sent out {} bytes on interface {:?}", sz, &intf_sock.intf),
-        Err(e) => error!("send failed: {}", e),
+        Err(e) => error!(
+            "send to {:?} via interface {:?} failed: {}",
+            addr, &intf_sock.intf, e
+        ),
     }
 }
 
