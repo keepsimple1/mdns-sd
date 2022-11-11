@@ -1,3 +1,8 @@
+# Version 0.5.9
+
+- Ignore duplicate keys (#74)
+- update error msg for send_packet (#69)
+
 # Version 0.5.8
 
 - call check_service_name before sending the cmd to the daemon. (#60)
