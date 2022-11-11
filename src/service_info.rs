@@ -302,7 +302,7 @@ fn decode_txt(txt: &[u8]) -> HashMap<String, String> {
                 Some(idx) => {
                     let k = &kv_string[..idx];
                     let v = &kv_string[idx + 1..];
-                    kv_map.insert(k.to_string(), v.to_string());
+                    kv_map.entry(k.to_string()).or_insert_with(|| v.to_string());
                 }
                 None => error!("cannot find = sign inside {}", &kv_string),
             },
