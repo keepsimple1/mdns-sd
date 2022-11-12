@@ -1,6 +1,6 @@
+use case_insensitive_hashmap::CaseInsensitiveHashMap;
 use if_addrs::{IfAddr, Ifv4Addr};
 use mdns_sd::{Error, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus};
-use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
@@ -26,9 +26,9 @@ fn integration_success() {
     let host_ipv4 = my_ifaddrs[0].ip.to_string();
     let host_name = "my_host.";
     let port = 5200;
-    let mut properties = HashMap::new();
+    let mut properties = CaseInsensitiveHashMap::new();
     properties.insert("property_1".to_string(), "test".to_string());
-    properties.insert("property_2".to_string(), "1".to_string());
+    properties.insert("PROPERTY_2".to_string(), "1".to_string());
     properties.insert("property_3".to_string(), "1234".to_string());
 
     let my_service = ServiceInfo::new(

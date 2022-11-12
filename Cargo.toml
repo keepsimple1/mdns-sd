@@ -16,6 +16,7 @@ logging = ["log"]
 default = ["async", "logging"]
 
 [dependencies]
+case_insensitive_hashmap = "1.0.0"
 flume = { version = "0.10", default-features = false } # channel between threads
 if-addrs = "0.7"                                       # get local IP addresses
 log = { version = "0.4.14", optional = true }          # logging

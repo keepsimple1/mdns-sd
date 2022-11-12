@@ -62,7 +62,7 @@
 //!
 //! ```rust
 //! use mdns_sd::{ServiceDaemon, ServiceInfo};
-//! use std::collections::HashMap;
+//! use case_insensitive_hashmap::CaseInsensitiveHashMap;
 //!
 //! // Create a daemon
 //! let mdns = ServiceDaemon::new().expect("Failed to create daemon");
@@ -73,7 +73,7 @@
 //! let host_ipv4 = "192.168.1.12";
 //! let host_name = "192.168.1.12.local.";
 //! let port = 5200;
-//! let mut properties = HashMap::new();
+//! let mut properties = CaseInsensitiveHashMap::new();
 //! properties.insert("property_1".to_string(), "test".to_string());
 //! properties.insert("property_2".to_string(), "1234".to_string());
 //!

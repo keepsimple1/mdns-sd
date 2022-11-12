@@ -1,13 +1,9 @@
 #[cfg(feature = "logging")]
 use crate::log::error;
 use crate::{dns_parser::current_time_millis, Error, Result};
+use case_insensitive_hashmap::CaseInsensitiveHashMap;
 use if_addrs::Ifv4Addr;
-use std::{
-    collections::{HashMap, HashSet},
-    convert::TryInto,
-    net::Ipv4Addr,
-    str::FromStr,
-};
+use std::{collections::HashSet, convert::TryInto, net::Ipv4Addr, str::FromStr};
 
 /// Default TTL values in seconds
 const DNS_HOST_TTL: u32 = 120; // 2 minutes for host records (A, SRV etc) per RFC6762
@@ -29,7 +25,7 @@ pub struct ServiceInfo {
     other_ttl: u32, // used for PTR and TXT records
     priority: u16,
     weight: u16,
-    properties: HashMap<String, String>,
+    properties: CaseInsensitiveHashMap<String>,
     last_update: u64, // UNIX time in millis
 }
 
@@ -57,7 +53,7 @@ impl ServiceInfo {
         host_name: &str,
         host_ipv4: Ip,
         port: u16,
-        properties: Option<HashMap<String, String>>,
+        properties: Option<CaseInsensitiveHashMap<String>>,
     ) -> Result<Self> {
         let (ty_domain, sub_domain) = split_sub_domain(ty_domain);
 
@@ -114,7 +110,7 @@ impl ServiceInfo {
 
     /// Returns a reference of the properties from TXT records.
     #[inline]
-    pub fn get_properties(&self) -> &HashMap<String, String> {
+    pub fn get_properties(&self) -> &CaseInsensitiveHashMap<String> {
         &self.properties
     }
 
@@ -274,7 +270,7 @@ impl AsIpv4Addrs for std::net::Ipv4Addr {
 }
 
 // Convert from properties key/value pairs to DNS TXT record content
-fn encode_txt(map: &HashMap<String, String>) -> Vec<u8> {
+fn encode_txt(map: &CaseInsensitiveHashMap<String>) -> Vec<u8> {
     let mut bytes = Vec::new();
     for (k, v) in map {
         let s = format!("{}={}", k, v);
@@ -288,8 +284,8 @@ fn encode_txt(map: &HashMap<String, String>) -> Vec<u8> {
 }
 
 // Convert from DNS TXT record content to key/value pairs
-fn decode_txt(txt: &[u8]) -> HashMap<String, String> {
-    let mut kv_map = HashMap::new();
+fn decode_txt(txt: &[u8]) -> CaseInsensitiveHashMap<String> {
+    let mut kv_map = CaseInsensitiveHashMap::new();
     let mut offset = 0;
     while offset < txt.len() {
         let length = txt[offset] as usize;
@@ -334,11 +330,11 @@ pub(crate) fn valid_ipv4_on_intf(addr: &Ipv4Addr, intf: &Ifv4Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{decode_txt, encode_txt};
-    use std::collections::HashMap;
+    use case_insensitive_hashmap::CaseInsensitiveHashMap;
 
     #[test]
     fn test_txt_encode_decode() {
-        let mut map = HashMap::new();
+        let mut map = CaseInsensitiveHashMap::new();
         map.insert("key1".to_string(), "value1".to_string());
         map.insert("key2".to_string(), "value2".to_string());
 
