@@ -535,7 +535,7 @@ impl Zeroconf {
             let sock = match new_socket_bind(&intf.ip) {
                 Ok(s) => s,
                 Err(e) => {
-                    error!("bind a socket to {}: {}", &intf.ip, e);
+                    error!("bind a socket to {}: {}. Skipped.", &intf.ip, e);
                     continue;
                 }
             };
