@@ -422,10 +422,12 @@ fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
                     {
                         match std::net::UdpSocket::bind((ifv4.ip, test_port)) {
                             Ok(_) => Some(ifv4),
-                            Err(_) => None,
+                            Err(e) => {
+                                println!("Not able to bind {}: {}", ifv4.ip, e);
+                                None
+                            }
                         }
                     }
-
                     _ => None,
                 }
             }
