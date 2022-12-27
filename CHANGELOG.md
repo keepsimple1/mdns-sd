@@ -1,3 +1,7 @@
+# Version 0.5.10
+
+- skip interfaces that failed to bind (#79) (re-apply fix in v0.5.6)
+
 # Version 0.5.9
 
 - Ignore duplicate keys (#74)
