@@ -532,7 +532,13 @@ impl Zeroconf {
         // Create a socket for every IPv4 interface.
         let mut intf_socks = Vec::new();
         for intf in my_ifv4addrs {
-            let sock = new_socket_bind(&intf.ip)?;
+            let sock = match new_socket_bind(&intf.ip) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("bind a socket to {}: {}. Skipped.", &intf.ip, e);
+                    continue;
+                }
+            };
             intf_socks.push(IntfSock { intf, sock });
         }
 
@@ -786,10 +792,13 @@ impl Zeroconf {
             }
 
             // Replace the closed socket with a new one.
-            if let Ok(sock) = new_socket_bind(&intf_sock.intf.ip) {
-                let intf = intf_sock.intf.clone();
-                self.replace_intf_sock(idx, IntfSock { intf, sock });
-                debug!("reset socket at idx {}", idx);
+            match new_socket_bind(&intf_sock.intf.ip) {
+                Ok(sock) => {
+                    let intf = intf_sock.intf.clone();
+                    self.replace_intf_sock(idx, IntfSock { intf, sock });
+                    debug!("reset socket at idx {}", idx);
+                }
+                Err(e) => error!("re-bind a socket to {}: {}", &intf_sock.intf.ip, e),
             }
             return false;
         }

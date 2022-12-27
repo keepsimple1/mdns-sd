@@ -763,16 +763,12 @@ impl DnsOutgoing {
 
             let mut auth_count = 0;
             for auth in self.authorities.iter() {
-                auth_count += if packet.write_record(auth, 0) { 1 } else { 0 };
+                auth_count += u16::from(packet.write_record(auth, 0));
             }
 
             let mut addi_count = 0;
             for addi in self.additionals.iter() {
-                addi_count += if packet.write_record(addi.as_ref(), 0) {
-                    1
-                } else {
-                    0
-                };
+                addi_count += u16::from(packet.write_record(addi.as_ref(), 0));
             }
 
             packet.state = PacketState::Finished;

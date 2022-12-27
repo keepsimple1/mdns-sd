@@ -228,6 +228,7 @@ fn service_without_properties_with_alter_net() {
     let fullname = my_service.get_fullname().to_string();
     d.register(my_service)
         .expect("Failed to register our service");
+    println!("Registered service with host_ipv4: {:?}", &host_ipv4);
 
     // Browse for a service
     let browse_chan = d.browse(ty_domain).unwrap();
@@ -405,6 +406,9 @@ fn service_name_check() {
 }
 
 fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
+    // Use a random port for binding test.
+    let test_port = fastrand::u16(8000u16..9000u16);
+
     if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
@@ -413,7 +417,17 @@ fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
                 None
             } else {
                 match i.addr {
-                    IfAddr::V4(ifv4) => Some(ifv4),
+                    IfAddr::V4(ifv4) =>
+                    // Use a 'bind' to check if this is a valid IPv4 addr.
+                    {
+                        match std::net::UdpSocket::bind((ifv4.ip, test_port)) {
+                            Ok(_) => Some(ifv4),
+                            Err(e) => {
+                                println!("bind {}: {}, skipped.", ifv4.ip, e);
+                                None
+                            }
+                        }
+                    }
                     _ => None,
                 }
             }
