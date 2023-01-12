@@ -100,7 +100,6 @@
 //! We focus on the common use cases at first, and currently have the following limitations:
 //! - Only support IPv4, not IPv6.
 //! - Only support multicast, not unicast send/recv.
-//! - Only tested on Linux and MacOS, not on Windows or other OSes.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::single_component_path_imports)]

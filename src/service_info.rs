@@ -31,6 +31,7 @@ pub struct ServiceInfo {
     weight: u16,
     properties: HashMap<String, String>,
     last_update: u64, // UNIX time in millis
+    addr_auto: bool,  // Let the system update addresses automatically.
 }
 
 impl ServiceInfo {
@@ -82,9 +83,24 @@ impl ServiceInfo {
             weight: 0,
             properties,
             last_update,
+            addr_auto: false,
         };
 
         Ok(this)
+    }
+
+    /// Indicates that the library should automatically
+    /// update the addresses of this service, when IPv4
+    /// address(es) are added or removed on the host.
+    pub fn enable_addr_auto(mut self) -> Self {
+        self.addr_auto = true;
+        self
+    }
+
+    /// Returns if the service's addresses will be updated
+    /// automatically when the host IPv4 addrs change.
+    pub fn is_addr_auto(&self) -> bool {
+        self.addr_auto
     }
 
     /// Returns the service type including the domain label.
@@ -180,8 +196,13 @@ impl ServiceInfo {
         !some_missing
     }
 
+    /// Insert `addr` into service info addresses.
     pub(crate) fn insert_ipv4addr(&mut self, addr: Ipv4Addr) {
         self.addresses.insert(addr);
+    }
+
+    pub(crate) fn remove_ipv4addr(&mut self, addr: &Ipv4Addr) {
+        self.addresses.remove(addr);
     }
 
     pub(crate) fn generate_txt(&self) -> Vec<u8> {
@@ -221,16 +242,19 @@ impl<T: AsIpv4Addrs> AsIpv4Addrs for &T {
 }
 
 /// Supports one address or multiple addresses separated by `,`.
-/// For example: "127.0.0.1,127.0.0.2"
+/// For example: "127.0.0.1,127.0.0.2".
+///
+/// If the string is empty, will return an empty set.
 impl AsIpv4Addrs for &str {
     fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
         let mut addrs = HashSet::new();
 
-        let iter = self.split(',').map(str::trim).map(Ipv4Addr::from_str);
-
-        for addr in iter {
-            let addr = addr.map_err(|err| Error::ParseIpAddr(err.to_string()))?;
-            addrs.insert(addr);
+        if !self.is_empty() {
+            let iter = self.split(',').map(str::trim).map(Ipv4Addr::from_str);
+            for addr in iter {
+                let addr = addr.map_err(|err| Error::ParseIpAddr(err.to_string()))?;
+                addrs.insert(addr);
+            }
         }
 
         Ok(addrs)

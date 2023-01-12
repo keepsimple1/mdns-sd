@@ -654,7 +654,8 @@ impl DnsOutgoing {
     }
 
     /// Returns true if `answer` is added to the outgoing msg.
-    /// Returns false if the answer expired hence not added.
+    /// Returns false if the answer is expired `now` hence not added.
+    /// If `now` is 0, do not check if the answer expires.
     pub(crate) fn add_answer_at_time(&mut self, answer: Box<dyn DnsRecordExt>, now: u64) -> bool {
         debug!("Check for add_answer_at_time");
         if now == 0 || !answer.get_record().is_expired(now) {
