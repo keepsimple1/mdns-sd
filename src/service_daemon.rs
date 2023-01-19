@@ -1410,7 +1410,8 @@ impl Zeroconf {
     }
 }
 
-/// All possible events sent to the client from the daemon.
+/// All possible events sent to the client from the daemon
+/// regarding service discovery.
 #[derive(Debug)]
 pub enum ServiceEvent {
     /// Started searching for a service type.

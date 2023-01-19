@@ -73,9 +73,7 @@
 //! let host_ipv4 = "192.168.1.12";
 //! let host_name = "192.168.1.12.local.";
 //! let port = 5200;
-//! let mut properties = HashMap::new();
-//! properties.insert("property_1".to_string(), "test".to_string());
-//! properties.insert("property_2".to_string(), "1234".to_string());
+//! let properties = [("property_1", "test"), ("property_2", "1234")];
 //!
 //! let my_service = ServiceInfo::new(
 //!     service_type,
@@ -83,7 +81,7 @@
 //!     host_name,
 //!     host_ipv4,
 //!     port,
-//!     Some(properties),
+//!     &properties[..],
 //! ).unwrap();
 //!
 //! // Register with the daemon, which publishes the service.
@@ -124,8 +122,8 @@ mod service_daemon;
 mod service_info;
 
 pub use error::{Error, Result};
-pub use service_daemon::{Metrics, ServiceDaemon, ServiceEvent, UnregisterStatus};
-pub use service_info::{AsIpv4Addrs, ServiceInfo};
+pub use service_daemon::{DaemonEvent, Metrics, ServiceDaemon, ServiceEvent, UnregisterStatus};
+pub use service_info::{AsIpv4Addrs, IntoTxtProperties, ServiceInfo, TxtProperties, TxtProperty};
 
 /// A handler to receive messages from [ServiceDaemon]. Re-export from `flume` crate.
 pub use flume::Receiver;

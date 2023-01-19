@@ -27,6 +27,10 @@ fn main() {
     let service_hostname = "mdns-example.local.";
     let port = 3456;
 
+    // The key string in TXT properties is case insensitive. Only the first
+    // (key, val) pair will take effect.
+    let properties = vec![("PATH", "one"), ("Path", "two"), ("PaTh", "three")];
+
     // Register a service.
     let service_info = ServiceInfo::new(
         &service_type,
@@ -34,7 +38,7 @@ fn main() {
         service_hostname,
         my_addrs,
         port,
-        None,
+        &properties[..],
     )
     .expect("valid service info")
     .enable_addr_auto();

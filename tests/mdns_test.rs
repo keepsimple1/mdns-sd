@@ -82,8 +82,9 @@ fn integration_success() {
                     assert_eq!(service_port, port);
 
                     let properties = info.get_properties();
-                    assert!(properties.get("property_1").is_some());
-                    assert!(properties.get("property_2").is_some());
+                    assert_eq!(properties.len(), 3);
+                    assert!(info.get_property("property_1").is_some());
+                    assert!(info.get_property("property_2").is_some());
 
                     let host_ttl = info.get_host_ttl();
                     assert_eq!(host_ttl, 120); // default value.
@@ -259,6 +260,38 @@ fn service_without_properties_with_alter_net() {
     }
 
     d.shutdown().unwrap();
+}
+
+#[test]
+fn service_txt_properties_case_insensitive() {
+    // Register a service with properties.
+    let domain = "_serv-properties._tcp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string(); // Create a unique name.
+    let host_name = "properties_host.";
+    let port = 5201;
+    let properties = [
+        ("prop_CAP_CASE", "one"),
+        ("prop_cap_case", "two"),
+        ("prop_Cap_Lower", "three"),
+    ];
+
+    let my_service = ServiceInfo::new(domain, &instance_name, host_name, "", port, &properties[..])
+        .expect("valid service info")
+        .enable_addr_auto();
+    let props = my_service.get_properties();
+    assert_eq!(props.len(), 2);
+
+    // Verify `get_property()` method is case insensitive and returns
+    // the first property with the same key.
+    let prop_cap_case = my_service.get_property("prop_CAP_CASE").unwrap();
+    assert_eq!(prop_cap_case.val(), "one");
+
+    // Verify the original property name is kept.
+    let prop_mixed = my_service.get_property("prop_cap_lower").unwrap();
+    assert_eq!(prop_mixed.key(), "prop_Cap_Lower");
 }
 
 #[test]
