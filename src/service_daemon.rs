@@ -166,8 +166,18 @@ impl ServiceDaemon {
     }
 
     /// Registers a service provided by this host.
-    pub fn register(&self, service_info: ServiceInfo) -> Result<()> {
+    ///
+    /// If `service_info` has no addresses yet and its `addr_auto` is enabled,
+    /// this method will automatically fill in addresses from the host.
+    pub fn register(&self, mut service_info: ServiceInfo) -> Result<()> {
         check_service_name(service_info.get_fullname())?;
+
+        if service_info.is_addr_auto() {
+            for ifv4 in my_ipv4_interfaces() {
+                service_info.insert_ipv4addr(ifv4.ip);
+            }
+        }
+
         self.sender
             .try_send(Command::Register(service_info))
             .map_err(|e| match e {
@@ -191,6 +201,20 @@ impl ServiceDaemon {
             .map_err(|e| match e {
                 TrySendError::Full(_) => Error::Again,
                 e => e_fmt!("flume::channel::send failed: {}", e),
+            })?;
+        Ok(resp_r)
+    }
+
+    /// Starts to monitor events from the daemon.
+    ///
+    /// Returns a channel [`Receiver`] of [`DaemonEvent`].
+    pub fn monitor(&self) -> Result<Receiver<DaemonEvent>> {
+        let (resp_s, resp_r) = bounded(100);
+        self.sender
+            .try_send(Command::Monitor(resp_s))
+            .map_err(|e| match e {
+                TrySendError::Full(_) => Error::Again,
+                e => e_fmt!("starts a monitor: try_send: {}", e),
             })?;
         Ok(resp_r)
     }
@@ -244,6 +268,9 @@ impl ServiceDaemon {
         }
         let mut events = Vec::new();
         let timeout = Duration::from_millis(20); // moderate frequency for polling.
+
+        const IP_CHECK_INTERVAL_MILLIS: u64 = 2000;
+        let mut next_ip_check = current_time_millis() + IP_CHECK_INTERVAL_MILLIS;
 
         loop {
             // process incoming packets.
@@ -315,6 +342,13 @@ impl ServiceDaemon {
                     );
                 }
             });
+
+            // check IP changes.
+            let now = current_time_millis();
+            if now > next_ip_check {
+                next_ip_check = now + IP_CHECK_INTERVAL_MILLIS;
+                zc.check_ip_changes();
+            }
         }
     }
 
@@ -359,8 +393,17 @@ impl ServiceDaemon {
                 debug!("announce service: {}", &fullname);
                 match zc.my_services.get(&fullname) {
                     Some(info) => {
+                        let mut announced_addrs = Vec::new();
                         for intf_sock in zc.intf_socks.iter() {
-                            zc.broadcast_service_on_intf(info, intf_sock);
+                            if zc.broadcast_service_on_intf(info, intf_sock) {
+                                announced_addrs.push(intf_sock.intf.ip);
+                            }
+                        }
+                        if !announced_addrs.is_empty() {
+                            zc.notify_monitors(DaemonEvent::Announce(
+                                fullname,
+                                format!("{:?}", &announced_addrs),
+                            ));
                         }
                         zc.increase_counter(Counter::RegisterResend, 1);
                     }
@@ -432,6 +475,10 @@ impl ServiceDaemon {
                 Err(e) => error!("Failed to send metrics: {}", e),
             },
 
+            Command::Monitor(resp_s) => {
+                zc.monitors.push(resp_s);
+            }
+
             _ => {
                 error!("unexpected command: {:?}", &command);
             }
@@ -499,7 +546,7 @@ struct Zeroconf {
     /// Local interfaces with sockets to recv/send on these interfaces.
     intf_socks: Vec<IntfSock>,
 
-    /// Local registered services
+    /// Local registered services， keyed by service full names.
     my_services: HashMap<String, ServiceInfo>,
 
     /// Well-known mDNS IPv4 address and port
@@ -520,6 +567,9 @@ struct Zeroconf {
 
     /// Waits for incoming packets.
     poller: Poller,
+
+    /// Channels to notify events.
+    monitors: Vec<Sender<DaemonEvent>>,
 }
 
 impl Zeroconf {
@@ -543,6 +593,7 @@ impl Zeroconf {
         }
 
         let broadcast_addr = SocketAddrV4::new(GROUP_ADDR, MDNS_PORT).into();
+        let monitors = Vec::new();
 
         Ok(Self {
             intf_socks,
@@ -554,7 +605,118 @@ impl Zeroconf {
             retransmissions: Vec::new(),
             counters: HashMap::new(),
             poller,
+            monitors,
         })
+    }
+
+    fn notify_monitors(&mut self, event: DaemonEvent) {
+        // Only retain the monitors that are still connected.
+        self.monitors.retain(|sender| {
+            if let Err(e) = sender.try_send(event.clone()) {
+                error!("notify_monitors: try_send: {}", &e);
+                if matches!(e, TrySendError::Disconnected(_)) {
+                    return false; // This monitor is dropped.
+                }
+            }
+            true
+        });
+    }
+
+    /// Add `addr` in my services that enabled `addr_auto`.
+    fn add_addr_in_my_services(&mut self, addr: Ipv4Addr) {
+        for (_, service_info) in self.my_services.iter_mut() {
+            if service_info.is_addr_auto() {
+                service_info.insert_ipv4addr(addr);
+            }
+        }
+    }
+
+    /// Remove `addr` in my services that enabled `addr_auto`.
+    fn del_addr_in_my_services(&mut self, addr: &Ipv4Addr) {
+        for (_, service_info) in self.my_services.iter_mut() {
+            if service_info.is_addr_auto() {
+                service_info.remove_ipv4addr(addr);
+            }
+        }
+    }
+
+    /// Check for IP changes and update intf_socks as needed.
+    fn check_ip_changes(&mut self) {
+        // Get the current IPv4 interfaces.
+        let my_ifv4addrs = my_ipv4_interfaces();
+
+        // Remove unused sockets in the poller.
+        let deleted_addrs = self
+            .intf_socks
+            .iter()
+            .filter_map(|if_sock| {
+                if !my_ifv4addrs.contains(&if_sock.intf) {
+                    if let Err(e) = self.poller.delete(&if_sock.sock) {
+                        error!("check_ip_changes: poller.delete {:?}: {}", &if_sock.intf, e);
+                    }
+                    Some(if_sock.intf.ip)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<Ipv4Addr>>();
+
+        // Remove deleted addrs from my services that enabled `addr_auto`.
+        for ipv4 in deleted_addrs.iter() {
+            self.del_addr_in_my_services(ipv4);
+            self.notify_monitors(DaemonEvent::Ipv4Del(*ipv4));
+        }
+
+        // Keep the interfaces only if they still exist.
+        self.intf_socks.retain(|f| my_ifv4addrs.contains(&f.intf));
+
+        // Add newly found interfaces.
+        for intf in my_ifv4addrs {
+            // Skip existing interfaces.
+            if self.intf_socks.iter().any(|x| x.intf == intf) {
+                continue;
+            }
+
+            // Bind the new interface.
+            let new_ip = intf.ip;
+            let sock = match new_socket_bind(&new_ip) {
+                Ok(s) => {
+                    debug!("check_ip_changes: bind {}", &intf.ip);
+                    s
+                }
+                Err(e) => {
+                    error!("bind a socket to {}: {}. Skipped.", &intf.ip, e);
+                    continue;
+                }
+            };
+            self.intf_socks.push(IntfSock { intf, sock });
+
+            // Add the new interface into the poller.
+            let idx = self.intf_socks.len() - 1;
+            if let Err(e) = self
+                .poller
+                .add(&self.intf_socks[idx].sock, polling::Event::readable(idx))
+            {
+                error!("check_ip_changes: poller add idx {}: {}", idx, e);
+            }
+
+            self.add_addr_in_my_services(new_ip);
+
+            // Notify the monitors.
+            self.notify_monitors(DaemonEvent::Ipv4Add(new_ip));
+        }
+
+        // Reset the poller if some sockets were deleted because indexes changed.
+        if !deleted_addrs.is_empty() {
+            for idx in 0..self.intf_socks.len() {
+                if let Err(e) = self
+                    .poller
+                    .modify(&self.intf_socks[idx].sock, polling::Event::readable(idx))
+                {
+                    error!("check_ip_changes: poller modify idx {}: {}", idx, e);
+                }
+            }
+        }
     }
 
     /// Replaces the socket at `idx` with a new one.
@@ -571,8 +733,17 @@ impl Zeroconf {
     ///
     /// Zeroconf will then respond to requests for information about this service.
     fn register_service(&mut self, info: ServiceInfo) {
-        for intf in self.intf_socks.iter() {
-            self.broadcast_service_on_intf(&info, intf);
+        let mut announced_addrs = Vec::new();
+        for intf_sock in self.intf_socks.iter() {
+            if self.broadcast_service_on_intf(&info, intf_sock) {
+                announced_addrs.push(intf_sock.intf.ip);
+            }
+        }
+        if !announced_addrs.is_empty() {
+            self.notify_monitors(DaemonEvent::Announce(
+                info.get_fullname().to_string(),
+                format!("{:?}", &announced_addrs),
+            ));
         }
 
         // RFC 6762 section 8.3.
@@ -591,8 +762,9 @@ impl Zeroconf {
     }
 
     /// Send an unsolicited response for owned service
-    fn broadcast_service_on_intf(&self, info: &ServiceInfo, intf_sock: &IntfSock) {
-        debug!("broadcast service {}", info.get_fullname());
+    fn broadcast_service_on_intf(&self, info: &ServiceInfo, intf_sock: &IntfSock) -> bool {
+        let service_fullname = info.get_fullname();
+        debug!("broadcast service {}", service_fullname);
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         out.add_answer_at_time(
             Box::new(DnsPointer::new(
@@ -645,7 +817,7 @@ impl Zeroconf {
         let intf_addrs = info.get_addrs_on_intf(&intf_sock.intf);
         if intf_addrs.is_empty() {
             debug!("No valid addrs to add on intf {:?}", &intf_sock.intf);
-            return;
+            return false;
         }
         for addr in intf_addrs {
             out.add_answer_at_time(
@@ -661,6 +833,7 @@ impl Zeroconf {
         }
 
         self.send(&out, &self.broadcast_addr, intf_sock);
+        true
     }
 
     fn unregister_service(&self, info: &ServiceInfo, intf_sock: &IntfSock) -> Vec<u8> {
@@ -742,7 +915,7 @@ impl Zeroconf {
         debug!(
             "Sending {} to {:?}: {} questions {} answers {} authorities {} additional",
             qtype,
-            addr,
+            addr.as_socket(),
             out.questions.len(),
             out.answers.len(),
             out.authorities.len(),
@@ -767,6 +940,8 @@ impl Zeroconf {
         }
     }
 
+    /// Reads from the socket in self.intf_socks[idx].
+    ///
     /// Returns false if failed to receive a packet,
     /// otherwise returns true.
     fn handle_read(&mut self, idx: usize) -> bool {
@@ -1236,6 +1411,21 @@ pub enum ServiceEvent {
     SearchStopped(String),
 }
 
+/// Some notable events from the daemon besides [`ServiceEvent`].
+/// These events are expected to happen infrequently.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum DaemonEvent {
+    /// Daemon unsolicitly announced a service from an interface.
+    Announce(String, String),
+
+    /// Daemon detected a new IPv4 address from the host.
+    Ipv4Add(Ipv4Addr),
+
+    /// Daemon detected a IPv4 address removed from the host.
+    Ipv4Del(Ipv4Addr),
+}
+
 /// Commands supported by the daemon
 #[derive(Debug)]
 enum Command {
@@ -1259,6 +1449,9 @@ enum Command {
 
     /// Read the current values of the counters
     GetMetrics(Sender<Metrics>),
+
+    /// Monitor noticable events in the daemon.
+    Monitor(Sender<DaemonEvent>),
 
     Exit,
 }
@@ -1433,6 +1626,7 @@ fn call_listener(
     }
 }
 
+/// Returns valid IPv4 interfaces in the host system.
 fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
     if_addrs::get_if_addrs()
         .unwrap_or_default()
@@ -1450,6 +1644,7 @@ fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
         .collect()
 }
 
+/// Sends out `packet` to `addr` on the socket in `intf_sock`.
 fn send_packet(packet: &[u8], addr: &SockAddr, intf_sock: &IntfSock) {
     match intf_sock.sock.send_to(packet, addr) {
         Ok(sz) => debug!("sent out {} bytes on interface {:?}", sz, &intf_sock.intf),

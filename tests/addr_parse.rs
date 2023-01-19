@@ -46,6 +46,9 @@ fn test_addr_str() {
             set
         })
     );
+
+    // verify that an empty string parsed into an empty set.
+    assert_eq!("".as_ipv4_addrs(), Ok(HashSet::new()));
 }
 
 #[test]

@@ -435,6 +435,11 @@ fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
         .collect()
 }
 
+/// Returns a made-up IPv4 address "net.1.1.1", where
+/// `net` is one higher than any of IPv4 addresses on the host.
+///
+/// The idea is that this made-up address does not belong to
+/// the same network as any of the host addresses.
 fn ipv4_alter_net(ifv4_addrs: &Vec<Ifv4Addr>) -> Ipv4Addr {
     let mut net_max = 0;
     for ifv4_addr in ifv4_addrs.iter() {
