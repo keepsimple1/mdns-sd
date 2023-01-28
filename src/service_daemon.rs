@@ -500,6 +500,11 @@ fn new_socket_bind(intf_ip: &Ipv4Addr) -> Result<Socket> {
     sock.set_multicast_if_v4(intf_ip)
         .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", intf_ip, e))?;
 
+    // Test if we can send packets successfully.
+    let multicast_addr = SocketAddrV4::new(GROUP_ADDR, MDNS_PORT).into();
+    sock.send_to("hello".as_bytes(), &multicast_addr)
+        .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", intf_ip, e))?;
+
     Ok(sock)
 }
 
