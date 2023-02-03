@@ -819,7 +819,7 @@ impl DnsIncoming {
             num_additionals: 0,
         };
 
-        incoming.read_header();
+        incoming.read_header()?;
         incoming.read_questions()?;
         incoming.read_others()?;
         Ok(incoming)
@@ -833,8 +833,14 @@ impl DnsIncoming {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_RESPONSE
     }
 
-    // Returns the number of bytes read
-    fn read_header(&mut self) {
+    fn read_header(&mut self) -> Result<()> {
+        if self.data.len() < 12 {
+            return Err(Error::Msg(format!(
+                "DNS incoming: header is too short: {} bytes",
+                self.data.len()
+            )));
+        }
+
         let data = &self.data[0..];
         self.id = u16_from_be_slice(&data[..2]);
         self.flags = u16_from_be_slice(&data[2..4]);
@@ -853,14 +859,22 @@ impl DnsIncoming {
             self.num_authorities,
             self.num_additionals
         );
+        Ok(())
     }
 
     fn read_questions(&mut self) -> Result<()> {
         debug!("read_questions: {}", &self.num_questions);
-        for _i in 0..self.num_questions {
+        for i in 0..self.num_questions {
             let name = self.read_name()?;
 
             let data = &self.data[self.offset..];
+            if data.len() < 4 {
+                return Err(Error::Msg(format!(
+                    "DNS incoming: question idx {} too short: {}",
+                    i,
+                    data.len()
+                )));
+            }
             let ty = u16_from_be_slice(&data[..2]);
             let class = u16_from_be_slice(&data[2..4]);
             self.offset += 4;

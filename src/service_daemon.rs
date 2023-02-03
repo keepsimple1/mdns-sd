@@ -358,7 +358,15 @@ impl ServiceDaemon {
     fn exec_command(zc: &mut Zeroconf, command: Command, repeating: bool) {
         match command {
             Command::Browse(ty, next_delay, listener) => {
-                if let Err(e) = listener.send(ServiceEvent::SearchStarted(ty.clone())) {
+                let addr_list: Vec<_> = zc
+                    .intf_socks
+                    .iter()
+                    .map(|if_sock| if_sock.intf.ip)
+                    .collect();
+                if let Err(e) = listener.send(ServiceEvent::SearchStarted(format!(
+                    "{} on addrs {:?}",
+                    &ty, &addr_list
+                ))) {
                     error!(
                         "Failed to send SearchStarted({})(repeating:{}): {}",
                         &ty, repeating, e
@@ -500,6 +508,12 @@ fn new_socket_bind(intf_ip: &Ipv4Addr) -> Result<Socket> {
     sock.set_multicast_if_v4(intf_ip)
         .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", intf_ip, e))?;
 
+    // Test if we can send packets successfully.
+    let multicast_addr = SocketAddrV4::new(GROUP_ADDR, MDNS_PORT).into();
+    let test_packet = DnsOutgoing::new(0).to_packet_data();
+    sock.send_to(&test_packet, &multicast_addr)
+        .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", intf_ip, e))?;
+
     Ok(sock)
 }
 
@@ -585,7 +599,7 @@ impl Zeroconf {
             let sock = match new_socket_bind(&intf.ip) {
                 Ok(s) => s,
                 Err(e) => {
-                    error!("bind a socket to {}: {}. Skipped.", &intf.ip, e);
+                    debug!("bind a socket to {}: {}. Skipped.", &intf.ip, e);
                     continue;
                 }
             };
@@ -685,7 +699,7 @@ impl Zeroconf {
                     s
                 }
                 Err(e) => {
-                    error!("bind a socket to {}: {}. Skipped.", &intf.ip, e);
+                    debug!("bind a socket to {}: {}. Skipped.", &intf.ip, e);
                     continue;
                 }
             };
