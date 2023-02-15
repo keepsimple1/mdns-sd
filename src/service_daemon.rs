@@ -254,15 +254,10 @@ impl ServiceDaemon {
     /// 4. announce its registered services.
     /// 5. process retransmissions if any.
     fn run(mut zc: Zeroconf, receiver: Receiver<Command>) {
-        for idx in 0..zc.intf_socks.len() {
-            if let Err(e) = zc
-                .poller
-                .add(&zc.intf_socks[idx].sock, polling::Event::readable(idx))
-            {
-                error!(
-                    "failed to add socket of {:?} to poller: {}",
-                    zc.intf_socks[idx].intf, e
-                );
+        for (ipv4, if_sock) in zc.intf_socks.iter() {
+            let key = u32::from(*ipv4) as usize;
+            if let Err(e) = zc.poller.add(&if_sock.sock, polling::Event::readable(key)) {
+                error!("add socket of {:?} to poller: {}", ipv4, e);
                 return;
             }
         }
@@ -279,14 +274,17 @@ impl ServiceDaemon {
                 Ok(_) => {
                     for ev in events.iter() {
                         // Read until no more packets available.
-                        while zc.handle_read(ev.key) {}
+                        let ipv4 = (ev.key as u32).into();
+                        while zc.handle_read(&ipv4) {}
 
-                        if let Err(e) = zc.poller.modify(
-                            &zc.intf_socks[ev.key].sock,
-                            polling::Event::readable(ev.key),
-                        ) {
-                            error!("failed to poll listen_socket again: {}", e);
-                            break;
+                        if let Some(intf_sock) = zc.intf_socks.get(&ipv4) {
+                            if let Err(e) = zc
+                                .poller
+                                .modify(&intf_sock.sock, polling::Event::readable(ev.key))
+                            {
+                                error!("failed to poll listen_socket again: {}", e);
+                                break;
+                            }
                         }
                     }
                 }
@@ -358,11 +356,7 @@ impl ServiceDaemon {
     fn exec_command(zc: &mut Zeroconf, command: Command, repeating: bool) {
         match command {
             Command::Browse(ty, next_delay, listener) => {
-                let addr_list: Vec<_> = zc
-                    .intf_socks
-                    .iter()
-                    .map(|if_sock| if_sock.intf.ip)
-                    .collect();
+                let addr_list: Vec<_> = zc.intf_socks.keys().collect();
                 if let Err(e) = listener.send(ServiceEvent::SearchStarted(format!(
                     "{} on addrs {:?}",
                     &ty, &addr_list
@@ -402,7 +396,7 @@ impl ServiceDaemon {
                 match zc.my_services.get(&fullname) {
                     Some(info) => {
                         let mut announced_addrs = Vec::new();
-                        for intf_sock in zc.intf_socks.iter() {
+                        for (_, intf_sock) in zc.intf_socks.iter() {
                             if zc.broadcast_service_on_intf(info, intf_sock) {
                                 announced_addrs.push(intf_sock.intf.ip);
                             }
@@ -427,14 +421,14 @@ impl ServiceDaemon {
                         UnregisterStatus::NotFound
                     }
                     Some((_k, info)) => {
-                        for i in 0..zc.intf_socks.len() {
-                            let packet = zc.unregister_service(&info, &zc.intf_socks[i]);
+                        for (ipv4, intf_sock) in zc.intf_socks.iter() {
+                            let packet = zc.unregister_service(&info, intf_sock);
                             // repeat for one time just in case some peers miss the message
                             if !repeating && !packet.is_empty() {
                                 let next_time = current_time_millis() + 120;
                                 zc.retransmissions.push(ReRun {
                                     next_time,
-                                    command: Command::UnregisterResend(packet, i),
+                                    command: Command::UnregisterResend(packet, *ipv4),
                                 });
                             }
                         }
@@ -447,10 +441,12 @@ impl ServiceDaemon {
                 }
             }
 
-            Command::UnregisterResend(packet, idx) => {
-                debug!("Send a packet length of {}", packet.len());
-                send_packet(&packet[..], &zc.broadcast_addr, &zc.intf_socks[idx]);
-                zc.increase_counter(Counter::UnregisterResend, 1);
+            Command::UnregisterResend(packet, ipv4) => {
+                if let Some(intf_sock) = zc.intf_socks.get(&ipv4) {
+                    debug!("Send a packet length of {}", packet.len());
+                    send_packet(&packet[..], &zc.broadcast_addr, intf_sock);
+                    zc.increase_counter(Counter::UnregisterResend, 1);
+                }
             }
 
             Command::StopBrowse(ty_domain) => match zc.queriers.remove_entry(&ty_domain) {
@@ -558,7 +554,7 @@ struct IntfSock {
 /// A struct holding the state. It was inspired by `zeroconf` package in Python.
 struct Zeroconf {
     /// Local interfaces with sockets to recv/send on these interfaces.
-    intf_socks: Vec<IntfSock>,
+    intf_socks: HashMap<Ipv4Addr, IntfSock>,
 
     /// Local registered services， keyed by service full names.
     my_services: HashMap<String, ServiceInfo>,
@@ -594,7 +590,7 @@ impl Zeroconf {
         let my_ifv4addrs = my_ipv4_interfaces();
 
         // Create a socket for every IPv4 interface.
-        let mut intf_socks = Vec::new();
+        let mut intf_socks = HashMap::new();
         for intf in my_ifv4addrs {
             let sock = match new_socket_bind(&intf.ip) {
                 Ok(s) => s,
@@ -603,7 +599,7 @@ impl Zeroconf {
                     continue;
                 }
             };
-            intf_socks.push(IntfSock { intf, sock });
+            intf_socks.insert(intf.ip, IntfSock { intf, sock });
         }
 
         let broadcast_addr = SocketAddrV4::new(GROUP_ADDR, MDNS_PORT).into();
@@ -663,7 +659,7 @@ impl Zeroconf {
         let deleted_addrs = self
             .intf_socks
             .iter()
-            .filter_map(|if_sock| {
+            .filter_map(|(_, if_sock)| {
                 if !my_ifv4addrs.contains(&if_sock.intf) {
                     if let Err(e) = self.poller.delete(&if_sock.sock) {
                         error!("check_ip_changes: poller.delete {:?}: {}", &if_sock.intf, e);
@@ -682,12 +678,13 @@ impl Zeroconf {
         }
 
         // Keep the interfaces only if they still exist.
-        self.intf_socks.retain(|f| my_ifv4addrs.contains(&f.intf));
+        self.intf_socks
+            .retain(|_, v| my_ifv4addrs.contains(&v.intf));
 
         // Add newly found interfaces.
         for intf in my_ifv4addrs {
             // Skip existing interfaces.
-            if self.intf_socks.iter().any(|x| x.intf == intf) {
+            if self.intf_socks.get(&intf.ip).is_some() {
                 continue;
             }
 
@@ -703,39 +700,20 @@ impl Zeroconf {
                     continue;
                 }
             };
-            self.intf_socks.push(IntfSock { intf, sock });
 
             // Add the new interface into the poller.
-            let idx = self.intf_socks.len() - 1;
-            if let Err(e) = self
-                .poller
-                .add(&self.intf_socks[idx].sock, polling::Event::readable(idx))
-            {
-                error!("check_ip_changes: poller add idx {}: {}", idx, e);
+            let key = u32::from(new_ip) as usize;
+            if let Err(e) = self.poller.add(&sock, polling::Event::readable(key)) {
+                error!("check_ip_changes: poller add ip {}: {}", new_ip, e);
             }
+
+            self.intf_socks.insert(new_ip, IntfSock { intf, sock });
 
             self.add_addr_in_my_services(new_ip);
 
             // Notify the monitors.
             self.notify_monitors(DaemonEvent::Ipv4Add(new_ip));
         }
-
-        // Reset the poller if some sockets were deleted because indexes changed.
-        if !deleted_addrs.is_empty() {
-            for idx in 0..self.intf_socks.len() {
-                if let Err(e) = self
-                    .poller
-                    .modify(&self.intf_socks[idx].sock, polling::Event::readable(idx))
-                {
-                    error!("check_ip_changes: poller modify idx {}: {}", idx, e);
-                }
-            }
-        }
-    }
-
-    /// Replaces the socket at `idx` with a new one.
-    fn replace_intf_sock(&mut self, idx: usize, new_sock: IntfSock) {
-        self.intf_socks[idx] = new_sock;
     }
 
     /// Registers a service.
@@ -748,7 +726,7 @@ impl Zeroconf {
     /// Zeroconf will then respond to requests for information about this service.
     fn register_service(&mut self, info: ServiceInfo) {
         let mut announced_addrs = Vec::new();
-        for intf_sock in self.intf_socks.iter() {
+        for (_, intf_sock) in self.intf_socks.iter() {
             if self.broadcast_service_on_intf(&info, intf_sock) {
                 announced_addrs.push(intf_sock.intf.ip);
             }
@@ -949,7 +927,7 @@ impl Zeroconf {
         debug!("Sending multicast query for {}", name);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         out.add_question(name, qtype);
-        for intf_sock in self.intf_socks.iter() {
+        for (_, intf_sock) in self.intf_socks.iter() {
             self.send(&out, &self.broadcast_addr, intf_sock);
         }
     }
@@ -958,8 +936,11 @@ impl Zeroconf {
     ///
     /// Returns false if failed to receive a packet,
     /// otherwise returns true.
-    fn handle_read(&mut self, idx: usize) -> bool {
-        let intf_sock = &mut self.intf_socks[idx];
+    fn handle_read(&mut self, ipv4: &Ipv4Addr) -> bool {
+        let intf_sock = match self.intf_socks.get_mut(ipv4) {
+            Some(if_sock) => if_sock,
+            None => return true,
+        };
         let mut buf = vec![0u8; MAX_MSG_ABSOLUTE];
         let sz = match intf_sock.sock.read(&mut buf) {
             Ok(sz) => sz,
@@ -984,10 +965,10 @@ impl Zeroconf {
             match new_socket_bind(&intf_sock.intf.ip) {
                 Ok(sock) => {
                     let intf = intf_sock.intf.clone();
-                    self.replace_intf_sock(idx, IntfSock { intf, sock });
-                    debug!("reset socket at idx {}", idx);
+                    self.intf_socks.insert(*ipv4, IntfSock { intf, sock });
+                    debug!("reset socket for IP {}", ipv4);
                 }
-                Err(e) => error!("re-bind a socket to {}: {}", &intf_sock.intf.ip, e),
+                Err(e) => error!("re-bind a socket to {}: {}", ipv4, e),
             }
             return false;
         }
@@ -995,7 +976,7 @@ impl Zeroconf {
         match DnsIncoming::new(buf) {
             Ok(msg) => {
                 if msg.is_query() {
-                    self.handle_query(msg, idx);
+                    self.handle_query(msg, ipv4);
                 } else if msg.is_response() {
                     self.handle_response(msg);
                 } else {
@@ -1269,8 +1250,11 @@ impl Zeroconf {
         }
     }
 
-    fn handle_query(&mut self, msg: DnsIncoming, intf_idx: usize) {
-        let intf_sock = &self.intf_socks[intf_idx];
+    fn handle_query(&mut self, msg: DnsIncoming, ipv4: &Ipv4Addr) {
+        let intf_sock = match self.intf_socks.get(ipv4) {
+            Some(sock) => sock,
+            None => return,
+        };
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
 
         // Special meta-query "_services._dns-sd._udp.<Domain>".
@@ -1457,7 +1441,7 @@ enum Command {
     RegisterResend(String), // (fullname)
 
     /// Resend unregister packet.
-    UnregisterResend(Vec<u8>, usize), // (packet content)
+    UnregisterResend(Vec<u8>, Ipv4Addr), // (packet content)
 
     /// Stop browsing a service type
     StopBrowse(String), // (ty_domain)
