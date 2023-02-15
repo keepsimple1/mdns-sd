@@ -29,7 +29,7 @@ pub struct ServiceInfo {
     other_ttl: u32, // used for PTR and TXT records
     priority: u16,
     weight: u16,
-    properties: HashMap<String, String>,
+    txt_properties: TxtProperties,
     last_update: u64, // UNIX time in millis
     addr_auto: bool,  // Let the system update addresses automatically.
 }
@@ -41,7 +41,13 @@ impl ServiceInfo {
     /// "_my-service._udp.local.".
     ///
     /// `my_name` is the instance name, without the service type suffix.
-    /// `properties` are optional key/value pairs for the service.
+    ///
+    /// `properties` can be `None` or key/value string pairs, in a type that
+    /// implements [`IntoTxtProperties`] trait. It supports:
+    /// - `HashMap<String, String>`
+    /// - `Option<HashMap<String, String>>`
+    /// - `&[(&str, &str)]`
+    /// - `&[(String, String)]`
     ///
     /// `host_ipv4` can be one or more IPv4 addresses, in a type that implements
     /// [`AsIpv4Addrs`] trait. It supports:
@@ -52,13 +58,13 @@ impl ServiceInfo {
     /// - All the above formats with [Ipv4Addr] or `String` instead of `&str`.
     ///
     /// The host TTL and other TTL are set to default values.
-    pub fn new<Ip: AsIpv4Addrs>(
+    pub fn new<Ip: AsIpv4Addrs, P: IntoTxtProperties>(
         ty_domain: &str,
         my_name: &str,
         host_name: &str,
         host_ipv4: Ip,
         port: u16,
-        properties: Option<HashMap<String, String>>,
+        properties: P,
     ) -> Result<Self> {
         let (ty_domain, sub_domain) = split_sub_domain(ty_domain);
 
@@ -67,7 +73,7 @@ impl ServiceInfo {
         let sub_domain = sub_domain.map(str::to_string);
         let server = host_name.to_string();
         let addresses = host_ipv4.as_ipv4_addrs()?;
-        let properties = properties.unwrap_or_default();
+        let txt_properties = properties.into_txt_properties();
         let last_update = current_time_millis();
 
         let this = Self {
@@ -81,7 +87,7 @@ impl ServiceInfo {
             other_ttl: DNS_OTHER_TTL,
             priority: 0,
             weight: 0,
-            properties,
+            txt_properties,
             last_update,
             addr_auto: false,
         };
@@ -128,10 +134,20 @@ impl ServiceInfo {
         &self.fullname
     }
 
-    /// Returns a reference of the properties from TXT records.
+    /// Returns the properties from TXT records.
     #[inline]
-    pub fn get_properties(&self) -> &HashMap<String, String> {
-        &self.properties
+    pub fn get_properties(&self) -> &[TxtProperty] {
+        &self.txt_properties.properties
+    }
+
+    /// Returns a property for a given `name`, where `name` is
+    /// case insensitive.
+    pub fn get_property(&self, name: &str) -> Option<&TxtProperty> {
+        let key = name.to_lowercase();
+        self.txt_properties
+            .properties
+            .iter()
+            .find(|&prop| prop.key.to_lowercase() == key)
     }
 
     /// Returns the service's hostname.
@@ -206,7 +222,7 @@ impl ServiceInfo {
     }
 
     pub(crate) fn generate_txt(&self) -> Vec<u8> {
-        encode_txt(&self.properties)
+        encode_txt(self.get_properties())
     }
 
     pub(crate) fn set_port(&mut self, port: u16) {
@@ -218,7 +234,9 @@ impl ServiceInfo {
     }
 
     pub(crate) fn set_properties_from_txt(&mut self, txt: &[u8]) {
-        self.properties = decode_txt(txt);
+        self.txt_properties = TxtProperties {
+            properties: decode_txt(txt),
+        };
     }
 
     pub(crate) fn get_last_update(&self) -> u64 {
@@ -297,11 +315,120 @@ impl AsIpv4Addrs for std::net::Ipv4Addr {
     }
 }
 
+/// Represents properties in a TXT record.
+///
+/// The key string of a property is case insensitive, and only
+/// one [`TxtProperty`] is stored for the same key.
+///
+/// [RFC 6763](https://www.rfc-editor.org/rfc/rfc6763#section-6.4):
+/// "A given key SHOULD NOT appear more than once in a TXT record."
+#[derive(Debug, Clone)]
+pub struct TxtProperties {
+    // Use `Vec` instead of `HashMap` to keep the order of insertions.
+    properties: Vec<TxtProperty>,
+}
+
+/// Represents a property in a TXT record.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TxtProperty {
+    /// The name of the property. The original cases are kept.
+    key: String,
+
+    /// RFC 6763 says values are bytes, not necessarily UTF-8.
+    /// For now we define `val` as UTF-8 for ergnomics benefits.
+    val: String,
+}
+
+impl TxtProperty {
+    /// Returns the key of a property.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the value of a property.
+    pub fn val(&self) -> &str {
+        &self.val
+    }
+}
+
+/// Supports constructing from a tuple.
+impl From<&(&str, &str)> for TxtProperty {
+    fn from(prop: &(&str, &str)) -> Self {
+        TxtProperty {
+            key: prop.0.to_string(),
+            val: prop.1.to_string(),
+        }
+    }
+}
+
+impl From<&(String, String)> for TxtProperty {
+    fn from(prop: &(String, String)) -> Self {
+        TxtProperty {
+            key: prop.0.clone(),
+            val: prop.1.clone(),
+        }
+    }
+}
+
+/// This trait allows for converting inputs into [`TxtProperties`].
+pub trait IntoTxtProperties {
+    fn into_txt_properties(self) -> TxtProperties;
+}
+
+impl IntoTxtProperties for HashMap<String, String> {
+    fn into_txt_properties(mut self) -> TxtProperties {
+        let properties = self
+            .drain()
+            .map(|(key, val)| TxtProperty { key, val })
+            .collect();
+        TxtProperties { properties }
+    }
+}
+
+/// Mainly for backward compatibility.
+impl IntoTxtProperties for Option<HashMap<String, String>> {
+    fn into_txt_properties(self) -> TxtProperties {
+        match self {
+            None => {
+                let properties = Vec::new();
+                TxtProperties { properties }
+            }
+            Some(h) => h.into_txt_properties(),
+        }
+    }
+}
+
+/// Support Vec like `[("k1", "v1"), ("k2", "v2")]`.
+impl<'a, T: 'a> IntoTxtProperties for &'a [T]
+where
+    TxtProperty: From<&'a T>,
+{
+    fn into_txt_properties(self) -> TxtProperties {
+        let mut properties = Vec::new();
+        let mut keys = HashSet::new();
+        for t in self.iter() {
+            let prop = TxtProperty::from(t);
+            let key = prop.key.to_lowercase();
+            if keys.insert(key) {
+                // Only push a new entry if the key did not exist.
+                //
+                // RFC 6763: https://www.rfc-editor.org/rfc/rfc6763#section-6.4
+                //
+                // "If a client receives a TXT record containing the same key more than
+                //    once, then the client MUST silently ignore all but the first
+                //    occurrence of that attribute. "
+                properties.push(prop);
+            }
+        }
+        TxtProperties { properties }
+    }
+}
+
 // Convert from properties key/value pairs to DNS TXT record content
-fn encode_txt(map: &HashMap<String, String>) -> Vec<u8> {
+fn encode_txt(properties: &[TxtProperty]) -> Vec<u8> {
     let mut bytes = Vec::new();
-    for (k, v) in map {
-        let s = format!("{}={}", k, v);
+    for prop in properties.iter() {
+        let s = format!("{}={}", prop.key, prop.val);
         bytes.push(s.len().try_into().unwrap());
         bytes.extend_from_slice(s.as_bytes());
     }
@@ -312,8 +439,8 @@ fn encode_txt(map: &HashMap<String, String>) -> Vec<u8> {
 }
 
 // Convert from DNS TXT record content to key/value pairs
-fn decode_txt(txt: &[u8]) -> HashMap<String, String> {
-    let mut kv_map = HashMap::new();
+fn decode_txt(txt: &[u8]) -> Vec<TxtProperty> {
+    let mut properties = Vec::new();
     let mut offset = 0;
     while offset < txt.len() {
         let length = txt[offset] as usize;
@@ -326,7 +453,10 @@ fn decode_txt(txt: &[u8]) -> HashMap<String, String> {
                 Some(idx) => {
                     let k = &kv_string[..idx];
                     let v = &kv_string[idx + 1..];
-                    kv_map.entry(k.to_string()).or_insert_with(|| v.to_string());
+                    properties.push(TxtProperty {
+                        key: k.to_string(),
+                        val: v.to_string(),
+                    });
                 }
                 None => error!("cannot find = sign inside {}", &kv_string),
             },
@@ -335,7 +465,7 @@ fn decode_txt(txt: &[u8]) -> HashMap<String, String> {
         offset += length;
     }
 
-    kv_map
+    properties
 }
 
 /// Returns a tuple of (service_type_domain, optional_sub_domain)
@@ -358,16 +488,23 @@ pub(crate) fn valid_ipv4_on_intf(addr: &Ipv4Addr, intf: &Ifv4Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{decode_txt, encode_txt};
-    use std::collections::HashMap;
+    use crate::service_info::TxtProperty;
 
     #[test]
     fn test_txt_encode_decode() {
-        let mut map = HashMap::new();
-        map.insert("key1".to_string(), "value1".to_string());
-        map.insert("key2".to_string(), "value2".to_string());
+        let properties = vec![
+            TxtProperty {
+                key: "key1".to_string(),
+                val: "value1".to_string(),
+            },
+            TxtProperty {
+                key: "key2".to_string(),
+                val: "value2".to_string(),
+            },
+        ];
 
         // test encode
-        let encoded = encode_txt(&map);
+        let encoded = encode_txt(&properties);
         assert_eq!(
             encoded.len(),
             "key1=".len() + "value1".len() + "key2=".len() + "value2".len() + 2
@@ -376,6 +513,6 @@ mod tests {
 
         // test decode
         let decoded = decode_txt(&encoded);
-        assert_eq!(map, decoded);
+        assert!(&properties[..] == &decoded[..]);
     }
 }
