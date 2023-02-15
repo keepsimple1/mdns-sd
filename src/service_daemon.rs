@@ -255,6 +255,8 @@ impl ServiceDaemon {
     /// 5. process retransmissions if any.
     fn run(mut zc: Zeroconf, receiver: Receiver<Command>) {
         for (ipv4, if_sock) in zc.intf_socks.iter() {
+            // It is OK to convert to `usize` here as we only support 32-bit
+            // or 64-bit platforms.
             let key = u32::from(*ipv4) as usize;
             if let Err(e) = zc.poller.add(&if_sock.sock, polling::Event::readable(key)) {
                 error!("add socket of {:?} to poller: {}", ipv4, e);
@@ -282,7 +284,7 @@ impl ServiceDaemon {
                                 .poller
                                 .modify(&intf_sock.sock, polling::Event::readable(ev.key))
                             {
-                                error!("failed to poll listen_socket again: {}", e);
+                                error!("modify poller for IP {}: {}", &ipv4, e);
                                 break;
                             }
                         }
