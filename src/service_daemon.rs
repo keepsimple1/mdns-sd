@@ -934,14 +934,14 @@ impl Zeroconf {
         }
     }
 
-    /// Reads from the socket in self.intf_socks[idx].
+    /// Reads from the socket of `ipv4`.
     ///
     /// Returns false if failed to receive a packet,
     /// otherwise returns true.
     fn handle_read(&mut self, ipv4: &Ipv4Addr) -> bool {
         let intf_sock = match self.intf_socks.get_mut(ipv4) {
             Some(if_sock) => if_sock,
-            None => return true,
+            None => return false,
         };
         let mut buf = vec![0u8; MAX_MSG_ABSOLUTE];
         let sz = match intf_sock.sock.read(&mut buf) {
