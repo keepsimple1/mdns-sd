@@ -150,6 +150,13 @@ impl ServiceInfo {
             .find(|&prop| prop.key.to_lowercase() == key)
     }
 
+    /// Returns a property value string for a given `key`, where `key` is
+    /// case insensitive.
+    #[inline]
+    pub fn get_property_val(&self, key: &str) -> Option<&str> {
+        self.get_property(key).map(|x| x.val())
+    }
+
     /// Returns the service's hostname.
     #[inline]
     pub fn get_hostname(&self) -> &str {
