@@ -98,6 +98,7 @@
 //! We focus on the common use cases at first, and currently have the following limitations:
 //! - Only support IPv4, not IPv6.
 //! - Only support multicast, not unicast send/recv.
+//! - Only support 32-bit or bigger platforms, not 16-bit platforms.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::single_component_path_imports)]
