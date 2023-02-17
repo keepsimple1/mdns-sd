@@ -85,6 +85,8 @@ fn integration_success() {
                     assert_eq!(properties.len(), 3);
                     assert!(info.get_property("property_1").is_some());
                     assert!(info.get_property("property_2").is_some());
+                    assert_eq!(info.get_property_val("property_1"), Some("test"));
+                    assert_eq!(info.get_property_val("property_2"), Some("1"));
 
                     let host_ttl = info.get_host_ttl();
                     assert_eq!(host_ttl, 120); // default value.
