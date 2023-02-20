@@ -14,12 +14,22 @@ use mdns_sd::{ServiceDaemon, ServiceInfo};
 fn main() {
     // Create a new mDNS daemon.
     let mdns = ServiceDaemon::new().expect("Could not create service daemon");
-    let service_type = std::env::args()
-        .nth(1)
-        .expect("require a service_type as the 1st argument");
-    let instance_name = std::env::args()
-        .nth(2)
-        .expect("require a instance_name as the 2nd argument");
+    let service_type = match std::env::args().nth(1) {
+        Some(arg) => arg,
+        None => {
+            println!("ERROR: register requires a service_type as the 1st argument. For example:");
+            println!("cargo run --example register _my-hello._udp.local. test1");
+            return;
+        }
+    };
+    let instance_name = match std::env::args().nth(2) {
+        Some(arg) => arg,
+        None => {
+            println!("ERROR: require a instance_name as the 2nd argument. For example: ");
+            println!("cargo run --example register _my-hello._udp.local. test1");
+            return;
+        }
+    };
 
     // With `enable_addr_auto()`, we can give empty addrs and let the lib find them.
     // If the caller knows specific addrs to use, then assign the addrs here.
