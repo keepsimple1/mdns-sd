@@ -342,6 +342,11 @@ impl TxtProperties {
         self.properties.len()
     }
 
+    /// Returns if the properties are empty.
+    pub fn is_empty(&self) -> bool {
+        self.properties.is_empty()
+    }
+
     /// Returns a property for a given `key`, where `key` is
     /// case insensitive.
     pub fn get(&self, key: &str) -> Option<&TxtProperty> {
