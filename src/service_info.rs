@@ -136,25 +136,21 @@ impl ServiceInfo {
 
     /// Returns the properties from TXT records.
     #[inline]
-    pub fn get_properties(&self) -> &[TxtProperty] {
-        &self.txt_properties.properties
+    pub fn get_properties(&self) -> &TxtProperties {
+        &self.txt_properties
     }
 
-    /// Returns a property for a given `name`, where `name` is
+    /// Returns a property for a given `key`, where `key` is
     /// case insensitive.
-    pub fn get_property(&self, name: &str) -> Option<&TxtProperty> {
-        let key = name.to_lowercase();
-        self.txt_properties
-            .properties
-            .iter()
-            .find(|&prop| prop.key.to_lowercase() == key)
+    pub fn get_property(&self, key: &str) -> Option<&TxtProperty> {
+        self.txt_properties.get(key)
     }
 
     /// Returns a property value string for a given `key`, where `key` is
     /// case insensitive.
     #[inline]
     pub fn get_property_val(&self, key: &str) -> Option<&str> {
-        self.get_property(key).map(|x| x.val())
+        self.txt_properties.get_property_val(key)
     }
 
     /// Returns the service's hostname.
@@ -229,7 +225,7 @@ impl ServiceInfo {
     }
 
     pub(crate) fn generate_txt(&self) -> Vec<u8> {
-        encode_txt(self.get_properties())
+        encode_txt(self.get_properties().iter())
     }
 
     pub(crate) fn set_port(&mut self, port: u16) {
@@ -335,6 +331,33 @@ pub struct TxtProperties {
     properties: Vec<TxtProperty>,
 }
 
+impl TxtProperties {
+    /// Returns an iterator for all properties.
+    pub fn iter(&self) -> impl Iterator<Item = &TxtProperty> {
+        self.properties.iter()
+    }
+
+    /// Returns the number of properties.
+    pub fn len(&self) -> usize {
+        self.properties.len()
+    }
+
+    /// Returns a property for a given `key`, where `key` is
+    /// case insensitive.
+    pub fn get(&self, key: &str) -> Option<&TxtProperty> {
+        let key = key.to_lowercase();
+        self.properties
+            .iter()
+            .find(|&prop| prop.key.to_lowercase() == key)
+    }
+
+    /// Returns a property value string for a given `key`, where `key` is
+    /// case insensitive.
+    pub fn get_property_val(&self, key: &str) -> Option<&str> {
+        self.get(key).map(|x| x.val())
+    }
+}
+
 /// Represents a property in a TXT record.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TxtProperty {
@@ -359,20 +382,15 @@ impl TxtProperty {
 }
 
 /// Supports constructing from a tuple.
-impl From<&(&str, &str)> for TxtProperty {
-    fn from(prop: &(&str, &str)) -> Self {
+impl<K, V> From<&(K, V)> for TxtProperty
+where
+    K: ToString,
+    V: ToString,
+{
+    fn from(prop: &(K, V)) -> Self {
         TxtProperty {
             key: prop.0.to_string(),
             val: prop.1.to_string(),
-        }
-    }
-}
-
-impl From<&(String, String)> for TxtProperty {
-    fn from(prop: &(String, String)) -> Self {
-        TxtProperty {
-            key: prop.0.clone(),
-            val: prop.1.clone(),
         }
     }
 }
@@ -432,9 +450,9 @@ where
 }
 
 // Convert from properties key/value pairs to DNS TXT record content
-fn encode_txt(properties: &[TxtProperty]) -> Vec<u8> {
+fn encode_txt<'a>(properties: impl Iterator<Item = &'a TxtProperty>) -> Vec<u8> {
     let mut bytes = Vec::new();
-    for prop in properties.iter() {
+    for prop in properties {
         let s = format!("{}={}", prop.key, prop.val);
         bytes.push(s.len().try_into().unwrap());
         bytes.extend_from_slice(s.as_bytes());
@@ -511,7 +529,7 @@ mod tests {
         ];
 
         // test encode
-        let encoded = encode_txt(&properties);
+        let encoded = encode_txt(properties.iter());
         assert_eq!(
             encoded.len(),
             "key1=".len() + "value1".len() + "key2=".len() + "value2".len() + 2
