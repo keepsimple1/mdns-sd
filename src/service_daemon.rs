@@ -397,16 +397,11 @@ impl ServiceDaemon {
                 debug!("announce service: {}", &fullname);
                 match zc.my_services.get(&fullname) {
                     Some(info) => {
-                        let mut announced_addrs = Vec::new();
-                        for (_, intf_sock) in zc.intf_socks.iter() {
-                            if zc.broadcast_service_on_intf(info, intf_sock) {
-                                announced_addrs.push(intf_sock.intf.ip);
-                            }
-                        }
-                        if !announced_addrs.is_empty() {
+                        let outgoing_addrs = zc.send_unsolicited_response(info);
+                        if !outgoing_addrs.is_empty() {
                             zc.notify_monitors(DaemonEvent::Announce(
                                 fullname,
-                                format!("{:?}", &announced_addrs),
+                                format!("{:?}", &outgoing_addrs),
                             ));
                         }
                         zc.increase_counter(Counter::RegisterResend, 1);
@@ -727,16 +722,11 @@ impl Zeroconf {
     ///
     /// Zeroconf will then respond to requests for information about this service.
     fn register_service(&mut self, info: ServiceInfo) {
-        let mut announced_addrs = Vec::new();
-        for (_, intf_sock) in self.intf_socks.iter() {
-            if self.broadcast_service_on_intf(&info, intf_sock) {
-                announced_addrs.push(intf_sock.intf.ip);
-            }
-        }
-        if !announced_addrs.is_empty() {
+        let outgoing_addrs = self.send_unsolicited_response(&info);
+        if !outgoing_addrs.is_empty() {
             self.notify_monitors(DaemonEvent::Announce(
                 info.get_fullname().to_string(),
-                format!("{:?}", &announced_addrs),
+                format!("{:?}", &outgoing_addrs),
             ));
         }
 
@@ -755,7 +745,19 @@ impl Zeroconf {
         self.my_services.insert(service_fullname, info);
     }
 
-    /// Send an unsolicited response for owned service
+    /// Sends out annoucement of `info` on every valid interface.
+    /// Returns the list of interface IPs that sent out the annoucement.
+    fn send_unsolicited_response(&self, info: &ServiceInfo) -> Vec<Ipv4Addr> {
+        let mut outgoing_addrs = Vec::new();
+        for (_, intf_sock) in self.intf_socks.iter() {
+            if self.broadcast_service_on_intf(info, intf_sock) {
+                outgoing_addrs.push(intf_sock.intf.ip);
+            }
+        }
+        outgoing_addrs
+    }
+
+    /// Send an unsolicited response for owned service via `intf_sock`.
     fn broadcast_service_on_intf(&self, info: &ServiceInfo, intf_sock: &IntfSock) -> bool {
         let service_fullname = info.get_fullname();
         debug!("broadcast service {}", service_fullname);
