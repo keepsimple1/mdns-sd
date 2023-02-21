@@ -11,7 +11,8 @@ support `iter()`, `get()` methods.
 
 Highlights:
 
-- TXT properties' names are now case insensitive.
+- TXT properties' names are now case insensitive. And the original user input
+order is kept.
 - A new method `ServiceInfo::enable_addr_auto()`: automatically fill in IP
 addresses for published services.
 - Detect IP changes.
