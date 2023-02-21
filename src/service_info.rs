@@ -46,8 +46,7 @@ impl ServiceInfo {
     /// implements [`IntoTxtProperties`] trait. It supports:
     /// - `HashMap<String, String>`
     /// - `Option<HashMap<String, String>>`
-    /// - `&[(&str, &str)]`
-    /// - `&[(String, String)]`
+    /// - slice of tuple: `&[(K, V)]` where `K` and `V` are [`std::string::ToString`].
     ///
     /// `host_ipv4` can be one or more IPv4 addresses, in a type that implements
     /// [`AsIpv4Addrs`] trait. It supports:
