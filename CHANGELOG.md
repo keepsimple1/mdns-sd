@@ -1,3 +1,22 @@
+# Version 0.6.0
+
+Breaking Changes:
+
+- `ServiceInfo::new()` takes `IntoTxtProperties` trait instead of a
+`HashMap` of properties. It is also backward-compatiable: the trait
+is implemented for `HashMap` and `Option<HashMap>`.
+- `ServiceInfo::get_properties()` returns `&TxtProperties` instead of
+a `HashMap` of properties. It is also mostly backward-compatiable:
+support `iter()`, `get()` methods.
+
+Highlights:
+
+- TXT properties' names are now case insensitive.
+- Optional: automatically fill in IP addresses for published services.
+- Detect IP changes.
+- A new `ServiceDaemon::monitor()` method to return a `Receiver` handle to
+monitor the daemon events, such as IP changes.
+
 # Version 0.5.10
 
 - skip interfaces that failed to bind (#79) (re-apply fix in v0.5.6)
