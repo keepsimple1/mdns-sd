@@ -1,5 +1,7 @@
 use if_addrs::{IfAddr, Ifv4Addr};
-use mdns_sd::{Error, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus};
+use mdns_sd::{
+    Error, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus,
+};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
@@ -294,6 +296,19 @@ fn service_txt_properties_case_insensitive() {
     // Verify the original property name is kept.
     let prop_mixed = my_service.get_property("prop_cap_lower").unwrap();
     assert_eq!(prop_mixed.key(), "prop_Cap_Lower");
+}
+
+#[test]
+fn test_into_txt_properties() {
+    // Verify (&str, String) tuple is supported.
+    let properties = vec![("key1", String::from("val1"))];
+    let txt_props = properties.into_txt_properties();
+    assert_eq!(txt_props.get_property_val("key1").unwrap(), "val1");
+
+    // Verify (String, String) tuple is supported.
+    let properties = vec![(String::from("key2"), String::from("val2"))];
+    let txt_props = properties.into_txt_properties();
+    assert_eq!(txt_props.get_property_val("key2").unwrap(), "val2");
 }
 
 #[test]
