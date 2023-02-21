@@ -12,7 +12,8 @@ support `iter()`, `get()` methods.
 Highlights:
 
 - TXT properties' names are now case insensitive.
-- Optional: automatically fill in IP addresses for published services.
+- A new method `ServiceInfo::enable_addr_auto()`: automatically fill in IP
+addresses for published services.
 - Detect IP changes.
 - A new `ServiceDaemon::monitor()` method to return a `Receiver` handle to
 monitor the daemon events, such as IP changes.
