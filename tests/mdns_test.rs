@@ -84,6 +84,8 @@ fn integration_success() {
                     assert_eq!(service_port, port);
 
                     let properties = info.get_properties();
+                    assert!(properties.get("property_1").is_some());
+                    assert!(properties.get("property_2").is_some());
                     assert_eq!(properties.len(), 3);
                     assert!(info.get_property("property_1").is_some());
                     assert!(info.get_property("property_2").is_some());
