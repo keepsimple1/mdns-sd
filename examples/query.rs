@@ -19,9 +19,14 @@ fn main() {
     // Create a daemon
     let mdns = ServiceDaemon::new().expect("Failed to create daemon");
 
-    let mut service_type = std::env::args()
-        .nth(1)
-        .expect("it requires a service_type as argument");
+    let mut service_type = match std::env::args().nth(1) {
+        Some(arg) => arg,
+        None => {
+            println!("ERROR: require a service_type as argument. For example: ");
+            println!("cargo run --example query _my-service._udp");
+            return;
+        }
+    };
 
     // Browse for a service type.
     service_type.push_str(".local.");
