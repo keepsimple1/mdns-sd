@@ -1198,31 +1198,33 @@ impl Zeroconf {
         );
         let now = current_time_millis();
 
+        // remove records that are expired.
         msg.answers.retain(|record| {
-            if record.get_record().is_expired(now) {
-                debug!("record is expired, removing it from cache.");
-                if self.cache.remove(record) {
-                    // for PTR records, send event to listeners
-                    if let Some(dns_ptr) = record.any().downcast_ref::<DnsPointer>() {
-                        call_listener(
-                            &self.queriers,
-                            dns_ptr.get_name(),
-                            ServiceEvent::ServiceRemoved(
-                                dns_ptr.get_name().to_string(),
-                                dns_ptr.alias.clone(),
-                            ),
-                        );
-                    }
-                }
-                false
-            } else {
-                true
+            if !record.get_record().is_expired(now) {
+                return true;
             }
+
+            debug!("record is expired, removing it from cache.");
+            if self.cache.remove(record) {
+                // for PTR records, send event to listeners
+                if let Some(dns_ptr) = record.any().downcast_ref::<DnsPointer>() {
+                    call_listener(
+                        &self.queriers,
+                        dns_ptr.get_name(),
+                        ServiceEvent::ServiceRemoved(
+                            dns_ptr.get_name().to_string(),
+                            dns_ptr.alias.clone(),
+                        ),
+                    );
+                }
+            }
+            false
         });
 
         let mut resolved = Vec::new();
 
         // process PTR records first as we create entries in cache based on PTR records.
+        // This code can be simplified when `drain_filter` is stablized.
         let mut i = 0;
         while i < msg.answers.len() {
             if msg.answers[i].get_type() == TYPE_PTR {
