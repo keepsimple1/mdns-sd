@@ -1113,8 +1113,8 @@ impl Zeroconf {
             }
         } else if let Some(dns_txt) = answer.any().downcast_ref::<DnsTxt>() {
             if let Some(info) = instances_to_resolve.get_mut(answer.get_name()) {
-                debug!("setting text for service info");
                 info.set_properties_from_txt(&dns_txt.text);
+                debug!("setting TXT: {:?}", info.get_properties());
                 if info.is_ready() {
                     resolved.push(answer.get_name().to_string());
                 }
@@ -1192,14 +1192,16 @@ impl Zeroconf {
     fn handle_response(&mut self, mut msg: DnsIncoming) {
         debug!(
             "handle_response: {} answers {} authorities {} additionals",
-            &msg.num_answers, &msg.num_authorities, &msg.num_additionals
+            &msg.answers.len(),
+            &msg.num_authorities,
+            &msg.num_additionals
         );
         let now = current_time_millis();
-        let mut resolved = Vec::new();
-        while !msg.answers.is_empty() {
-            let record = msg.answers.remove(0);
+
+        msg.answers.retain(|record| {
             if record.get_record().is_expired(now) {
-                if self.cache.remove(&record) {
+                debug!("record is expired, removing it from cache.");
+                if self.cache.remove(record) {
                     // for PTR records, send event to listeners
                     if let Some(dns_ptr) = record.any().downcast_ref::<DnsPointer>() {
                         call_listener(
@@ -1212,11 +1214,32 @@ impl Zeroconf {
                         );
                     }
                 }
+                false
             } else {
+                true
+            }
+        });
+
+        let mut resolved = Vec::new();
+
+        // process PTR records first as we create entries in cache based on PTR records.
+        let mut i = 0;
+        while i < msg.answers.len() {
+            if msg.answers[i].get_type() == TYPE_PTR {
+                let record = msg.answers.remove(i);
                 let mut newly_resolved = self.handle_answer(record);
                 resolved.append(&mut newly_resolved);
+            } else {
+                i += 1;
             }
         }
+
+        // process other types of records.
+        for record in msg.answers {
+            let mut newly_resolved = self.handle_answer(record);
+            resolved.append(&mut newly_resolved);
+        }
+
         self.process_resolved(resolved);
     }
 
@@ -1224,6 +1247,7 @@ impl Zeroconf {
     /// It is OK to have duplicated instances in `resolved`.
     fn process_resolved(&mut self, resolved: Vec<String>) {
         for instance in resolved.iter() {
+            debug!("remove instance: {}", instance);
             let info = match self.instances_to_resolve.remove(instance) {
                 Some(i) => i,
                 None => {
