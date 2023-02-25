@@ -457,6 +457,62 @@ fn service_name_check() {
     server_daemon.shutdown().unwrap();
 }
 
+#[test]
+fn service_new_publish_after_browser() {
+    let service_type = "_new-pub._udp.local.";
+    let daemon = ServiceDaemon::new().expect("Failed to create a new daemon");
+
+    // First, starts the browser.
+    let receiver = daemon.browse(service_type).unwrap();
+
+    sleep(Duration::from_millis(1000));
+
+    let txt_properties = vec![("key1", "value1")];
+    let service_info = ServiceInfo::new(
+        "_new-pub._udp.local.",
+        "test1",
+        "my_host.",
+        "",
+        1234,
+        &txt_properties[..],
+    )
+    .expect("valid service info")
+    .enable_addr_auto();
+
+    // Second, publish a service.
+    let result = daemon.register(service_info);
+    assert!(result.is_ok());
+
+    let mut resolved = false;
+    let timeout = Duration::from_secs(2);
+    loop {
+        match receiver.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    println!(
+                        "Resolved a service of {} addr(s): {:?} props: {:?}",
+                        &info.get_fullname(),
+                        info.get_addresses(),
+                        info.get_properties()
+                    );
+                    resolved = true;
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            },
+            Err(e) => {
+                println!("browse error: {}", e);
+                break;
+            }
+        }
+    }
+
+    assert!(resolved);
+    daemon.shutdown().unwrap();
+}
+
 fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
     // Use a random port for binding test.
     let test_port = fastrand::u16(8000u16..9000u16);

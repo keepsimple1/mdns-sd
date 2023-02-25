@@ -948,6 +948,7 @@ impl DnsIncoming {
                     None
                 }
                 _ => {
+                    debug!("Unknown DNS record type");
                     self.offset += length;
                     None
                 }
