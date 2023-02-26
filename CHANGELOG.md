@@ -1,3 +1,9 @@
+# Version 0.6.1
+
+Highlights:
+
+- Fixs a bug in missing TXT records in received responses.
+
 # Version 0.6.0
 
 Breaking Changes:
