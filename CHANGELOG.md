@@ -2,7 +2,7 @@
 
 Highlights:
 
-- Fixs a bug in missing TXT records in received responses.
+- Fixs a bug: missing TXT records in received responses.
 
 # Version 0.6.0
 
