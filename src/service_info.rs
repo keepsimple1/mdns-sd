@@ -75,6 +75,25 @@ impl ServiceInfo {
         let txt_properties = properties.into_txt_properties();
         let last_update = current_time_millis();
 
+        // RFC6763 section 6.4: https://www.rfc-editor.org/rfc/rfc6763#section-6.4
+        // The characters of a key MUST be printable US-ASCII values (0x20-0x7E)
+        // [RFC20], excluding '=' (0x3D).
+        for prop in txt_properties.iter() {
+            let key = prop.key();
+            if !key.is_ascii() {
+                return Err(Error::Msg(format!(
+                    "TXT property key {} is not ASCII",
+                    prop.key()
+                )));
+            }
+            if key.contains('=') {
+                return Err(Error::Msg(format!(
+                    "TXT property key {} contains '='",
+                    prop.key()
+                )));
+            }
+        }
+
         let this = Self {
             ty_domain,
             sub_domain,
