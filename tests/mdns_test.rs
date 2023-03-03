@@ -301,6 +301,36 @@ fn service_txt_properties_case_insensitive() {
 }
 
 #[test]
+fn service_txt_properties_key_ascii() {
+    let domain = "_mdns-ascii._tcp.local.";
+    let instance = "test_service_info_key_ascii";
+    let port = 5202;
+
+    // Verify that a key must contain ASCII only. E.g. cannot have emojis.
+    let properties = [("prop_ascii", "one"), ("prop_🤗", "hugging_face")];
+    let my_service = ServiceInfo::new(domain, instance, "myhost", "", port, &properties[..]);
+    assert!(my_service.is_err());
+    if let Err(e) = my_service {
+        let msg = format!("ERROR: {}", e);
+        assert!(msg.contains("not ASCII"));
+    }
+
+    // Verify that a key cannot contain '='.
+    let properties = [("prop_ascii", "one"), ("prop_=", "equal sign")];
+    let my_service = ServiceInfo::new(domain, instance, "myhost", "", port, &properties[..]);
+    assert!(my_service.is_err());
+    if let Err(e) = my_service {
+        let msg = format!("ERROR: {}", e);
+        assert!(msg.contains("="));
+    }
+
+    // Verify that properly formatted keys are OK.
+    let properties = [("prop_ascii", "one"), ("prop_2", "two")];
+    let my_service = ServiceInfo::new(domain, instance, "myhost", "", port, &properties[..]);
+    assert!(my_service.is_ok());
+}
+
+#[test]
 fn test_into_txt_properties() {
     // Verify (&str, String) tuple is supported.
     let properties = vec![("key1", String::from("val1"))];
