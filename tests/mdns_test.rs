@@ -294,7 +294,7 @@ fn service_txt_properties_case_insensitive() {
     // Verify `get_property()` method is case insensitive and returns
     // the first property with the same key.
     let prop_cap_case = my_service.get_property("prop_CAP_CASE").unwrap();
-    assert_eq!(prop_cap_case.val(), "one");
+    assert_eq!(prop_cap_case.val_str(), "one");
 
     // Verify the original property name is kept.
     let prop_mixed = my_service.get_property("prop_cap_lower").unwrap();
