@@ -1660,9 +1660,12 @@ impl DnsCache {
     }
 }
 
+/// The length of Service Domain name supported in this lib.
+const DOMAIN_LEN: usize = "._tcp.local.".len();
+
 fn check_service_name_length(ty_domain: &str, limit: u8) -> Result<()> {
-    let domain_len = "._tcp.local.".len();
-    let service_name_len = ty_domain.len() - domain_len - 1;
+    println!("check_service_name_length: {}", ty_domain);
+    let service_name_len = ty_domain.len() - DOMAIN_LEN - 1; // exclude the leading `_`
     if service_name_len > limit as usize {
         return Err(e_fmt!("Service name length must be <= {} bytes", limit));
     }
@@ -1684,8 +1687,7 @@ fn check_service_name(fullname: &str) -> Result<()> {
         ));
     }
 
-    let domain_len = "._tcp.local.".len();
-    let remaining: Vec<&str> = fullname[..fullname.len() - domain_len].split('.').collect();
+    let remaining: Vec<&str> = fullname[..fullname.len() - DOMAIN_LEN].split('.').collect();
     let name = remaining.last().ok_or_else(|| e_fmt!("No service name"))?;
 
     if &name[0..1] != "_" {
