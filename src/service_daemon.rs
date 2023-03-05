@@ -261,7 +261,8 @@ impl ServiceDaemon {
 
         if len_max > SERVICE_NAME_LEN_MAX_LIMIT {
             return Err(Error::Msg(format!(
-                "service name length max {len_max} is too large"
+                "service name length max {} is too large",
+                len_max
             )));
         }
 
