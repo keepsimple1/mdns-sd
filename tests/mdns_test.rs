@@ -1,6 +1,7 @@
 use if_addrs::{IfAddr, Ifv4Addr};
 use mdns_sd::{
-    Error, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus,
+    DaemonEvent, Error, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo,
+    UnregisterStatus,
 };
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -464,9 +465,10 @@ fn subtype() {
 fn service_name_check() {
     // Create a daemon for the server.
     let server_daemon = ServiceDaemon::new().expect("Failed to create server daemon");
+    let monitor = server_daemon.monitor().unwrap();
     // Register a service with a name len > 15.
     let service_name_too_long = "_service-name-too-long._udp.local.";
-    let host_ipv4 = "127.0.0.1";
+    let host_ipv4 = "";
     let host_name = "my_host.";
     let port = 5200;
     let my_service = ServiceInfo::new(
@@ -477,12 +479,31 @@ fn service_name_check() {
         port,
         None,
     )
-    .expect("valid service info");
-    let result = server_daemon.register(my_service);
-    assert!(result.is_err());
-    if let Err(e) = result {
-        println!("register error: {}", &e);
+    .expect("valid service info")
+    .enable_addr_auto();
+    let result = server_daemon.register(my_service.clone());
+    assert!(result.is_ok());
+
+    // Verify that the daemon reported error.
+    let event = monitor.recv_timeout(Duration::from_millis(500)).unwrap();
+    assert!(matches!(event, DaemonEvent::Error(_)));
+    match event {
+        DaemonEvent::Error(e) => println!("Daemon error: {}", e),
+        _ => {}
     }
+
+    // Verify that we can increase the service name length max.
+    server_daemon.set_service_name_len_max(30).unwrap();
+    let result = server_daemon.register(my_service);
+    assert!(result.is_ok());
+
+    // Verify that the service was published successfully.
+    let event = monitor.recv_timeout(Duration::from_millis(500)).unwrap();
+    assert!(matches!(event, DaemonEvent::Announce(_, _)));
+
+    // Check for the internal upper limit of service name length max.
+    let r = server_daemon.set_service_name_len_max(31);
+    assert!(r.is_err());
 
     server_daemon.shutdown().unwrap();
 }

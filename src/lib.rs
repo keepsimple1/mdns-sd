@@ -123,7 +123,10 @@ mod service_daemon;
 mod service_info;
 
 pub use error::{Error, Result};
-pub use service_daemon::{DaemonEvent, Metrics, ServiceDaemon, ServiceEvent, UnregisterStatus};
+pub use service_daemon::{
+    DaemonEvent, Metrics, ServiceDaemon, ServiceEvent, UnregisterStatus,
+    SERVICE_NAME_LEN_MAX_DEFAULT,
+};
 pub use service_info::{AsIpv4Addrs, IntoTxtProperties, ServiceInfo, TxtProperties, TxtProperty};
 
 /// A handler to receive messages from [ServiceDaemon]. Re-export from `flume` crate.

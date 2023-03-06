@@ -62,6 +62,11 @@ macro_rules! e_fmt {
   };
 }
 
+/// The default max length of the service name without domain, not including the
+/// leading underscore (`_`). It is set to 15 per
+/// [RFC 6763 section 7.2](https://www.rfc-editor.org/rfc/rfc6763#section-7.2).
+pub const SERVICE_NAME_LEN_MAX_DEFAULT: u8 = 15;
+
 const MDNS_PORT: u16 = 5353;
 const GROUP_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 
@@ -243,6 +248,30 @@ impl ServiceDaemon {
                 e => e_fmt!("flume::channel::try_send failed: {}", e),
             })?;
         Ok(resp_r)
+    }
+
+    /// Change the max length allowed for a service name.
+    ///
+    /// As RFC 6763 defines a length max for a service name, a user should not call
+    /// this method unless they have to. See [`SERVICE_NAME_LEN_MAX_DEFAULT`].
+    ///
+    /// `len_max` is capped at an internal limit, which is currently 30.
+    pub fn set_service_name_len_max(&self, len_max: u8) -> Result<()> {
+        const SERVICE_NAME_LEN_MAX_LIMIT: u8 = 30; // Double the default length max.
+
+        if len_max > SERVICE_NAME_LEN_MAX_LIMIT {
+            return Err(Error::Msg(format!(
+                "service name length max {} is too large",
+                len_max
+            )));
+        }
+
+        self.sender
+            .try_send(Command::SetOption(DaemonOption::ServiceNameLenMax(len_max)))
+            .map_err(|e| match e {
+                TrySendError::Full(_) => Error::Again,
+                e => e_fmt!("flume::channel::send failed: {}", e),
+            })
     }
 
     /// The main event loop of the daemon thread
@@ -480,6 +509,10 @@ impl ServiceDaemon {
                 zc.monitors.push(resp_s);
             }
 
+            Command::SetOption(daemon_opt) => {
+                zc.process_set_option(daemon_opt);
+            }
+
             _ => {
                 error!("unexpected command: {:?}", &command);
             }
@@ -577,6 +610,9 @@ struct Zeroconf {
 
     /// Channels to notify events.
     monitors: Vec<Sender<DaemonEvent>>,
+
+    /// Options
+    service_name_len_max: u8,
 }
 
 impl Zeroconf {
@@ -601,6 +637,7 @@ impl Zeroconf {
 
         let broadcast_addr = SocketAddrV4::new(GROUP_ADDR, MDNS_PORT).into();
         let monitors = Vec::new();
+        let service_name_len_max = SERVICE_NAME_LEN_MAX_DEFAULT;
 
         Ok(Self {
             intf_socks,
@@ -613,7 +650,14 @@ impl Zeroconf {
             counters: HashMap::new(),
             poller,
             monitors,
+            service_name_len_max,
         })
+    }
+
+    fn process_set_option(&mut self, daemon_opt: DaemonOption) {
+        match daemon_opt {
+            DaemonOption::ServiceNameLenMax(length) => self.service_name_len_max = length,
+        }
     }
 
     fn notify_monitors(&mut self, event: DaemonEvent) {
@@ -722,6 +766,13 @@ impl Zeroconf {
     ///
     /// Zeroconf will then respond to requests for information about this service.
     fn register_service(&mut self, info: ServiceInfo) {
+        // Check the service name length.
+        if let Err(e) = check_service_name_length(info.get_type(), self.service_name_len_max) {
+            error!("check_service_name_length: {}", &e);
+            self.notify_monitors(DaemonEvent::Error(e));
+            return;
+        }
+
         let outgoing_addrs = self.send_unsolicited_response(&info);
         if !outgoing_addrs.is_empty() {
             self.notify_monitors(DaemonEvent::Announce(
@@ -758,6 +809,7 @@ impl Zeroconf {
     }
 
     /// Send an unsolicited response for owned service via `intf_sock`.
+    /// Returns true if sent out successfully.
     fn broadcast_service_on_intf(&self, info: &ServiceInfo, intf_sock: &IntfSock) -> bool {
         let service_fullname = info.get_fullname();
         debug!("broadcast service {}", service_fullname);
@@ -1448,6 +1500,9 @@ pub enum DaemonEvent {
     /// Daemon unsolicitly announced a service from an interface.
     Announce(String, String),
 
+    /// Daemon encountered an error.
+    Error(Error),
+
     /// Daemon detected a new IPv4 address from the host.
     Ipv4Add(Ipv4Addr),
 
@@ -1482,7 +1537,14 @@ enum Command {
     /// Monitor noticable events in the daemon.
     Monitor(Sender<DaemonEvent>),
 
+    SetOption(DaemonOption),
+
     Exit,
+}
+
+#[derive(Debug)]
+enum DaemonOption {
+    ServiceNameLenMax(u8),
 }
 
 struct DnsCache {
@@ -1598,10 +1660,25 @@ impl DnsCache {
     }
 }
 
+/// The length of Service Domain name supported in this lib.
+const DOMAIN_LEN: usize = "._tcp.local.".len();
+
+/// Validate the length of "service_name" in a "_<service_name>.<domain_name>." string.
+fn check_service_name_length(ty_domain: &str, limit: u8) -> Result<()> {
+    let service_name_len = ty_domain.len() - DOMAIN_LEN - 1; // exclude the leading `_`
+    if service_name_len > limit as usize {
+        return Err(e_fmt!("Service name length must be <= {} bytes", limit));
+    }
+    Ok(())
+}
+
 /// Validate the service name in a fully qualified name.
 ///
 /// A Full Name = <Instance>.<Service>.<Domain>
 /// The only `<Domain>` supported are "._tcp.local." and "._udp.local.".
+///
+/// Note: this function does not check for the length of the service name.
+/// Instead `register_service` method will check the length.
 fn check_service_name(fullname: &str) -> Result<()> {
     if !(fullname.ends_with("._tcp.local.") || fullname.ends_with("._udp.local.")) {
         return Err(e_fmt!(
@@ -1610,8 +1687,7 @@ fn check_service_name(fullname: &str) -> Result<()> {
         ));
     }
 
-    let domain_len = "._tcp.local.".len();
-    let remaining: Vec<&str> = fullname[..fullname.len() - domain_len].split('.').collect();
+    let remaining: Vec<&str> = fullname[..fullname.len() - DOMAIN_LEN].split('.').collect();
     let name = remaining.last().ok_or_else(|| e_fmt!("No service name"))?;
 
     if &name[0..1] != "_" {
@@ -1619,10 +1695,6 @@ fn check_service_name(fullname: &str) -> Result<()> {
     }
 
     let name = &name[1..];
-
-    if name.len() > 15 {
-        return Err(e_fmt!("Service name (\"{}\") must be <= 15 bytes", name));
-    }
 
     if name.contains("--") {
         return Err(e_fmt!("Service name must not contain '--'"));

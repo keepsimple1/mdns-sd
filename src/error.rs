@@ -1,7 +1,7 @@
 use std::fmt;
 
 /// A basic error type from this library.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
     /// Like a classic EAGAIN. The receiver should retry.
