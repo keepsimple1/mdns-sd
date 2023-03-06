@@ -1665,7 +1665,6 @@ const DOMAIN_LEN: usize = "._tcp.local.".len();
 
 /// Validate the length of "service_name" in a "_<service_name>.<domain_name>." string.
 fn check_service_name_length(ty_domain: &str, limit: u8) -> Result<()> {
-    println!("check_service_name_length: {}", ty_domain);
     let service_name_len = ty_domain.len() - DOMAIN_LEN - 1; // exclude the leading `_`
     if service_name_len > limit as usize {
         return Err(e_fmt!("Service name length must be <= {} bytes", limit));
