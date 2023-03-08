@@ -160,15 +160,26 @@ impl ServiceInfo {
 
     /// Returns a property for a given `key`, where `key` is
     /// case insensitive.
+    ///
+    /// Returns `None` if `key` does not exist.
     pub fn get_property(&self, key: &str) -> Option<&TxtProperty> {
         self.txt_properties.get(key)
     }
 
+    /// Returns a property value for a given `key`, where `key` is
+    /// case insensitive.
+    ///
+    /// Returns `None` if `key` does not exist.
+    pub fn get_property_val(&self, key: &str) -> Option<Option<&[u8]>> {
+        self.txt_properties.get_property_val(key)
+    }
+
     /// Returns a property value string for a given `key`, where `key` is
     /// case insensitive.
-    #[inline]
-    pub fn get_property_val(&self, key: &str) -> Option<&str> {
-        self.txt_properties.get_property_val(key)
+    ///
+    /// Returns `None` if `key` does not exist.
+    pub fn get_property_val_str(&self, key: &str) -> Option<&str> {
+        self.txt_properties.get_property_val_str(key)
     }
 
     /// Returns the service's hostname.
@@ -374,9 +385,21 @@ impl TxtProperties {
             .find(|&prop| prop.key.to_lowercase() == key)
     }
 
+    /// Returns a property value for a given `key`, where `key` is
+    /// case insensitive.
+    ///
+    /// Returns `None` if `key` does not exist.
+    /// Returns `Some(Option<&u8>)` for its value.
+    pub fn get_property_val(&self, key: &str) -> Option<Option<&[u8]>> {
+        self.get(key).map(|x| x.val())
+    }
+
     /// Returns a property value string for a given `key`, where `key` is
     /// case insensitive.
-    pub fn get_property_val(&self, key: &str) -> Option<&str> {
+    ///
+    /// Returns `None` if `key` does not exist.
+    /// Returns `Some("")` if its value is `None` or is empty.
+    pub fn get_property_val_str(&self, key: &str) -> Option<&str> {
         self.get(key).map(|x| x.val_str())
     }
 }
