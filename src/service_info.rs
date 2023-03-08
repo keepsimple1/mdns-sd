@@ -399,6 +399,13 @@ impl TxtProperty {
         &self.key
     }
 
+    /// Returns the value of a property, which could be `None`.
+    ///
+    /// To obtain a `&str` of the value, use `val_str()` instead.
+    pub fn val(&self) -> Option<&[u8]> {
+        self.val.as_deref()
+    }
+
     /// Returns the value of a property as str.
     pub fn val_str(&self) -> &str {
         match &self.val {
