@@ -90,8 +90,12 @@ fn integration_success() {
                     assert_eq!(properties.len(), 3);
                     assert!(info.get_property("property_1").is_some());
                     assert!(info.get_property("property_2").is_some());
-                    assert_eq!(info.get_property_val("property_1"), Some("test"));
-                    assert_eq!(info.get_property_val("property_2"), Some("1"));
+                    assert_eq!(info.get_property_val_str("property_1"), Some("test"));
+                    assert_eq!(info.get_property_val_str("property_2"), Some("1"));
+                    assert_eq!(
+                        info.get_property_val("property_1").unwrap(),
+                        Some("test".as_bytes())
+                    );
 
                     let host_ttl = info.get_host_ttl();
                     assert_eq!(host_ttl, 120); // default value.
@@ -294,7 +298,8 @@ fn service_txt_properties_case_insensitive() {
     // Verify `get_property()` method is case insensitive and returns
     // the first property with the same key.
     let prop_cap_case = my_service.get_property("prop_CAP_CASE").unwrap();
-    assert_eq!(prop_cap_case.val(), "one");
+    assert_eq!(prop_cap_case.val_str(), "one");
+    assert_eq!(prop_cap_case.val(), Some("one".as_bytes()));
 
     // Verify the original property name is kept.
     let prop_mixed = my_service.get_property("prop_cap_lower").unwrap();
@@ -336,12 +341,16 @@ fn test_into_txt_properties() {
     // Verify (&str, String) tuple is supported.
     let properties = vec![("key1", String::from("val1"))];
     let txt_props = properties.into_txt_properties();
-    assert_eq!(txt_props.get_property_val("key1").unwrap(), "val1");
+    assert_eq!(txt_props.get_property_val_str("key1").unwrap(), "val1");
+    assert_eq!(
+        txt_props.get_property_val("key1").unwrap(),
+        Some("val1".as_bytes())
+    );
 
     // Verify (String, String) tuple is supported.
     let properties = vec![(String::from("key2"), String::from("val2"))];
     let txt_props = properties.into_txt_properties();
-    assert_eq!(txt_props.get_property_val("key2").unwrap(), "val2");
+    assert_eq!(txt_props.get_property_val_str("key2").unwrap(), "val2");
 }
 
 #[test]

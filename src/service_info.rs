@@ -160,15 +160,26 @@ impl ServiceInfo {
 
     /// Returns a property for a given `key`, where `key` is
     /// case insensitive.
+    ///
+    /// Returns `None` if `key` does not exist.
     pub fn get_property(&self, key: &str) -> Option<&TxtProperty> {
         self.txt_properties.get(key)
     }
 
+    /// Returns a property value for a given `key`, where `key` is
+    /// case insensitive.
+    ///
+    /// Returns `None` if `key` does not exist.
+    pub fn get_property_val(&self, key: &str) -> Option<Option<&[u8]>> {
+        self.txt_properties.get_property_val(key)
+    }
+
     /// Returns a property value string for a given `key`, where `key` is
     /// case insensitive.
-    #[inline]
-    pub fn get_property_val(&self, key: &str) -> Option<&str> {
-        self.txt_properties.get_property_val(key)
+    ///
+    /// Returns `None` if `key` does not exist.
+    pub fn get_property_val_str(&self, key: &str) -> Option<&str> {
+        self.txt_properties.get_property_val_str(key)
     }
 
     /// Returns the service's hostname.
@@ -374,10 +385,22 @@ impl TxtProperties {
             .find(|&prop| prop.key.to_lowercase() == key)
     }
 
+    /// Returns a property value for a given `key`, where `key` is
+    /// case insensitive.
+    ///
+    /// Returns `None` if `key` does not exist.
+    /// Returns `Some(Option<&u8>)` for its value.
+    pub fn get_property_val(&self, key: &str) -> Option<Option<&[u8]>> {
+        self.get(key).map(|x| x.val())
+    }
+
     /// Returns a property value string for a given `key`, where `key` is
     /// case insensitive.
-    pub fn get_property_val(&self, key: &str) -> Option<&str> {
-        self.get(key).map(|x| x.val())
+    ///
+    /// Returns `None` if `key` does not exist.
+    /// Returns `Some("")` if its value is `None` or is empty.
+    pub fn get_property_val_str(&self, key: &str) -> Option<&str> {
+        self.get(key).map(|x| x.val_str())
     }
 }
 
@@ -388,8 +411,9 @@ pub struct TxtProperty {
     key: String,
 
     /// RFC 6763 says values are bytes, not necessarily UTF-8.
-    /// For now we define `val` as UTF-8 for ergnomics benefits.
-    val: String,
+    /// It is also possible that there is no value, in which case
+    /// the key is a boolean key.
+    val: Option<Vec<u8>>,
 }
 
 impl TxtProperty {
@@ -398,9 +422,19 @@ impl TxtProperty {
         &self.key
     }
 
-    /// Returns the value of a property.
-    pub fn val(&self) -> &str {
-        &self.val
+    /// Returns the value of a property, which could be `None`.
+    ///
+    /// To obtain a `&str` of the value, use `val_str()` instead.
+    pub fn val(&self) -> Option<&[u8]> {
+        self.val.as_deref()
+    }
+
+    /// Returns the value of a property as str.
+    pub fn val_str(&self) -> &str {
+        match &self.val {
+            Some(v) => std::str::from_utf8(&v[..]).unwrap_or_default(),
+            None => "",
+        }
     }
 }
 
@@ -413,7 +447,30 @@ where
     fn from(prop: &(K, V)) -> Self {
         TxtProperty {
             key: prop.0.to_string(),
-            val: prop.1.to_string(),
+            val: Some(prop.1.to_string().into_bytes()),
+        }
+    }
+}
+
+impl<K, V> From<(K, V)> for TxtProperty
+where
+    K: ToString,
+    V: AsRef<[u8]>,
+{
+    fn from(prop: (K, V)) -> Self {
+        TxtProperty {
+            key: prop.0.to_string(),
+            val: Some(prop.1.as_ref().into()),
+        }
+    }
+}
+
+/// Support a property that has no value.
+impl From<&str> for TxtProperty {
+    fn from(key: &str) -> Self {
+        TxtProperty {
+            key: key.to_string(),
+            val: None,
         }
     }
 }
@@ -427,7 +484,10 @@ impl IntoTxtProperties for HashMap<String, String> {
     fn into_txt_properties(mut self) -> TxtProperties {
         let properties = self
             .drain()
-            .map(|(key, val)| TxtProperty { key, val })
+            .map(|(key, val)| TxtProperty {
+                key,
+                val: Some(val.into_bytes()),
+            })
             .collect();
         TxtProperties { properties }
     }
@@ -476,9 +536,16 @@ where
 fn encode_txt<'a>(properties: impl Iterator<Item = &'a TxtProperty>) -> Vec<u8> {
     let mut bytes = Vec::new();
     for prop in properties {
-        let s = format!("{}={}", prop.key, prop.val);
+        let mut s = prop.key.clone().into_bytes();
+        if let Some(v) = &prop.val {
+            s.extend(b"=");
+            s.extend(v);
+        }
+
+        // TXT uses (Length,Value) format for each property,
+        // i.e. the first byte is the length.
         bytes.push(s.len().try_into().unwrap());
-        bytes.extend_from_slice(s.as_bytes());
+        bytes.extend(s);
     }
     if bytes.is_empty() {
         bytes.push(0);
@@ -496,20 +563,26 @@ fn decode_txt(txt: &[u8]) -> Vec<TxtProperty> {
             break; // reached the end
         }
         offset += 1; // move over the length byte
-        match String::from_utf8(txt[offset..offset + length].to_vec()) {
-            Ok(kv_string) => match kv_string.find('=') {
-                Some(idx) => {
-                    let k = &kv_string[..idx];
-                    let v = &kv_string[idx + 1..];
-                    properties.push(TxtProperty {
-                        key: k.to_string(),
-                        val: v.to_string(),
-                    });
-                }
-                None => error!("cannot find = sign inside {}", &kv_string),
-            },
-            Err(e) => error!("failed to convert to String from key/value pair: {}", e),
+
+        let kv_bytes = &txt[offset..offset + length];
+
+        // split key and val using the first `=`
+        let (k, v) = match kv_bytes.iter().position(|&x| x == b'=') {
+            Some(idx) => (kv_bytes[..idx].to_vec(), Some(kv_bytes[idx + 1..].to_vec())),
+            None => (kv_bytes.to_vec(), None),
+        };
+
+        // Make sure the key can be stored in UTF-8.
+        match String::from_utf8(k) {
+            Ok(k_string) => {
+                properties.push(TxtProperty {
+                    key: k_string,
+                    val: v,
+                });
+            }
+            Err(e) => error!("failed to convert to String from key: {}", e),
         }
+
         offset += length;
     }
 
@@ -541,26 +614,61 @@ mod tests {
     #[test]
     fn test_txt_encode_decode() {
         let properties = vec![
-            TxtProperty {
-                key: "key1".to_string(),
-                val: "value1".to_string(),
-            },
-            TxtProperty {
-                key: "key2".to_string(),
-                val: "value2".to_string(),
-            },
+            TxtProperty::from(&("key1", "value1")),
+            TxtProperty::from(&("key2", "value2")),
         ];
 
         // test encode
+        let property_count = properties.len();
         let encoded = encode_txt(properties.iter());
         assert_eq!(
             encoded.len(),
-            "key1=".len() + "value1".len() + "key2=".len() + "value2".len() + 2
+            "key1=value1".len() + "key2=value2".len() + property_count
         );
-        assert_eq!(encoded[0] as usize, "key1=".len() + "value1".len());
+        assert_eq!(encoded[0] as usize, "key1=value1".len());
 
         // test decode
         let decoded = decode_txt(&encoded);
         assert!(&properties[..] == &decoded[..]);
+
+        // test empty value
+        let properties = vec![TxtProperty::from(&("key3", ""))];
+        let property_count = properties.len();
+        let encoded = encode_txt(properties.iter());
+        assert_eq!(encoded.len(), "key3=".len() + property_count);
+
+        let decoded = decode_txt(&encoded);
+        assert_eq!(properties, decoded);
+
+        // test non-string value
+        let binary_val: Vec<u8> = vec![123, 234, 0];
+        let binary_len = binary_val.len();
+        let properties = vec![TxtProperty::from(("key4", binary_val))];
+        let property_count = properties.len();
+        let encoded = encode_txt(properties.iter());
+        assert_eq!(encoded.len(), "key4=".len() + binary_len + property_count);
+
+        let decoded = decode_txt(&encoded);
+        assert_eq!(properties, decoded);
+
+        // test value that contains '='
+        let properties = vec![TxtProperty::from(("key5", "val=5"))];
+        let property_count = properties.len();
+        let encoded = encode_txt(properties.iter());
+        assert_eq!(
+            encoded.len(),
+            "key5=".len() + "val=5".len() + property_count
+        );
+
+        let decoded = decode_txt(&encoded);
+        assert_eq!(properties, decoded);
+
+        // test a property that has no value.
+        let properties = vec![TxtProperty::from("key6")];
+        let property_count = properties.len();
+        let encoded = encode_txt(properties.iter());
+        assert_eq!(encoded.len(), "key6".len() + property_count);
+        let decoded = decode_txt(&encoded);
+        assert_eq!(properties, decoded);
     }
 }
