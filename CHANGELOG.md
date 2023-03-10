@@ -1,3 +1,28 @@
+# Version 0.7.0
+
+Breaking Changes:
+
+- Allow non-standard max length for a service name. The check for
+the length of a service name is moved to the daemon. If a service
+name is too long, there will be an error log and an error event sent
+to the monitors.
+
+- `ServiceInfo.get_property_val()` returns `Option<Option<&[u8]>>`
+instead of `Option<&str>`. Now a new `ServiceInfo.get_property_val_str()`
+returns `Option<&str>`.
+
+In other words, migrate to `get_property_val_str()` if you don't
+want to worry about non-UTF8 values.
+
+Highlights:
+
+- Allow non-standard max length for a service name: A new method
+`ServiceDaemon.set_service_name_len_max()` is added to support that.
+Only use it when you really need to.
+- Support non-UTF-8 value for TXT properties.
+- Support `no value` for a TXT property, i.e. boolean keys.
+- Added checks for ASCII keys in a TXT property.
+
 # Version 0.6.1
 
 Highlights:
