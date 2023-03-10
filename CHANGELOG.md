@@ -19,8 +19,9 @@ Highlights:
 - Allow non-standard max length for a service name: A new method
 `ServiceDaemon.set_service_name_len_max()` is added to support that.
 Only use it when you really need to.
-
 - Support non-UTF-8 value for TXT properties.
+- Support `no value` for a TXT property, i.e. boolean keys.
+- Added checks for ASCII keys in a TXT property.
 
 # Version 0.6.1
 
