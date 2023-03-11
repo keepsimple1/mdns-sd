@@ -266,9 +266,16 @@ impl ServiceInfo {
     }
 
     pub(crate) fn set_properties_from_txt(&mut self, txt: &[u8]) {
-        self.txt_properties = TxtProperties {
-            properties: decode_txt(txt),
-        };
+        let mut properties = decode_txt(txt);
+
+        // Remove duplicated keys and retain only the first appearance
+        // of each key.
+        let mut keys = HashSet::new();
+        properties.retain(|p| {
+            let key = p.key().to_lowercase();
+            keys.insert(key) // returns True if key is new.
+        });
+        self.txt_properties = TxtProperties { properties };
     }
 
     pub(crate) fn get_last_update(&self) -> u64 {
@@ -608,8 +615,7 @@ pub(crate) fn valid_ipv4_on_intf(addr: &Ipv4Addr, intf: &Ifv4Addr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_txt, encode_txt};
-    use crate::service_info::TxtProperty;
+    use super::{decode_txt, encode_txt, ServiceInfo, TxtProperty};
 
     #[test]
     fn test_txt_encode_decode() {
@@ -670,5 +676,31 @@ mod tests {
         assert_eq!(encoded.len(), "key6".len() + property_count);
         let decoded = decode_txt(&encoded);
         assert_eq!(properties, decoded);
+    }
+
+    #[test]
+    fn test_set_properties_from_txt() {
+        // Three duplicated keys.
+        let properties = vec![
+            TxtProperty::from(&("one", "1")),
+            TxtProperty::from(&("ONE", "2")),
+            TxtProperty::from(&("One", "3")),
+        ];
+        let encoded = encode_txt(properties.iter());
+
+        // Simple decode does not remove duplicated keys.
+        let decoded = decode_txt(&encoded);
+        assert_eq!(decoded.len(), 3);
+
+        // ServiceInfo removes duplicated keys and keeps only the first one.
+        let mut service_info =
+            ServiceInfo::new("_test._tcp", "prop_test", "localhost", "", 1234, None).unwrap();
+        service_info.set_properties_from_txt(&encoded);
+        assert_eq!(service_info.get_properties().len(), 1);
+
+        // Verify the only one property.
+        let prop = service_info.get_properties().iter().next().unwrap();
+        assert_eq!(prop.key, "one");
+        assert_eq!(prop.val_str(), "1");
     }
 }
