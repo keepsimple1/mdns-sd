@@ -1,3 +1,9 @@
+# Version 0.7.1
+
+Highlights:
+
+- A bug fix: remove duplicated keys in TXT records received.
+
 # Version 0.7.0
 
 Breaking Changes:
