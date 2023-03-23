@@ -5,6 +5,7 @@ use if_addrs::Ifv4Addr;
 use std::{
     collections::{HashMap, HashSet},
     convert::TryInto,
+    fmt,
     net::Ipv4Addr,
     str::FromStr,
 };
@@ -411,6 +412,14 @@ impl TxtProperties {
     }
 }
 
+impl fmt::Display for TxtProperties {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let delimiter = ", ";
+        let props: Vec<String> = self.properties.iter().map(|p| p.to_string()).collect();
+        write!(f, "({})", props.join(delimiter))
+    }
+}
+
 /// Represents a property in a TXT record.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TxtProperty {
@@ -479,6 +488,12 @@ impl From<&str> for TxtProperty {
             key: key.to_string(),
             val: None,
         }
+    }
+}
+
+impl fmt::Display for TxtProperty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}={}", self.key, self.val_str())
     }
 }
 
