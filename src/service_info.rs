@@ -421,7 +421,7 @@ impl fmt::Display for TxtProperties {
 }
 
 /// Represents a property in a TXT record.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct TxtProperty {
     /// The name of the property. The original cases are kept.
     key: String,
@@ -495,6 +495,45 @@ impl fmt::Display for TxtProperty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}={}", self.key, self.val_str())
     }
+}
+
+/// Mimic the default debug output for a struct, with a twist:
+/// - If self.var is UTF-8, will output it as a string in double quotes.
+/// - If self.var is not UTF-8, will output its bytes as in hex.
+impl fmt::Debug for TxtProperty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let val_string = match &self.val {
+            None => "None".to_string(),
+            Some(v) => match std::str::from_utf8(&v[..]) {
+                Ok(s) => format!("Some(\"{}\")", s),
+                Err(_) => format!("Some({})", u8_slice_to_hex(&v[..])),
+            },
+        };
+        write!(
+            f,
+            "TxtProperty {{key: \"{}\", val: {}}}",
+            &self.key, &val_string,
+        )
+    }
+}
+
+const HEX_TABLE: [u8; 16] = [
+    b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'a', b'b', b'c', b'd', b'e', b'f',
+];
+
+/// Create a hex string from `slice`, with a "0x" prefix.
+///
+/// For example, [1u8, 2u8] -> "0x0102"
+fn u8_slice_to_hex(slice: &[u8]) -> String {
+    let mut hex = Vec::with_capacity(slice.len() * 2 + 2);
+    hex.push(b'0');
+    hex.push(b'x');
+    for b in slice.iter() {
+        hex.push(HEX_TABLE[(b >> 4) as usize]);
+        hex.push(HEX_TABLE[(b & 0x0F) as usize]);
+    }
+
+    String::from_utf8(hex).unwrap()
 }
 
 /// This trait allows for converting inputs into [`TxtProperties`].
@@ -630,7 +669,7 @@ pub(crate) fn valid_ipv4_on_intf(addr: &Ipv4Addr, intf: &Ifv4Addr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_txt, encode_txt, ServiceInfo, TxtProperty};
+    use super::{decode_txt, encode_txt, u8_slice_to_hex, ServiceInfo, TxtProperty};
 
     #[test]
     fn test_txt_encode_decode() {
@@ -717,5 +756,43 @@ mod tests {
         let prop = service_info.get_properties().iter().next().unwrap();
         assert_eq!(prop.key, "one");
         assert_eq!(prop.val_str(), "1");
+    }
+
+    #[test]
+    fn test_u8_slice_to_hex() {
+        let bytes = [0x01u8, 0x02u8, 0x03u8];
+        let hex = u8_slice_to_hex(&bytes);
+        assert_eq!(hex.as_str(), "0x010203");
+
+        let slice = "abcdefghijklmnopqrstuvwxyz";
+        let hex = u8_slice_to_hex(slice.as_bytes());
+        assert_eq!(hex.len(), slice.len() * 2 + 2);
+        assert_eq!(
+            hex.as_str(),
+            "0x6162636465666768696a6b6c6d6e6f707172737475767778797a"
+        );
+    }
+
+    #[test]
+    fn test_txt_property_debug() {
+        let prop_1 = TxtProperty {
+            key: "key1".to_string(),
+            val: Some("val1".to_string().into()),
+        };
+        let prop_1_debug = format!("{:?}", &prop_1);
+        assert_eq!(
+            prop_1_debug,
+            "TxtProperty {key: \"key1\", val: Some(\"val1\")}"
+        );
+
+        let prop_2 = TxtProperty {
+            key: "key2".to_string(),
+            val: Some(vec![150u8, 151u8, 152u8]),
+        };
+        let prop_2_debug = format!("{:?}", &prop_2);
+        assert_eq!(
+            prop_2_debug,
+            "TxtProperty {key: \"key2\", val: Some(0x969798)}"
+        );
     }
 }

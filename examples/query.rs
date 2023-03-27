@@ -37,7 +37,7 @@ fn main() {
         match event {
             ServiceEvent::ServiceResolved(info) => {
                 println!(
-                    "At {:?}: Resolved a new service: {} IP: {:?} TXT properties: {}",
+                    "At {:?}: Resolved a new service: {} IP: {:?} TXT properties: {:?}",
                     now.elapsed(),
                     info.get_fullname(),
                     info.get_addresses(),
