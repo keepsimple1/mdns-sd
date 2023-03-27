@@ -775,6 +775,7 @@ mod tests {
 
     #[test]
     fn test_txt_property_debug() {
+        // Test UTF-8 property value.
         let prop_1 = TxtProperty {
             key: "key1".to_string(),
             val: Some("val1".to_string().into()),
@@ -785,6 +786,7 @@ mod tests {
             "TxtProperty {key: \"key1\", val: Some(\"val1\")}"
         );
 
+        // Test non-UTF-8 property value.
         let prop_2 = TxtProperty {
             key: "key2".to_string(),
             val: Some(vec![150u8, 151u8, 152u8]),
