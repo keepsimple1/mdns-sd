@@ -1,3 +1,14 @@
+# Version 0.7.2
+
+Highlights:
+
+- Implemented `Display` trait for `TxtProperty`: print using
+`key=value` format, where `value` is same as `.get_property_val_str()`.
+
+- Implemented `Debug` trait for `TxtProperty`: print using
+a struct format, where `value` prints as a string if it is UTF-8, or
+prints as hex if it is not UTF-8.
+
 # Version 0.7.1
 
 Highlights:
