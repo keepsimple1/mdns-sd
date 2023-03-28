@@ -23,10 +23,10 @@ fn integration_success() {
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
 
-    let my_ifaddrs = my_ipv4_interfaces();
+    let my_ifaddrs: Vec<_> = my_ipv4_interfaces().iter().map(|intf| intf.ip).collect();
+    let my_addrs_count = my_ifaddrs.len();
     println!("My IPv4 addr(s): {:?}", &my_ifaddrs);
 
-    let host_ipv4 = my_ifaddrs[0].ip.to_string();
     let host_name = "my_host.";
     let port = 5200;
     let mut properties = HashMap::new();
@@ -38,7 +38,7 @@ fn integration_success() {
         ty_domain,
         &instance_name,
         host_name,
-        &host_ipv4,
+        &my_ifaddrs[..],
         port,
         Some(properties),
     )
@@ -79,7 +79,7 @@ fn integration_success() {
                     assert_eq!(hostname, host_name);
 
                     let addr_set = info.get_addresses();
-                    assert_eq!(addr_set.len(), 1);
+                    assert_eq!(addr_set.len(), my_addrs_count);
 
                     let service_port = info.get_port();
                     assert_eq!(service_port, port);
@@ -172,7 +172,7 @@ fn integration_success() {
         service2_type,
         service2_instance,
         host_name,
-        host_ipv4,
+        &my_ifaddrs[..],
         port,
         None,
     )
@@ -226,7 +226,7 @@ fn service_without_properties_with_alter_net() {
     let first_ipv4 = ifv4_addrs[0].ip;
     let alter_ipv4 = ipv4_alter_net(ifv4_addrs);
     let host_ipv4 = vec![first_ipv4, alter_ipv4];
-    let host_name = "my_host.";
+    let host_name = "serv-no-prop.";
     let port = 5201;
     let my_service = ServiceInfo::new(
         ty_domain,

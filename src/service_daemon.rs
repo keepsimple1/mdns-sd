@@ -46,7 +46,7 @@ use polling::Poller;
 use socket2::{SockAddr, Socket};
 use std::{
     cmp,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     io::Read,
     net::{Ipv4Addr, SocketAddrV4},
@@ -581,6 +581,19 @@ struct IntfSock {
     sock: Socket,
 }
 
+/// Represents possible states for an instance.
+#[derive(PartialEq, Eq)]
+enum InstanceState {
+    Found, // Not resolved yet.
+    Resolved,
+}
+
+/// Represents an instance found for a service type we are interested in.
+struct Instance {
+    state: InstanceState,
+    info: ServiceInfo,
+}
+
 /// A struct holding the state. It was inspired by `zeroconf` package in Python.
 struct Zeroconf {
     /// Local interfaces with sockets to recv/send on these interfaces.
@@ -598,7 +611,7 @@ struct Zeroconf {
     queriers: HashMap<String, Sender<ServiceEvent>>, // <ty_domain, channel::sender>
 
     /// Active queriers interested instances
-    instances_to_resolve: HashMap<String, ServiceInfo>,
+    instances_found: HashMap<String, Instance>,
 
     /// All repeating transmissions.
     retransmissions: Vec<ReRun>,
@@ -645,7 +658,7 @@ impl Zeroconf {
             broadcast_addr,
             cache: DnsCache::new(),
             queriers: HashMap::new(),
-            instances_to_resolve: HashMap::new(),
+            instances_found: HashMap::new(),
             retransmissions: Vec::new(),
             counters: HashMap::new(),
             poller,
@@ -1050,10 +1063,12 @@ impl Zeroconf {
         let now = current_time_millis();
         let wait_in_millis = 800;
         let unresolved: Vec<String> = self
-            .instances_to_resolve
+            .instances_found
             .iter()
-            .filter(|(name, info)| {
-                valid_instance_name(name) && now > (info.get_last_update() + wait_in_millis)
+            .filter(|(name, instance)| {
+                valid_instance_name(name)
+                    && instance.state == InstanceState::Found
+                    && now > (instance.info.get_last_update() + wait_in_millis)
             })
             .map(|(name, _)| name.to_string())
             .collect();
@@ -1066,8 +1081,8 @@ impl Zeroconf {
             self.send_query(instance_name, TYPE_ANY);
 
             // update the info timestamp.
-            if let Some(info) = self.instances_to_resolve.get_mut(instance_name) {
-                info.set_last_update(now);
+            if let Some(instance) = self.instances_found.get_mut(instance_name) {
+                instance.info.set_last_update(now);
             }
         }
     }
@@ -1103,9 +1118,14 @@ impl Zeroconf {
                             Ok(()) => debug!("sent service resolved"),
                             Err(e) => error!("failed to send service resolved: {}", e),
                         }
-                    } else if !self.instances_to_resolve.contains_key(info.get_fullname()) {
-                        self.instances_to_resolve
-                            .insert(ty_domain.to_string(), info);
+                    } else if !self.instances_found.contains_key(info.get_fullname()) {
+                        self.instances_found.insert(
+                            ty_domain.to_string(),
+                            Instance {
+                                state: InstanceState::Found,
+                                info,
+                            },
+                        );
                     }
                 }
             }
@@ -1148,36 +1168,58 @@ impl Zeroconf {
     }
 
     /// Try to resolve some instances based on a record (answer),
-    /// and return a list of instances that got resolved.
+    /// and return a list of instances that got resolved or updated.
     fn resolve_by_answer(
-        instances_to_resolve: &mut HashMap<String, ServiceInfo>,
+        instances_found: &mut HashMap<String, Instance>,
         answer: &DnsRecordBox,
     ) -> Vec<String> {
         let mut resolved = Vec::new();
         if let Some(dns_srv) = answer.any().downcast_ref::<DnsSrv>() {
-            if let Some(info) = instances_to_resolve.get_mut(answer.get_name()) {
-                debug!("setting server and port for service info");
-                info.set_hostname(dns_srv.host.clone());
-                info.set_port(dns_srv.port);
-                if info.is_ready() {
-                    resolved.push(answer.get_name().to_string());
+            if let Some(instance) = instances_found.get_mut(answer.get_name()) {
+                if instance.info.get_hostname() != dns_srv.host
+                    || instance.info.get_port() != dns_srv.port
+                {
+                    debug!("setting server and port for service info");
+
+                    instance.info.set_hostname(dns_srv.host.clone());
+                    instance.info.set_port(dns_srv.port);
+                    if instance.info.is_ready() {
+                        if instance.state == InstanceState::Found {
+                            instance.state = InstanceState::Resolved;
+                        }
+                        resolved.push(answer.get_name().to_string());
+                    }
                 }
             }
         } else if let Some(dns_txt) = answer.any().downcast_ref::<DnsTxt>() {
-            if let Some(info) = instances_to_resolve.get_mut(answer.get_name()) {
-                info.set_properties_from_txt(&dns_txt.text);
-                debug!("setting TXT: {:?}", info.get_properties());
-                if info.is_ready() {
-                    resolved.push(answer.get_name().to_string());
+            if let Some(instance) = instances_found.get_mut(answer.get_name()) {
+                if instance.info.set_properties_from_txt(&dns_txt.text) {
+                    debug!("setting TXT: {:?}", instance.info.get_properties());
+
+                    if instance.info.is_ready() {
+                        if instance.state == InstanceState::Found {
+                            instance.state = InstanceState::Resolved;
+                        }
+                        resolved.push(answer.get_name().to_string());
+                    }
                 }
             }
         } else if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {
-            for (_k, info) in instances_to_resolve.iter_mut() {
-                if info.get_hostname() == answer.get_name() {
-                    debug!("setting address in server {}", info.get_hostname());
-                    info.insert_ipv4addr(dns_a.address);
-                    if info.is_ready() {
-                        resolved.push(info.get_fullname().to_string());
+            for (instance_name, instance) in instances_found.iter_mut() {
+                if instance.info.get_hostname() == answer.get_name()
+                    && !instance.info.get_addresses().contains(&dns_a.address)
+                {
+                    debug!(
+                        "setting address in server {}: {}",
+                        instance.info.get_hostname(),
+                        &dns_a.address
+                    );
+                    instance.info.insert_ipv4addr(dns_a.address);
+                    if instance.info.is_ready() {
+                        if instance.state == InstanceState::Found {
+                            instance.state = InstanceState::Resolved;
+                        }
+                        resolved.push(instance_name.clone());
                     }
                 }
             }
@@ -1202,7 +1244,7 @@ impl Zeroconf {
             }
 
             // Insert into services_to_resolve if this is a new instance
-            if !self.instances_to_resolve.contains_key(&instance) {
+            if !self.instances_found.contains_key(&instance) {
                 if existing {
                     debug!("already knew: {}", &instance);
                     return resolved;
@@ -1218,8 +1260,13 @@ impl Zeroconf {
                 match service_info {
                     Ok(service_info) => {
                         debug!("Inserting service info: {:?}", &service_info);
-                        self.instances_to_resolve
-                            .insert(instance.clone(), service_info);
+                        self.instances_found.insert(
+                            instance.clone(),
+                            Instance {
+                                state: InstanceState::Found,
+                                info: service_info,
+                            },
+                        );
                     }
                     Err(err) => {
                         error!("Malformed service info while inserting: {:?}", err);
@@ -1233,7 +1280,7 @@ impl Zeroconf {
                 ServiceEvent::ServiceFound(service_type, instance),
             );
         } else {
-            resolved = Self::resolve_by_answer(&mut self.instances_to_resolve, record_ext);
+            resolved = Self::resolve_by_answer(&mut self.instances_found, record_ext);
         }
 
         resolved
@@ -1273,7 +1320,7 @@ impl Zeroconf {
             false
         });
 
-        let mut resolved = Vec::new();
+        let mut resolved = HashSet::new();
 
         // process PTR records first as we create entries in cache based on PTR records.
         // This code can be simplified when `drain_filter` is stablized.
@@ -1281,8 +1328,8 @@ impl Zeroconf {
         while i < msg.answers.len() {
             if msg.answers[i].get_type() == TYPE_PTR {
                 let record = msg.answers.remove(i);
-                let mut newly_resolved = self.handle_answer(record);
-                resolved.append(&mut newly_resolved);
+                let newly_resolved = self.handle_answer(record);
+                resolved.extend(newly_resolved);
             } else {
                 i += 1;
             }
@@ -1290,8 +1337,8 @@ impl Zeroconf {
 
         // process other types of records.
         for record in msg.answers {
-            let mut newly_resolved = self.handle_answer(record);
-            resolved.append(&mut newly_resolved);
+            let newly_resolved = self.handle_answer(record);
+            resolved.extend(newly_resolved);
         }
 
         self.process_resolved(resolved);
@@ -1299,13 +1346,12 @@ impl Zeroconf {
 
     /// Process resolved instances and send out notifications.
     /// It is OK to have duplicated instances in `resolved`.
-    fn process_resolved(&mut self, resolved: Vec<String>) {
-        for instance in resolved.iter() {
-            debug!("remove instance: {}", instance);
-            let info = match self.instances_to_resolve.remove(instance) {
+    fn process_resolved(&mut self, resolved: HashSet<String>) {
+        for instance_name in resolved.iter() {
+            let instance = match self.instances_found.get(instance_name) {
                 Some(i) => i,
                 None => {
-                    debug!("Instance {} already resolved", instance);
+                    debug!("Instance {} was not found", instance_name);
                     continue;
                 }
             };
@@ -1315,18 +1361,19 @@ impl Zeroconf {
                     Err(e) => error!("failed to send service info: {}", e),
                 }
             }
-            let sub_query = info
+            let sub_query = instance
+                .info
                 .get_subtype()
                 .as_ref()
                 .and_then(|s| self.queriers.get(s));
-            let query = self.queriers.get(info.get_type());
+            let query = self.queriers.get(instance.info.get_type());
             match (sub_query, query) {
                 (Some(sub_listener), Some(listener)) => {
-                    s(sub_listener, info.clone());
-                    s(listener, info);
+                    s(sub_listener, instance.info.clone());
+                    s(listener, instance.info.clone());
                 }
-                (None, Some(listener)) => s(listener, info),
-                (Some(listener), None) => s(listener, info),
+                (None, Some(listener)) => s(listener, instance.info.clone()),
+                (Some(listener), None) => s(listener, instance.info.clone()),
                 _ => {}
             }
         }
