@@ -670,7 +670,8 @@ impl DnsOutgoing {
     /// See https://tools.ietf.org/html/rfc6763#section-12.1
     ///
     /// If there are no addresses on the LAN of `intf`, we will not
-    /// add any answers for `service`.
+    /// add any answers for `service`. In other words, we only
+    /// add addresses that are valid on `intf`.
     pub(crate) fn add_answer_with_additionals(
         &mut self,
         msg: &DnsIncoming,

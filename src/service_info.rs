@@ -266,17 +266,15 @@ impl ServiceInfo {
         self.server = hostname;
     }
 
-    pub(crate) fn set_properties_from_txt(&mut self, txt: &[u8]) {
-        let mut properties = decode_txt(txt);
-
-        // Remove duplicated keys and retain only the first appearance
-        // of each key.
-        let mut keys = HashSet::new();
-        properties.retain(|p| {
-            let key = p.key().to_lowercase();
-            keys.insert(key) // returns True if key is new.
-        });
-        self.txt_properties = TxtProperties { properties };
+    /// Returns true if properties are updated.
+    pub(crate) fn set_properties_from_txt(&mut self, txt: &[u8]) -> bool {
+        let properties = decode_txt_unique(txt);
+        if self.txt_properties.properties != properties {
+            self.txt_properties = TxtProperties { properties };
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn get_last_update(&self) -> u64 {
@@ -362,7 +360,7 @@ impl AsIpv4Addrs for std::net::Ipv4Addr {
 ///
 /// [RFC 6763](https://www.rfc-editor.org/rfc/rfc6763#section-6.4):
 /// "A given key SHOULD NOT appear more than once in a TXT record."
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxtProperties {
     // Use `Vec` instead of `HashMap` to keep the order of insertions.
     properties: Vec<TxtProperty>,
@@ -421,7 +419,7 @@ impl fmt::Display for TxtProperties {
 }
 
 /// Represents a property in a TXT record.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TxtProperty {
     /// The name of the property. The original cases are kept.
     key: String,
@@ -647,6 +645,19 @@ fn decode_txt(txt: &[u8]) -> Vec<TxtProperty> {
         offset += length;
     }
 
+    properties
+}
+
+fn decode_txt_unique(txt: &[u8]) -> Vec<TxtProperty> {
+    let mut properties = decode_txt(txt);
+
+    // Remove duplicated keys and retain only the first appearance
+    // of each key.
+    let mut keys = HashSet::new();
+    properties.retain(|p| {
+        let key = p.key().to_lowercase();
+        keys.insert(key) // returns True if key is new.
+    });
     properties
 }
 
