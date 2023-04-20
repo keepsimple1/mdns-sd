@@ -8,25 +8,36 @@
 //!
 //! cargo run --example register _my-hello._udp.local. test1
 //!
+//! Options:
+//! "--unregister": automatically unregister after 2 seconds.
 
 use mdns_sd::{ServiceDaemon, ServiceInfo};
+use std::{env, thread, time::Duration};
 
 fn main() {
+    // Simple command line options.
+    let args: Vec<String> = env::args().collect();
+    let mut should_unreg = false;
+    for arg in args.iter() {
+        match arg.as_str() {
+            "--unregister" => should_unreg = true,
+            _ => {}
+        }
+    }
+
     // Create a new mDNS daemon.
     let mdns = ServiceDaemon::new().expect("Could not create service daemon");
-    let service_type = match std::env::args().nth(1) {
+    let service_type = match args.get(1) {
         Some(arg) => arg,
         None => {
-            println!("ERROR: register requires a service_type as the 1st argument. For example:");
-            println!("cargo run --example register _my-hello._udp.local. test1");
+            print_usage();
             return;
         }
     };
-    let instance_name = match std::env::args().nth(2) {
+    let instance_name = match args.get(2) {
         Some(arg) => arg,
         None => {
-            println!("ERROR: require a instance_name as the 2nd argument. For example: ");
-            println!("cargo run --example register _my-hello._udp.local. test1");
+            print_usage();
             return;
         }
     };
@@ -55,14 +66,35 @@ fn main() {
 
     // Optionally, we can monitor the daemon events.
     let monitor = mdns.monitor().expect("Failed to monitor the daemon");
-
+    let service_fullname = service_info.get_fullname().to_string();
     mdns.register(service_info)
         .expect("Failed to register mDNS service");
 
     println!("Registered service {}.{}", &instance_name, &service_type);
 
     // Only do this if we monitor the daemon events, which is optional.
-    while let Ok(event) = monitor.recv() {
+    if let Ok(event) = monitor.recv() {
         println!("Daemon event: {:?}", &event);
     }
+
+    if should_unreg {
+        let wait_in_secs = 2;
+        println!("Sleeping {} seconds before unregister", wait_in_secs);
+        thread::sleep(Duration::from_secs(wait_in_secs));
+
+        let receiver = mdns.unregister(&service_fullname).unwrap();
+        while let Ok(event) = receiver.recv() {
+            println!("unregister result: {:?}", &event);
+        }
+    }
+}
+
+fn print_usage() {
+    println!("Usage:");
+    println!("cargo run --example register <service_type> <instance_name> [--unregister]");
+    println!("Options:");
+    println!("--unregister: automatically unregister after 2 seconds");
+    println!("");
+    println!("For example:");
+    println!("cargo run --example register _my-hello._udp.local. test1");
 }
