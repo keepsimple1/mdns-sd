@@ -90,8 +90,11 @@ fn main() {
 }
 
 fn print_usage() {
-    println!("Usage: ");
+    println!("Usage:");
     println!("cargo run --example register <service_type> <instance_name> [--unregister]");
-    println!("For example: ");
+    println!("Options:");
+    println!("--unregister: automatically unregister after 2 seconds");
+    println!("");
+    println!("For example:");
     println!("cargo run --example register _my-hello._udp.local. test1");
 }
