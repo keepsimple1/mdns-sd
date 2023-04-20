@@ -8,6 +8,8 @@
 //!
 //! cargo run --example register _my-hello._udp.local. test1
 //!
+//! Options:
+//! "--unregister": automatically unregister after 2 seconds.
 
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use std::{env, thread, time::Duration};
@@ -25,19 +27,17 @@ fn main() {
 
     // Create a new mDNS daemon.
     let mdns = ServiceDaemon::new().expect("Could not create service daemon");
-    let service_type = match std::env::args().nth(1) {
+    let service_type = match args.get(1) {
         Some(arg) => arg,
         None => {
-            println!("ERROR: register requires a service_type as the 1st argument. For example:");
-            println!("cargo run --example register _my-hello._udp.local. test1");
+            print_usage();
             return;
         }
     };
-    let instance_name = match std::env::args().nth(2) {
+    let instance_name = match args.get(2) {
         Some(arg) => arg,
         None => {
-            println!("ERROR: require a instance_name as the 2nd argument. For example: ");
-            println!("cargo run --example register _my-hello._udp.local. test1");
+            print_usage();
             return;
         }
     };
@@ -87,4 +87,11 @@ fn main() {
             println!("unregister result: {:?}", &event);
         }
     }
+}
+
+fn print_usage() {
+    println!("Usage: ");
+    println!("cargo run --example register <service_type> <instance_name> [--unregister]");
+    println!("For example: ");
+    println!("cargo run --example register _my-hello._udp.local. test1");
 }
