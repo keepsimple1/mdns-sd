@@ -1002,6 +1002,14 @@ impl DnsIncoming {
         let mut at_end = false;
 
         loop {
+            if offset >= data.len() {
+                return Err(Error::Msg(format!(
+                    "read_name: offset: {} data len {}. DnsIncoming: {:?}",
+                    offset,
+                    data.len(),
+                    self
+                )));
+            }
             let length = data[offset];
             if length == 0 {
                 if !at_end {
