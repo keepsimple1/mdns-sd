@@ -72,11 +72,6 @@ fn main() {
 
     println!("Registered service {}.{}", &instance_name, &service_type);
 
-    // Only do this if we monitor the daemon events, which is optional.
-    if let Ok(event) = monitor.recv() {
-        println!("Daemon event: {:?}", &event);
-    }
-
     if should_unreg {
         let wait_in_secs = 2;
         println!("Sleeping {} seconds before unregister", wait_in_secs);
@@ -85,6 +80,11 @@ fn main() {
         let receiver = mdns.unregister(&service_fullname).unwrap();
         while let Ok(event) = receiver.recv() {
             println!("unregister result: {:?}", &event);
+        }
+    } else {
+        // Monitor the daemon events.
+        while let Ok(event) = monitor.recv() {
+            println!("Daemon event: {:?}", &event);
         }
     }
 }
