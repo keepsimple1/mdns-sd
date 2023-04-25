@@ -324,7 +324,7 @@ impl ServiceDaemon {
 
             // Send out additional queries for unresolved instances, where
             // the early responses did not have SRV records.
-            zc.query_unresolved();
+            zc.query_missing_srv();
 
             // process commands from the command channel
             match receiver.try_recv() {
@@ -1041,10 +1041,10 @@ impl Zeroconf {
         true
     }
 
-    /// Sends query TYPE_ANY for instances that are unresolved for a while.
-    fn query_unresolved(&mut self) {
+    /// Sends TYPE_ANY query for instances that're missing SRV records.
+    fn query_missing_srv(&mut self) {
         let now = current_time_millis();
-        let wait_in_millis = 800;
+        let wait_in_millis = 800; // The threshold for deeming SRV missing.
 
         for records in self.cache.ptr.values() {
             for record in records.iter() {
@@ -1174,11 +1174,19 @@ impl Zeroconf {
             false
         });
 
+        /// Represents a DNS record change that involves one service instance.
         struct InstanceChange {
-            ty: u16,
-            name: String,
+            ty: u16, // The type of DNS record for the instance.
+            name: String, // The name of the record.
         }
 
+        // Go through all answers to get the new and updated records.
+        // For new PTR records, send out ServiceFound immediately. For others,
+        // collect them into `changes`.
+        //
+        // Note: we don't try to identify the update instances based on
+        // each record immediately as the answers are likely related to each
+        // other.
         let mut changes = Vec::new();
         for record in msg.answers {
             if let Some((dns_record, true)) = self.cache.add_or_update(record) {
@@ -1202,6 +1210,7 @@ impl Zeroconf {
             }
         }
 
+        // Identify the instances that need to be "resolved".
         let mut updated_instances = HashSet::new();
         for update in changes {
             match update.ty {
@@ -1216,6 +1225,12 @@ impl Zeroconf {
             }
         }
 
+        // Resolve the updated (including new) instances.
+        //
+        // Note: it is possible that more than 1 PTR pointing to the same
+        // instance. For example, a regular service type PTR and a sub-type
+        // service type PTR can both point to the same service instance.
+        // This loop automatically handles the sub-type PTRs.
         for (ty_domain, records) in self.cache.ptr.iter() {
             for record in records.iter() {
                 if let Some(dns_ptr) = record.any().downcast_ref::<DnsPointer>() {
@@ -1500,14 +1515,14 @@ impl DnsCache {
         let (idx, updated) = match record_vec
             .iter_mut()
             .enumerate()
-            .find(|(_, r)| r.matches(incoming.as_ref()))
+            .find(|(_idx, r)| r.matches(incoming.as_ref()))
         {
             Some((i, r)) => {
                 r.reset_ttl(incoming.as_ref());
                 (i, false)
             }
             None => {
-                record_vec.insert(0, incoming);
+                record_vec.insert(0, incoming); // A new record.
                 (0, true)
             }
         };

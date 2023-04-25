@@ -803,6 +803,8 @@ pub(crate) struct DnsIncoming {
     offset: usize,
     data: Vec<u8>,
     pub(crate) questions: Vec<DnsQuestion>,
+    /// This field includes records in the `answers` section
+    /// and in the `additionals` section.
     pub(crate) answers: Vec<DnsRecordBox>,
     pub(crate) id: u16,
     flags: u16,
