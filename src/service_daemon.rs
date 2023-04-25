@@ -1176,7 +1176,7 @@ impl Zeroconf {
 
         /// Represents a DNS record change that involves one service instance.
         struct InstanceChange {
-            ty: u16, // The type of DNS record for the instance.
+            ty: u16,      // The type of DNS record for the instance.
             name: String, // The name of the record.
         }
 
