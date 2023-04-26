@@ -73,6 +73,9 @@ pub(crate) struct DnsRecord {
     pub(crate) entry: DnsEntry,
     ttl: u32,     // in seconds, 0 means this record should not be cached
     created: u64, // UNIX time in millis
+
+    /// Support re-query an instance before its PTR record expires.
+    /// See https://datatracker.ietf.org/doc/html/rfc6762#section-5.2
     refresh: u64, // UNIX time in millis
 }
 
@@ -86,6 +89,10 @@ impl DnsRecord {
             created,
             refresh,
         }
+    }
+
+    pub(crate) fn get_created(&self) -> u64 {
+        self.created
     }
 
     pub(crate) fn is_expired(&self, now: u64) -> bool {
@@ -796,6 +803,8 @@ pub(crate) struct DnsIncoming {
     offset: usize,
     data: Vec<u8>,
     pub(crate) questions: Vec<DnsQuestion>,
+    /// This field includes records in the `answers` section
+    /// and in the `additionals` section.
     pub(crate) answers: Vec<DnsRecordBox>,
     pub(crate) id: u16,
     flags: u16,

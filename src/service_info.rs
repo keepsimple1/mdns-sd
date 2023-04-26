@@ -1,6 +1,6 @@
 #[cfg(feature = "logging")]
 use crate::log::error;
-use crate::{dns_parser::current_time_millis, Error, Result};
+use crate::{Error, Result};
 use if_addrs::Ifv4Addr;
 use std::{
     collections::{HashMap, HashSet},
@@ -31,8 +31,7 @@ pub struct ServiceInfo {
     priority: u16,
     weight: u16,
     txt_properties: TxtProperties,
-    last_update: u64, // UNIX time in millis
-    addr_auto: bool,  // Let the system update addresses automatically.
+    addr_auto: bool, // Let the system update addresses automatically.
 }
 
 impl ServiceInfo {
@@ -74,7 +73,6 @@ impl ServiceInfo {
         let server = host_name.to_string();
         let addresses = host_ipv4.as_ipv4_addrs()?;
         let txt_properties = properties.into_txt_properties();
-        let last_update = current_time_millis();
 
         // RFC6763 section 6.4: https://www.rfc-editor.org/rfc/rfc6763#section-6.4
         // The characters of a key MUST be printable US-ASCII values (0x20-0x7E)
@@ -107,7 +105,6 @@ impl ServiceInfo {
             priority: 0,
             weight: 0,
             txt_properties,
-            last_update,
             addr_auto: false,
         };
 
@@ -275,14 +272,6 @@ impl ServiceInfo {
         } else {
             false
         }
-    }
-
-    pub(crate) fn get_last_update(&self) -> u64 {
-        self.last_update
-    }
-
-    pub(crate) fn set_last_update(&mut self, update: u64) {
-        self.last_update = update;
     }
 }
 
