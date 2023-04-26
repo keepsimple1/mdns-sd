@@ -573,6 +573,64 @@ fn service_new_publish_after_browser() {
     daemon.shutdown().unwrap();
 }
 
+// This test covers the sanity check in `read_others` decoding RDATA.
+#[test]
+fn instance_name_two_dots() {
+    // Create a daemon for the server.
+    let server_daemon = ServiceDaemon::new().expect("Failed to create server daemon");
+    let monitor = server_daemon.monitor().unwrap();
+
+    // Register an instance name with a ending dot.
+    // Then the full name will have two dots in the middle.
+    // This would create a PTR record RDATA with a skewed name field.
+    let service_type = "_two-dots._udp.local.";
+    let instance_name = "my_instance.";
+    let host_ipv4 = "";
+    let host_name = "my_host.";
+    let port = 5200;
+    let my_service = ServiceInfo::new(
+        service_type,
+        instance_name,
+        host_name,
+        &host_ipv4,
+        port,
+        None,
+    )
+    .expect("valid service info")
+    .enable_addr_auto();
+    let result = server_daemon.register(my_service.clone());
+    assert!(result.is_ok());
+
+    // Verify that the service was published successfully.
+    let event = monitor.recv_timeout(Duration::from_millis(500)).unwrap();
+    assert!(matches!(event, DaemonEvent::Announce(_, _)));
+
+    // Browseing the service.
+    let receiver = server_daemon.browse(service_type).unwrap();
+    let mut resolved = false;
+    let timeout = Duration::from_secs(2);
+    loop {
+        match receiver.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceResolved(_) => {
+                    resolved = true;
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            },
+            Err(e) => {
+                println!("browse error: {}", e);
+                break;
+            }
+        }
+    }
+
+    assert!(!resolved);
+    server_daemon.shutdown().unwrap();
+}
+
 fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
     // Use a random port for binding test.
     let test_port = fastrand::u16(8000u16..9000u16);
