@@ -582,6 +582,7 @@ fn instance_name_two_dots() {
 
     // Register an instance name with a ending dot.
     // Then the full name will have two dots in the middle.
+    // This would create a PTR record RDATA with a skewed name field.
     let service_type = "_two-dots._udp.local.";
     let instance_name = "my_instance.";
     let host_ipv4 = "";
