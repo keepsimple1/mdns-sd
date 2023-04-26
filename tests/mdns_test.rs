@@ -573,6 +573,7 @@ fn service_new_publish_after_browser() {
     daemon.shutdown().unwrap();
 }
 
+// This test covers the sanity check in `read_others` decoding RDATA.
 #[test]
 fn instance_name_two_dots() {
     // Create a daemon for the server.
