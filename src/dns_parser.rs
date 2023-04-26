@@ -896,9 +896,35 @@ impl DnsIncoming {
         Ok(())
     }
 
+    /// Decodes all answers, authorities and additionals.
     fn read_others(&mut self) -> Result<()> {
         let n = self.num_answers + self.num_authorities + self.num_additionals;
         debug!("read_others: {}", n);
+
+        // RFC 1035: https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.1
+        //
+        // All RRs have the same top level format shown below:
+        //         1  1  1  1  1  1
+        // 0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
+        // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+        // |                                               |
+        // /                                               /
+        // /                      NAME                     /
+        // |                                               |
+        // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+        // |                      TYPE                     |
+        // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+        // |                     CLASS                     |
+        // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+        // |                      TTL                      |
+        // |                                               |
+        // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+        // |                   RDLENGTH                    |
+        // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--|
+        // /                     RDATA                     /
+        // /                                               /
+        // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
         for _ in 0..n {
             let name = self.read_name()?;
             let slice = &self.data[self.offset..];
@@ -907,12 +933,9 @@ impl DnsIncoming {
             let ttl = u32_from_be_slice(&slice[4..8]);
             let length = u16_from_be_slice(&slice[8..10]) as usize;
             self.offset += 10;
-            // print!("name: {} ", &name);
-            // println!(
-            //     "type {} class {} ttl {} length {}",
-            //     &ty, &class, &ttl, &length
-            // );
+            let next_offset = self.offset + length;
 
+            // decode RDATA based on the record type.
             let rec: Option<DnsRecordBox> = match ty {
                 TYPE_A => Some(Box::new(DnsAddress::new(
                     &name,
@@ -963,6 +986,14 @@ impl DnsIncoming {
                     None
                 }
             };
+
+            // sanity check.
+            if self.offset != next_offset {
+                return Err(Error::Msg(format!(
+                    "read_name: decode offset error for RData type {} record: {:?} offset: {} expected offset: {}",
+                    ty, &rec, self.offset, next_offset,
+                )));
+            }
 
             if let Some(record) = rec {
                 debug!("{:?}", &record);
