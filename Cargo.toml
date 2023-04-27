@@ -24,3 +24,4 @@ socket2 = { version = "0.4", features = ["all"] }      # socket APIs
 
 [dev-dependencies]
 fastrand = "1.8"
+env_logger = "0.9"
