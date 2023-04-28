@@ -6,7 +6,7 @@
 //!
 //! Example:
 //!
-//! cargo run --example register _my-hello._udp.local. test1
+//! cargo run --example register _my-hello._udp test1
 //!
 //! Options:
 //! "--unregister": automatically unregister after 2 seconds.
@@ -16,7 +16,7 @@ use std::{env, thread, time::Duration};
 
 fn main() {
     // Please use env vars to change the logging level.
-    // For example: `RUST_LOG=debug <program>`.
+    // For example in Linux: `RUST_LOG=debug <program>`.
     env_logger::init();
 
     // Simple command line options.
@@ -32,7 +32,7 @@ fn main() {
     // Create a new mDNS daemon.
     let mdns = ServiceDaemon::new().expect("Could not create service daemon");
     let service_type = match args.get(1) {
-        Some(arg) => arg,
+        Some(arg) => format!("{}.local.", arg),
         None => {
             print_usage();
             return;
@@ -100,5 +100,5 @@ fn print_usage() {
     println!("--unregister: automatically unregister after 2 seconds");
     println!("");
     println!("For example:");
-    println!("cargo run --example register _my-hello._udp.local. test1");
+    println!("cargo run --example register _my-hello._udp test1");
 }
