@@ -1,3 +1,17 @@
+# Version 0.7.3
+
+## What's Changed
+
+* Support updating instances after they are resolved by @keepsimple1 in https://github.com/keepsimple1/mdns-sd/pull/104
+* add optional "unregister" in example code by @keepsimple1 in https://github.com/keepsimple1/mdns-sd/pull/107
+* Returns an error with logging for read_name invalid offset by @keepsimple1 in https://github.com/keepsimple1/mdns-sd/pull/109
+* register example should keep running by @keepsimple1 in https://github.com/keepsimple1/mdns-sd/pull/110
+* Refactoring DnsCache and how to resolve Service Instance by @keepsimple1 in https://github.com/keepsimple1/mdns-sd/pull/108
+* add sanity check in reading a record data RDATA by @keepsimple1 in https://github.com/keepsimple1/mdns-sd/pull/111
+* Enable logging for the examples by @keepsimple1 in https://github.com/keepsimple1/mdns-sd/pull/112
+* register example: a simpler input for the service type by @keepsimple1 in https://github.com/keepsimple1/mdns-sd/pull/113
+
+
 # Version 0.7.2
 
 Highlights:
