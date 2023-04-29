@@ -1,5 +1,12 @@
 # Version 0.7.3
 
+## Highlights
+
+- Internal refactoring: always use DnsCache to resolve Servive Instances. When processing incoming packets,
+we used to update the cache one record at a time and also build separate service info structs to resolve. Now we finish the cache updates first, and then resolve instances from the cache.
+
+- Added env_logger for the examples code and enhanced the examples as well.
+
 ## What's Changed
 
 * Support updating instances after they are resolved by @keepsimple1 in https://github.com/keepsimple1/mdns-sd/pull/104
