@@ -666,7 +666,7 @@ fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
         })
         .collect();
 
-        if link_local_count > 0 && intf_vec.len() > link_local_count {
+    if link_local_count > 0 && intf_vec.len() > link_local_count {
         intf_vec.retain(|i| !i.is_link_local())
     }
 
