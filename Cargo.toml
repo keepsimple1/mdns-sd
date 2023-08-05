@@ -1,6 +1,6 @@
 [package]
 name = "mdns-sd"
-version = "0.7.3"
+version = "0.7.4"
 authors = ["keepsimple <keepsimple@gmail.com>"]
 edition = "2018"
 license = "Apache-2.0 OR MIT"
@@ -17,8 +17,8 @@ default = ["async", "logging"]
 
 [dependencies]
 flume = { version = "0.10", default-features = false } # channel between threads
-if-addrs = "0.10"                                       # get local IP addresses
-log = { version = "0.4.14", optional = true }          # logging
+if-addrs = "0.10"                                      # get local IP addresses
+log = { version = "0.4", optional = true }             # logging
 polling = "2.1"                                        # select/poll sockets
 socket2 = { version = "0.4", features = ["all"] }      # socket APIs
 

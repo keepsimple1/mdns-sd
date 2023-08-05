@@ -1,3 +1,7 @@
+# Version 0.7.4
+
+* Not to use link-local addrs if routable addrs exist (#117)
+
 # Version 0.7.3
 
 ## Highlights
