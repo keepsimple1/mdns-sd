@@ -632,16 +632,22 @@ fn instance_name_two_dots() {
 }
 
 fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
+    let mut link_local_count = 0;
+
     // Use a random port for binding test.
     let test_port = fastrand::u16(8000u16..9000u16);
 
-    if_addrs::get_if_addrs()
+    let mut intf_vec: Vec<Ifv4Addr> = if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
         .filter_map(|i| {
             if i.is_loopback() {
                 None
             } else {
+                if i.is_link_local() {
+                    link_local_count += 1;
+                }
+
                 match i.addr {
                     IfAddr::V4(ifv4) =>
                     // Use a 'bind' to check if this is a valid IPv4 addr.
@@ -658,7 +664,13 @@ fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
                 }
             }
         })
-        .collect()
+        .collect();
+
+        if link_local_count > 0 && intf_vec.len() > link_local_count {
+        intf_vec.retain(|i| !i.is_link_local())
+    }
+
+    intf_vec
 }
 
 /// Returns a made-up IPv4 address "net.1.1.1", where
