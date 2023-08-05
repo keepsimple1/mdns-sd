@@ -23,7 +23,7 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           profile: minimal
-          toolchain: 1.55.0
+          toolchain: 1.60.0
           override: true
           components: rustfmt, clippy
       - name: Run rustfmt and fail if any warnings
