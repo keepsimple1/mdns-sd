@@ -117,6 +117,8 @@ pub type Metrics = HashMap<String, i64>;
 pub struct ServiceDaemon {
     /// Sender handle of the channel to the daemon.
     sender: Sender<Command>,
+    /// name of the network interface to use (use all interfaces if None)
+    interface_filter: Option<String>,
 }
 
 impl ServiceDaemon {
@@ -125,7 +127,12 @@ impl ServiceDaemon {
     /// The daemon (re)uses the default mDNS port 5353. To keep it simple, we don't
     /// ask callers to set the port.
     pub fn new() -> Result<Self> {
-        let zc = Zeroconf::new()?;
+        Self::create_spawn_daemon(None)
+    }
+
+    fn create_spawn_daemon(interface: Option<&str>) -> Result<Self> {
+        let interface_filter =interface.map(|s| s.to_string());
+        let zc = Zeroconf::new(&interface_filter)?;
         let (sender, receiver) = bounded(100);
 
         // Spawn the daemon thread
@@ -134,7 +141,20 @@ impl ServiceDaemon {
             .spawn(move || Self::run(zc, receiver))
             .map_err(|e| e_fmt!("thread builder failed to spawn: {}", e))?;
 
-        Ok(Self { sender })
+        Ok(Self {
+            sender,
+            interface_filter,
+        })
+    }
+
+    /// Creates a new daemon using a specific `interface` and spawns a thread to run the daemon.
+    ///
+    /// The daemon will use only the network `interface` specified by the user.
+    ///
+    /// The daemon (re)uses the default mDNS port 5353. To keep it simple, we don't
+    /// ask callers to set the port.
+    pub fn on_interface(interface: &str) -> Result<Self> {
+        Self::create_spawn_daemon(Some(interface))
     }
 
     /// Starts browsing for a specific service type.
@@ -178,7 +198,7 @@ impl ServiceDaemon {
         check_service_name(service_info.get_fullname())?;
 
         if service_info.is_addr_auto() {
-            for ifv4 in my_ipv4_interfaces() {
+            for ifv4 in my_ipv4_interfaces(self.interface_filter.as_deref()) {
                 service_info.insert_ipv4addr(ifv4.ip);
             }
         }
@@ -610,14 +630,18 @@ struct Zeroconf {
 
     /// Options
     service_name_len_max: u8,
+
+    /// name of the network interface to use (use all interfaces if None)
+    interface_filter: Option<String>,
 }
 
 impl Zeroconf {
-    fn new() -> Result<Self> {
+    fn new(interface: &Option<String>) -> Result<Self> {
+        let interface_filter= interface.clone();
         let poller = Poller::new().map_err(|e| e_fmt!("create Poller: {}", e))?;
 
         // Get IPv4 interfaces.
-        let my_ifv4addrs = my_ipv4_interfaces();
+        let my_ifv4addrs = my_ipv4_interfaces(interface_filter.as_deref());
 
         // Create a socket for every IPv4 interface.
         let mut intf_socks = HashMap::new();
@@ -647,6 +671,7 @@ impl Zeroconf {
             poller,
             monitors,
             service_name_len_max,
+            interface_filter,
         })
     }
 
@@ -690,7 +715,7 @@ impl Zeroconf {
     /// Check for IP changes and update intf_socks as needed.
     fn check_ip_changes(&mut self) {
         // Get the current IPv4 interfaces.
-        let my_ifv4addrs = my_ipv4_interfaces();
+        let my_ifv4addrs = my_ipv4_interfaces(self.interface_filter.as_deref());
 
         // Remove unused sockets in the poller.
         let deleted_addrs = self
@@ -1454,7 +1479,7 @@ enum Command {
     /// Read the current values of the counters
     GetMetrics(Sender<Metrics>),
 
-    /// Monitor noticable events in the daemon.
+    /// Monitor noticeable events in the daemon.
     Monitor(Sender<DaemonEvent>),
 
     SetOption(DaemonOption),
@@ -1671,7 +1696,7 @@ fn call_listener(
 }
 
 /// Returns valid IPv4 interfaces in the host system.
-fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
+fn my_ipv4_interfaces(interface: Option<&str>) -> Vec<Ifv4Addr> {
     // Link local interfaces have the 169.254/16 prefix,
     // see RFC 3927 for details.
     let mut link_local_count = 0;
@@ -1679,6 +1704,7 @@ fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
     let mut intf_vec: Vec<Ifv4Addr> = if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
+        .filter(|i| interface.is_none() || interface.is_some_and(|f| i.name == f))
         .filter_map(|i| {
             if i.is_loopback() {
                 None
