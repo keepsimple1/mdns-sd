@@ -1710,7 +1710,7 @@ fn my_ipv4_interfaces(interface: Option<&str>) -> Vec<Ifv4Addr> {
     let mut intf_vec: Vec<Ifv4Addr> = if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
-        .filter(|i| interface.is_none() || interface.is_some_and(|f| i.name == f))
+        .filter(|i| interface.is_none() || (interface.is_some() && interface.unwrap() == i.name))
         .filter_map(|i| {
             if i.is_loopback() {
                 None
