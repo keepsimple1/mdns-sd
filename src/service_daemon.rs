@@ -117,8 +117,6 @@ pub type Metrics = HashMap<String, i64>;
 pub struct ServiceDaemon {
     /// Sender handle of the channel to the daemon.
     sender: Sender<Command>,
-    /// name of the network interface to use (use all interfaces if None)
-    interface_filter: Option<String>,
 }
 
 impl ServiceDaemon {
@@ -131,7 +129,7 @@ impl ServiceDaemon {
     }
 
     fn create_spawn_daemon(interface: Option<&str>) -> Result<Self> {
-        let interface_filter =interface.map(|s| s.to_string());
+        let interface_filter = interface.map(|s| s.to_string());
         let zc = Zeroconf::new(&interface_filter)?;
         let (sender, receiver) = bounded(100);
 
@@ -141,18 +139,26 @@ impl ServiceDaemon {
             .spawn(move || Self::run(zc, receiver))
             .map_err(|e| e_fmt!("thread builder failed to spawn: {}", e))?;
 
-        Ok(Self {
-            sender,
-            interface_filter,
-        })
+        Ok(Self { sender })
     }
 
     /// Creates a new daemon using a specific `interface` and spawns a thread to run the daemon.
     ///
-    /// The daemon will use only the network `interface` specified by the user.
-    ///
     /// The daemon (re)uses the default mDNS port 5353. To keep it simple, we don't
     /// ask callers to set the port.
+    ///
+    /// # Arguments
+    ///
+    /// * `interface` - A string slice that holds the name of the only network interface the daemon
+    /// should use
+    ///
+    /// # Examples
+    /// ```
+    /// // Use only the network interface named `en0`
+    /// use mdns_sd::ServiceDaemon;
+    /// let mdns = ServiceDaemon::on_interface("en0").expect("Failed to create daemon");
+    /// ```
+    ///
     pub fn on_interface(interface: &str) -> Result<Self> {
         Self::create_spawn_daemon(Some(interface))
     }
@@ -194,14 +200,8 @@ impl ServiceDaemon {
     ///
     /// If `service_info` has no addresses yet and its `addr_auto` is enabled,
     /// this method will automatically fill in addresses from the host.
-    pub fn register(&self, mut service_info: ServiceInfo) -> Result<()> {
+    pub fn register(&self, service_info: ServiceInfo) -> Result<()> {
         check_service_name(service_info.get_fullname())?;
-
-        if service_info.is_addr_auto() {
-            for ifv4 in my_ipv4_interfaces(self.interface_filter.as_deref()) {
-                service_info.insert_ipv4addr(ifv4.ip);
-            }
-        }
 
         self.sender
             .try_send(Command::Register(service_info))
@@ -637,7 +637,7 @@ struct Zeroconf {
 
 impl Zeroconf {
     fn new(interface: &Option<String>) -> Result<Self> {
-        let interface_filter= interface.clone();
+        let interface_filter = interface.clone();
         let poller = Poller::new().map_err(|e| e_fmt!("create Poller: {}", e))?;
 
         // Get IPv4 interfaces.
@@ -786,12 +786,18 @@ impl Zeroconf {
     ///    Section, all of its newly registered resource records
     ///
     /// Zeroconf will then respond to requests for information about this service.
-    fn register_service(&mut self, info: ServiceInfo) {
+    fn register_service(&mut self, mut info: ServiceInfo) {
         // Check the service name length.
         if let Err(e) = check_service_name_length(info.get_type(), self.service_name_len_max) {
             error!("check_service_name_length: {}", &e);
             self.notify_monitors(DaemonEvent::Error(e));
             return;
+        }
+
+        if info.is_addr_auto() {
+            for ifv4 in my_ipv4_interfaces(self.interface_filter.as_deref()) {
+                info.insert_ipv4addr(ifv4.ip);
+            }
         }
 
         let outgoing_addrs = self.send_unsolicited_response(&info);
