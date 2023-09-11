@@ -144,8 +144,9 @@ impl ServiceDaemon {
 
     /// Creates a new daemon using a specific `interface` and spawns a thread to run the daemon.
     ///
-    /// The daemon (re)uses the default mDNS port 5353. To keep it simple, we don't
-    /// ask callers to set the port.
+    /// The daemon will limit its scope browsing and service publishing to this interface only.
+    /// The daemon (re)uses the default mDNS port 5353. To keep it simple, we don't ask callers to
+    /// set the port.
     ///
     /// # Arguments
     ///
@@ -641,7 +642,7 @@ impl Zeroconf {
         let poller = Poller::new().map_err(|e| e_fmt!("create Poller: {}", e))?;
 
         // Get IPv4 interfaces.
-        let my_ifv4addrs = my_ipv4_interfaces(interface_filter.as_deref());
+        let my_ifv4addrs = my_ipv4_addresses(interface_filter.as_deref());
 
         // Create a socket for every IPv4 interface.
         let mut intf_socks = HashMap::new();
@@ -715,7 +716,7 @@ impl Zeroconf {
     /// Check for IP changes and update intf_socks as needed.
     fn check_ip_changes(&mut self) {
         // Get the current IPv4 interfaces.
-        let my_ifv4addrs = my_ipv4_interfaces(self.interface_filter.as_deref());
+        let my_ifv4addrs = my_ipv4_addresses(self.interface_filter.as_deref());
 
         // Remove unused sockets in the poller.
         let deleted_addrs = self
@@ -795,7 +796,7 @@ impl Zeroconf {
         }
 
         if info.is_addr_auto() {
-            for ifv4 in my_ipv4_interfaces(self.interface_filter.as_deref()) {
+            for ifv4 in my_ipv4_addresses(self.interface_filter.as_deref()) {
                 info.insert_ipv4addr(ifv4.ip);
             }
         }
@@ -1702,7 +1703,7 @@ fn call_listener(
 }
 
 /// Returns valid IPv4 interfaces in the host system.
-fn my_ipv4_interfaces(interface: Option<&str>) -> Vec<Ifv4Addr> {
+fn my_ipv4_addresses(interface: Option<&str>) -> Vec<Ifv4Addr> {
     // Link local interfaces have the 169.254/16 prefix,
     // see RFC 3927 for details.
     let mut link_local_count = 0;
