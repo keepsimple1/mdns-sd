@@ -1671,37 +1671,22 @@ fn call_listener(
 }
 
 /// Returns valid IPv4 interfaces in the host system.
+/// Loopback interfaces are excluded.
 fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
-    // Link local interfaces have the 169.254/16 prefix,
-    // see RFC 3927 for details.
-    let mut link_local_count = 0;
-
-    let mut intf_vec: Vec<Ifv4Addr> = if_addrs::get_if_addrs()
+    if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
         .filter_map(|i| {
             if i.is_loopback() {
                 None
             } else {
-                if i.is_link_local() {
-                    link_local_count += 1;
-                }
                 match i.addr {
                     IfAddr::V4(ifv4) => Some(ifv4),
                     _ => None,
                 }
             }
         })
-        .collect();
-
-    // If we have both routable interfaces and link-local interfaces,
-    // we only keep the routable interfaces. Otherwise, it can confuse
-    // the clients.
-    if link_local_count > 0 && intf_vec.len() > link_local_count {
-        intf_vec.retain(|i| !i.is_link_local())
-    }
-
-    intf_vec
+        .collect()
 }
 
 /// Sends out `packet` to `addr` on the socket in `intf_sock`.
