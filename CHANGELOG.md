@@ -1,4 +1,8 @@
-# Version 0.7.4
+# Version 0.7.5
+
+* Revert the changes in v0.7.4 and support link-local addrs alongside routable addrs. (#122)
+
+# Version 0.7.4 (deprecated)
 
 * Not to use link-local addrs if routable addrs exist (#117)
 

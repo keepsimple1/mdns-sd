@@ -1,6 +1,6 @@
 [package]
 name = "mdns-sd"
-version = "0.7.4"
+version = "0.7.5"
 authors = ["keepsimple <keepsimple@gmail.com>"]
 edition = "2018"
 license = "Apache-2.0 OR MIT"
