@@ -73,6 +73,7 @@ pub(crate) struct DnsRecord {
     pub(crate) entry: DnsEntry,
     ttl: u32,     // in seconds, 0 means this record should not be cached
     created: u64, // UNIX time in millis
+    expires: u64, // expires at this UNIX time in millis
 
     /// Support re-query an instance before its PTR record expires.
     /// See https://datatracker.ietf.org/doc/html/rfc6762#section-5.2
@@ -83,10 +84,12 @@ impl DnsRecord {
     fn new(name: &str, ty: u16, class: u16, ttl: u32) -> Self {
         let created = current_time_millis();
         let refresh = get_expiration_time(created, ttl, 80);
+        let expires = get_expiration_time(created, ttl, 100);
         Self {
             entry: DnsEntry::new(name.to_string(), ty, class),
             ttl,
             created,
+            expires,
             refresh,
         }
     }
@@ -95,8 +98,16 @@ impl DnsRecord {
         self.created
     }
 
+    pub(crate) fn get_expire_time(&self) -> u64 {
+        self.expires
+    }
+
+    pub(crate) fn get_refresh_time(&self) -> u64 {
+        self.refresh
+    }
+
     pub(crate) fn is_expired(&self, now: u64) -> bool {
-        get_expiration_time(self.created, self.ttl, 100) <= now
+        now >= self.expires
     }
 
     pub(crate) fn refresh_due(&self, now: u64) -> bool {
@@ -119,6 +130,7 @@ impl DnsRecord {
         self.ttl = other.ttl;
         self.created = other.created;
         self.refresh = get_expiration_time(self.created, self.ttl, 80);
+        self.expires = get_expiration_time(self.created, self.ttl, 100);
     }
 }
 

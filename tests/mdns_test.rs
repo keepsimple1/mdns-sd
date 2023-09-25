@@ -1,7 +1,6 @@
 use if_addrs::{IfAddr, Ifv4Addr};
 use mdns_sd::{
-    DaemonEvent, Error, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo,
-    UnregisterStatus,
+    DaemonEvent, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus,
 };
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -54,6 +53,8 @@ fn integration_success() {
     let remove_count_clone = remove_count.clone();
     let stopped_count = Arc::new(Mutex::new(0));
     let stopped_count_clone = stopped_count.clone();
+    let addr_count = Arc::new(Mutex::new(0));
+    let addr_count_clone = addr_count.clone();
 
     let browse_chan = d.browse(ty_domain).unwrap();
     std::thread::spawn(move || {
@@ -79,7 +80,8 @@ fn integration_success() {
                     assert_eq!(hostname, host_name);
 
                     let addr_set = info.get_addresses();
-                    assert_eq!(addr_set.len(), my_addrs_count);
+                    let mut count = addr_count_clone.lock().unwrap();
+                    *count = addr_set.len();
 
                     let service_port = info.get_port();
                     assert_eq!(service_port, port);
@@ -120,16 +122,6 @@ fn integration_success() {
         }
     });
 
-    // Try to flood the browsing until we got Error::Again.
-    loop {
-        match d.browse(ty_domain) {
-            Ok(_chan) => {}
-            Err(Error::Again) => break,
-            Err(_e) => assert!(false), // Should not happen.
-        }
-    }
-    println!("Service browse ({}) returns Error::Again", &ty_domain);
-
     // Wait a bit to let the daemon process commands in the channel.
     sleep(Duration::from_millis(1200));
 
@@ -140,8 +132,17 @@ fn integration_success() {
 
     sleep(Duration::from_secs(1));
 
+    // All addrs should have been resolved.
+    let count = addr_count.lock().unwrap();
+    assert_eq!(*count, my_addrs_count);
+
+    // `resolve_count` is not guaranteed to always be 1
+    // or `my_addrs_count`. If `my_addrs_count` > 1, these
+    // addrs could be resolved in a single message from
+    // the daemon, or in separate messages.
     let count = resolve_count.lock().unwrap();
-    assert_eq!(*count, 1);
+    assert!(*count >= 1);
+    assert!(*count <= my_addrs_count);
 
     let count = remove_count.lock().unwrap();
     assert_eq!(*count, 1);
