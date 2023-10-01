@@ -1,3 +1,16 @@
+# Version 0.8.0
+
+No breaking changes in API. This release brings two potential user-visible changes:
+
+* use UDP socket to signal the daemon for commands. (#125)
+
+This change reduces CPU utilization of the daemon thread as well as its latency to
+the user commands. Internally it uses local UDP sockets to signal the daemon.
+
+* Added the link-local feature to if_addrs in Cargo.toml to enable link-local interfaces in Windows. (#126)
+
+This change makes link-local interfaces visible to users in Windows where they didn't show up previously.
+
 # Version 0.7.5
 
 * Revert the changes in v0.7.4 and support link-local addrs alongside routable addrs. (#122)
