@@ -49,7 +49,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     io::Read,
-    net::{Ipv4Addr, SocketAddrV4},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
     str, thread,
     time::Duration,
     vec,
@@ -117,6 +117,13 @@ pub type Metrics = HashMap<String, i64>;
 pub struct ServiceDaemon {
     /// Sender handle of the channel to the daemon.
     sender: Sender<Command>,
+
+    /// Send to this addr to signal that a `Command` is coming.
+    ///
+    /// The daemon listens on this addr together with other mDNS sockets,
+    /// to avoid busy polling the flume channel. If there is a way to poll
+    /// the channel and mDNS sockets together, then this can be removed.
+    signal_addr: SocketAddr,
 }
 
 impl ServiceDaemon {
@@ -125,7 +132,21 @@ impl ServiceDaemon {
     /// The daemon (re)uses the default mDNS port 5353. To keep it simple, we don't
     /// ask callers to set the port.
     pub fn new() -> Result<Self> {
-        let zc = Zeroconf::new()?;
+        // Use port 0 to allow the system assign a random available port,
+        // no need for a pre-defined port number.
+        let signal_sock = UdpSocket::bind("127.0.0.1:0")
+            .map_err(|e| e_fmt!("failed to create signal_sock for daemon: {}", e))?;
+
+        // Must be nonblocking so we can listen to it together with mDNS sockets.
+        signal_sock
+            .set_nonblocking(true)
+            .map_err(|e| e_fmt!("failed to set nonblocking for signal socket: {}", e))?;
+
+        let signal_addr = signal_sock
+            .local_addr()
+            .map_err(|e| e_fmt!("failed to get signal sock addr: {}", e))?;
+
+        let zc = Zeroconf::new(signal_sock)?;
         let (sender, receiver) = bounded(100);
 
         // Spawn the daemon thread
@@ -134,7 +155,31 @@ impl ServiceDaemon {
             .spawn(move || Self::run(zc, receiver))
             .map_err(|e| e_fmt!("thread builder failed to spawn: {}", e))?;
 
-        Ok(Self { sender })
+        Ok(Self {
+            sender,
+            signal_addr,
+        })
+    }
+
+    /// Sends `cmd` to the daemon via its channel, and sends a signal
+    /// to its sock addr to notify.
+    fn send_cmd(&self, cmd: Command) -> Result<()> {
+        let cmd_name = cmd.to_string();
+
+        // First, send to the flume channel.
+        self.sender.try_send(cmd).map_err(|e| match e {
+            TrySendError::Full(_) => Error::Again,
+            e => e_fmt!("flume::channel::send failed: {}", e),
+        })?;
+
+        // Second, send a signal to notify the daemon.
+        let socket = UdpSocket::bind("127.0.0.1:0")
+            .map_err(|e| e_fmt!("Failed to create socket to send signal: {}", e))?;
+        socket
+            .send_to(cmd_name.as_bytes(), self.signal_addr)
+            .map_err(|e| e_fmt!("signal socket send_to failed: {}", e))?;
+
+        Ok(())
     }
 
     /// Starts browsing for a specific service type.
@@ -147,12 +192,7 @@ impl ServiceDaemon {
     /// finding more details, i.e. SRV records and TXT records.
     pub fn browse(&self, service_type: &str) -> Result<Receiver<ServiceEvent>> {
         let (resp_s, resp_r) = bounded(10);
-        self.sender
-            .try_send(Command::Browse(service_type.to_string(), 1, resp_s))
-            .map_err(|e| match e {
-                TrySendError::Full(_) => Error::Again,
-                e => e_fmt!("flume::channel::send failed: {}", e),
-            })?;
+        self.send_cmd(Command::Browse(service_type.to_string(), 1, resp_s))?;
         Ok(resp_r)
     }
 
@@ -161,13 +201,7 @@ impl ServiceDaemon {
     /// When an error is returned, the caller should retry only when
     /// the error is `Error::Again`, otherwise should log and move on.
     pub fn stop_browse(&self, ty_domain: &str) -> Result<()> {
-        self.sender
-            .try_send(Command::StopBrowse(ty_domain.to_string()))
-            .map_err(|e| match e {
-                TrySendError::Full(_) => Error::Again,
-                e => e_fmt!("flume::channel::send failed: {}", e),
-            })?;
-        Ok(())
+        self.send_cmd(Command::StopBrowse(ty_domain.to_string()))
     }
 
     /// Registers a service provided by this host.
@@ -183,13 +217,7 @@ impl ServiceDaemon {
             }
         }
 
-        self.sender
-            .try_send(Command::Register(service_info))
-            .map_err(|e| match e {
-                TrySendError::Full(_) => Error::Again,
-                e => e_fmt!("flume::channel::send failed: {}", e),
-            })?;
-        Ok(())
+        self.send_cmd(Command::Register(service_info))
     }
 
     /// Unregisters a service. This is a graceful shutdown of a service.
@@ -201,12 +229,7 @@ impl ServiceDaemon {
     /// the error is `Error::Again`, otherwise should log and move on.
     pub fn unregister(&self, fullname: &str) -> Result<Receiver<UnregisterStatus>> {
         let (resp_s, resp_r) = bounded(1);
-        self.sender
-            .try_send(Command::Unregister(fullname.to_lowercase(), resp_s))
-            .map_err(|e| match e {
-                TrySendError::Full(_) => Error::Again,
-                e => e_fmt!("flume::channel::send failed: {}", e),
-            })?;
+        self.send_cmd(Command::Unregister(fullname.to_lowercase(), resp_s))?;
         Ok(resp_r)
     }
 
@@ -215,12 +238,7 @@ impl ServiceDaemon {
     /// Returns a channel [`Receiver`] of [`DaemonEvent`].
     pub fn monitor(&self) -> Result<Receiver<DaemonEvent>> {
         let (resp_s, resp_r) = bounded(100);
-        self.sender
-            .try_send(Command::Monitor(resp_s))
-            .map_err(|e| match e {
-                TrySendError::Full(_) => Error::Again,
-                e => e_fmt!("starts a monitor: try_send: {}", e),
-            })?;
+        self.send_cmd(Command::Monitor(resp_s))?;
         Ok(resp_r)
     }
 
@@ -229,10 +247,7 @@ impl ServiceDaemon {
     /// When an error is returned, the caller should retry only when
     /// the error is `Error::Again`, otherwise should log and move on.
     pub fn shutdown(&self) -> Result<()> {
-        self.sender.try_send(Command::Exit).map_err(|e| match e {
-            TrySendError::Full(_) => Error::Again,
-            e => e_fmt!("flume::channel::send failed: {}", e),
-        })
+        self.send_cmd(Command::Exit)
     }
 
     /// Returns a channel receiver for the metrics, e.g. input/output counters.
@@ -241,12 +256,7 @@ impl ServiceDaemon {
     /// this method repeatedly if they want to monitor the metrics continuously.
     pub fn get_metrics(&self) -> Result<Receiver<Metrics>> {
         let (resp_s, resp_r) = bounded(1);
-        self.sender
-            .try_send(Command::GetMetrics(resp_s))
-            .map_err(|e| match e {
-                TrySendError::Full(_) => Error::Again,
-                e => e_fmt!("flume::channel::try_send failed: {}", e),
-            })?;
+        self.send_cmd(Command::GetMetrics(resp_s))?;
         Ok(resp_r)
     }
 
@@ -266,12 +276,7 @@ impl ServiceDaemon {
             )));
         }
 
-        self.sender
-            .try_send(Command::SetOption(DaemonOption::ServiceNameLenMax(len_max)))
-            .map_err(|e| match e {
-                TrySendError::Full(_) => Error::Again,
-                e => e_fmt!("flume::channel::send failed: {}", e),
-            })
+        self.send_cmd(Command::SetOption(DaemonOption::ServiceNameLenMax(len_max)))
     }
 
     /// The main event loop of the daemon thread
@@ -283,6 +288,17 @@ impl ServiceDaemon {
     /// 4. announce its registered services.
     /// 5. process retransmissions if any.
     fn run(mut zc: Zeroconf, receiver: Receiver<Command>) {
+        // Add the daemon's signal socket to the poller.
+        let signal_event_key = 7;
+        if let Err(e) = zc
+            .poller
+            .add(&zc.signal_sock, polling::Event::readable(signal_event_key))
+        {
+            error!("failed to add signal socket to the poller: {}", e);
+            return;
+        }
+
+        // Add mDNS sockets to the poller.
         for (ipv4, if_sock) in zc.intf_socks.iter() {
             // It is OK to convert to `usize` here as we only support 32-bit
             // or 64-bit platforms.
@@ -292,18 +308,52 @@ impl ServiceDaemon {
                 return;
             }
         }
-        let mut events = Vec::new();
-        let timeout = Duration::from_millis(20); // moderate frequency for polling.
 
-        const IP_CHECK_INTERVAL_MILLIS: u64 = 2000;
+        // Setup timer for IP checks.
+        const IP_CHECK_INTERVAL_MILLIS: u64 = 30_000;
         let mut next_ip_check = current_time_millis() + IP_CHECK_INTERVAL_MILLIS;
+        zc.timers.push(next_ip_check);
 
+        // Start the run loop.
+
+        let mut events = Vec::new();
         loop {
-            // process incoming packets.
+            let now = current_time_millis();
+
+            let earliest_timer = zc
+                .timers
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| a.cmp(b))
+                .map(|(i, v)| (i, *v));
+
+            let timeout = match earliest_timer {
+                Some((_, timer)) => {
+                    // If `timer` already passed, set `timeout` to be 1ms.
+                    let millis = if timer > now { timer - now } else { 1 };
+                    Some(Duration::from_millis(millis))
+                }
+                None => None,
+            };
+
+            // Process incoming packets, command events and optional timeout.
             events.clear();
-            match zc.poller.wait(&mut events, Some(timeout)) {
+            match zc.poller.wait(&mut events, timeout) {
                 Ok(_) => {
                     for ev in events.iter() {
+                        if ev.key == signal_event_key {
+                            // Drain signals as we will drain commands as well.
+                            zc.signal_sock_drain();
+
+                            if let Err(e) = zc
+                                .poller
+                                .modify(&zc.signal_sock, polling::Event::readable(ev.key))
+                            {
+                                error!("failed to modify poller for signal socket: {}", e);
+                            }
+                            continue; // Next event.
+                        }
+
                         // Read until no more packets available.
                         let ipv4 = (ev.key as u32).into();
                         while zc.handle_read(&ipv4) {}
@@ -322,22 +372,35 @@ impl ServiceDaemon {
                 Err(e) => error!("failed to select from sockets: {}", e),
             }
 
+            let now = current_time_millis();
+
+            // Remove the timer if already passed.
+            if let Some((min_index, timer)) = earliest_timer {
+                if now >= timer {
+                    zc.timers.remove(min_index);
+                }
+            }
+
             // Send out additional queries for unresolved instances, where
             // the early responses did not have SRV records.
             zc.query_missing_srv();
 
             // process commands from the command channel
-            match receiver.try_recv() {
-                Ok(Command::Exit) => {
-                    debug!("Exit from daemon");
+            let mut should_exit = false;
+            while let Ok(command) = receiver.try_recv() {
+                if let Command::Exit = command {
+                    should_exit = true;
                     break;
                 }
-                Ok(command) => Self::exec_command(&mut zc, command, false),
-                _ => {}
+                Self::exec_command(&mut zc, command, false);
+            }
+
+            if should_exit {
+                debug!("Exit from daemon");
+                break;
             }
 
             // check for repeated commands and run them if their time is up.
-            let now = current_time_millis();
             let mut i = 0;
             while i < zc.retransmissions.len() {
                 if now >= zc.retransmissions[i].next_time {
@@ -373,10 +436,10 @@ impl ServiceDaemon {
             });
 
             // check IP changes.
-            let now = current_time_millis();
             if now > next_ip_check {
                 next_ip_check = now + IP_CHECK_INTERVAL_MILLIS;
                 zc.check_ip_changes();
+                zc.timers.push(next_ip_check);
             }
         }
     }
@@ -410,10 +473,7 @@ impl ServiceDaemon {
                 let next_time = current_time_millis() + (next_delay * 1000) as u64;
                 let max_delay = 60 * 60;
                 let delay = cmp::min(next_delay * 2, max_delay);
-                zc.retransmissions.push(ReRun {
-                    next_time,
-                    command: Command::Browse(ty, delay, listener),
-                });
+                zc.add_retransmission(next_time, Command::Browse(ty, delay, listener));
             }
 
             Command::Register(service_info) => {
@@ -456,6 +516,7 @@ impl ServiceDaemon {
                                     next_time,
                                     command: Command::UnregisterResend(packet, *ipv4),
                                 });
+                                zc.timers.push(next_time);
                             }
                         }
                         zc.increase_counter(Counter::Unregister, 1);
@@ -610,10 +671,15 @@ struct Zeroconf {
 
     /// Options
     service_name_len_max: u8,
+
+    /// Socket for signaling.
+    signal_sock: UdpSocket,
+
+    timers: Vec<u64>,
 }
 
 impl Zeroconf {
-    fn new() -> Result<Self> {
+    fn new(signal_sock: UdpSocket) -> Result<Self> {
         let poller = Poller::new().map_err(|e| e_fmt!("create Poller: {}", e))?;
 
         // Get IPv4 interfaces.
@@ -636,6 +702,8 @@ impl Zeroconf {
         let monitors = Vec::new();
         let service_name_len_max = SERVICE_NAME_LEN_MAX_DEFAULT;
 
+        let timers = vec![];
+
         Ok(Self {
             intf_socks,
             my_services: HashMap::new(),
@@ -647,6 +715,8 @@ impl Zeroconf {
             poller,
             monitors,
             service_name_len_max,
+            signal_sock,
+            timers,
         })
     }
 
@@ -785,10 +855,7 @@ impl Zeroconf {
         // The key has to be lower case letter as DNS record name is case insensitive.
         // The info will have the original name.
         let service_fullname = info.get_fullname().to_lowercase();
-        self.retransmissions.push(ReRun {
-            next_time,
-            command: Command::RegisterResend(service_fullname.clone()),
-        });
+        self.add_retransmission(next_time, Command::RegisterResend(service_fullname.clone()));
         self.my_services.insert(service_fullname, info);
     }
 
@@ -1190,9 +1257,15 @@ impl Zeroconf {
         let mut changes = Vec::new();
         for record in msg.answers {
             if let Some((dns_record, true)) = self.cache.add_or_update(record) {
+                self.timers.push(dns_record.get_record().get_expire_time());
+
                 let ty = dns_record.get_type();
                 let name = dns_record.get_name();
                 if ty == TYPE_PTR {
+                    if self.queriers.contains_key(name) {
+                        self.timers.push(dns_record.get_record().get_refresh_time());
+                    }
+
                     // send ServiceFound
                     if let Some(dns_ptr) = dns_record.any().downcast_ref::<DnsPointer>() {
                         call_listener(
@@ -1245,6 +1318,11 @@ impl Zeroconf {
                                     ServiceEvent::ServiceResolved(info),
                                 );
                             }
+                        }
+                    } else {
+                        // SRV record is missing, might need to send query again.
+                        if !self.cache.srv.contains_key(&dns_ptr.alias) {
+                            self.timers.push(now + 1_000);
                         }
                     }
                 }
@@ -1394,6 +1472,23 @@ impl Zeroconf {
             }
         }
     }
+
+    fn signal_sock_drain(&self) {
+        let mut signal_buf = [0; 1024];
+
+        // This recv is non-blocking as the socket is non-blocking.
+        while let Ok(sz) = self.signal_sock.recv(&mut signal_buf) {
+            debug!(
+                "signal socket recvd: {}",
+                String::from_utf8_lossy(&signal_buf[0..sz])
+            );
+        }
+    }
+
+    fn add_retransmission(&mut self, next_time: u64, command: Command) {
+        self.retransmissions.push(ReRun { next_time, command });
+        self.timers.push(next_time);
+    }
 }
 
 /// All possible events sent to the client from the daemon
@@ -1460,6 +1555,23 @@ enum Command {
     SetOption(DaemonOption),
 
     Exit,
+}
+
+impl fmt::Display for Command {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Command::Browse(_, _, _) => write!(f, "Command Browse"),
+            Command::Exit => write!(f, "Command Exit"),
+            Command::GetMetrics(_) => write!(f, "Command GetMetrics"),
+            Command::Monitor(_) => write!(f, "Command Monitor"),
+            Command::Register(_) => write!(f, "Command Register"),
+            Command::RegisterResend(_) => write!(f, "Command RegisterResend"),
+            Command::SetOption(_) => write!(f, "Command SetOption"),
+            Command::StopBrowse(_) => write!(f, "Command StopBrowse"),
+            Command::Unregister(_, _) => write!(f, "Command Unregister"),
+            Command::UnregisterResend(_, _) => write!(f, "Command UnregisterResend"),
+        }
+    }
 }
 
 #[derive(Debug)]
