@@ -32,7 +32,7 @@ Currently this library has the following limitations:
 
 ## Minimum Rust version
 
-Tested against Rust 1.60.0
+The Minimum Supported Rust Version is 1.60.0, running tests requires 1.63.
 
 ## License
 
