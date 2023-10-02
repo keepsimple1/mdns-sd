@@ -3,6 +3,7 @@ name = "mdns-sd"
 version = "0.8.0"
 authors = ["keepsimple <keepsimple@gmail.com>"]
 edition = "2018"
+rust-version = "1.61.0"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/keepsimple1/mdns-sd"
 documentation = "https://docs.rs/mdns-sd"
