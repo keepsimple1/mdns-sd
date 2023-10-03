@@ -3,6 +3,7 @@ name = "mdns-sd"
 version = "0.8.0"
 authors = ["keepsimple <keepsimple@gmail.com>"]
 edition = "2018"
+rust-version = "1.60.0"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/keepsimple1/mdns-sd"
 documentation = "https://docs.rs/mdns-sd"
@@ -24,4 +25,3 @@ socket2 = { version = "0.4", features = ["all"] }      # socket APIs
 
 [dev-dependencies]
 fastrand = "1.8"
-env_logger = "0.9"
