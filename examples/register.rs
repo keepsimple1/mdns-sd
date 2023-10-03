@@ -15,10 +15,6 @@ use mdns_sd::{ServiceDaemon, ServiceInfo};
 use std::{env, thread, time::Duration};
 
 fn main() {
-    // Please use env vars to change the logging level.
-    // For example in Linux: `RUST_LOG=debug <program>`.
-    env_logger::init();
-
     // Simple command line options.
     let args: Vec<String> = env::args().collect();
     let mut should_unreg = false;
