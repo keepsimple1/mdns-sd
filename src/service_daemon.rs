@@ -34,7 +34,7 @@ use crate::{
     dns_parser::{
         current_time_millis, DnsAddress, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
         DnsRecordExt, DnsSrv, DnsTxt, CLASS_IN, CLASS_UNIQUE, FLAGS_AA, FLAGS_QR_QUERY,
-        FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_ANY, TYPE_PTR, TYPE_SRV, TYPE_TXT,
+        FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_AAAA, TYPE_ANY, TYPE_PTR, TYPE_SRV, TYPE_TXT,
     },
     error::{Error, Result},
     service_info::{split_sub_domain, ServiceInfo},
@@ -589,7 +589,8 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
     let intf_ip = &intf.ip();
     match intf_ip {
         IpAddr::V4(ip) => {
-            let sock = new_socket(Ipv4Addr::new(0, 0, 0, 0).into(), MDNS_PORT, true)?;
+            let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0).into(), MDNS_PORT);
+            let sock = new_socket(addr.into(), true)?;
 
             // Join mDNS group to receive packets.
             sock.join_multicast_v4(&GROUP_ADDR_V4, ip)
@@ -607,13 +608,15 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
             Ok(sock)
         },
         IpAddr::V6(ip) => {
-            let sock = new_socket(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0).into(), MDNS_PORT, true)?;
+            let mut addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0).into(), MDNS_PORT, 0, 0);
+            addr.set_scope_id(intf.index.unwrap_or(0));
+            let sock = new_socket(addr.into(), true)?;
 
             // Join mDNS group to receive packets.
             sock.join_multicast_v6(&GROUP_ADDR_V6, intf.index.unwrap_or(0))
                 .map_err(|e| e_fmt!("join multicast group on addr {}: {}", ip, e))?;
 
-            // Set I6P_MULTICAST_IF to send packets.
+            // Set IP6_MULTICAST_IF to send packets.
             sock.set_multicast_if_v6(intf.index.unwrap_or(0))
                 .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
 
@@ -630,8 +633,15 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
 
 /// Creates a new UDP socket to bind to `port` with REUSEPORT option.
 /// `non_block` indicates whether to set O_NONBLOCK for the socket.
-fn new_socket(ip: IpAddr, port: u16, non_block: bool) -> Result<Socket> {
-    let fd = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)
+fn new_socket(addr: SocketAddr, non_block: bool) -> Result<Socket> {
+    let domain = if addr.is_ipv6() {
+        socket2::Domain::IPV6
+    } else if addr.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        panic!()
+    };
+    let fd = Socket::new(domain, socket2::Type::DGRAM, None)
         .map_err(|e| e_fmt!("create socket failed: {}", e))?;
 
     fd.set_reuse_address(true)
@@ -645,7 +655,6 @@ fn new_socket(ip: IpAddr, port: u16, non_block: bool) -> Result<Socket> {
             .map_err(|e| e_fmt!("set O_NONBLOCK: {}", e))?;
     }
 
-    let addr = SocketAddr::new(ip, port);
     fd.bind(&addr.into())
         .map_err(|e| e_fmt!("socket bind to {} failed: {}", &addr, e))?;
 
@@ -965,10 +974,14 @@ impl Zeroconf {
             return false;
         }
         for addr in intf_addrs {
+            let t = match addr {
+                IpAddr::V4(_) => TYPE_A,
+                IpAddr::V6(_) => TYPE_AAAA,
+            };
             out.add_answer_at_time(
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
-                    TYPE_A,
+                    t,
                     CLASS_IN | CLASS_UNIQUE,
                     info.get_host_ttl(),
                     addr,
@@ -1032,10 +1045,14 @@ impl Zeroconf {
         );
 
         for addr in info.get_addrs_on_intf(&intf_sock.intf) {
+            let t = match addr {
+                IpAddr::V4(_) => TYPE_A,
+                IpAddr::V6(_) => TYPE_AAAA,
+            };
             out.add_answer_at_time(
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
-                    TYPE_A,
+                    t,
                     CLASS_IN | CLASS_UNIQUE,
                     0,
                     addr,
@@ -1324,7 +1341,7 @@ impl Zeroconf {
                 TYPE_SRV | TYPE_TXT => {
                     updated_instances.insert(update.name);
                 }
-                TYPE_A => {
+                TYPE_A | TYPE_AAAA => {
                     let instances = self.cache.get_instances_on_host(&update.name);
                     updated_instances.extend(instances);
                 }
@@ -1405,23 +1422,32 @@ impl Zeroconf {
                     }
                 }
             } else {
-                if qtype == TYPE_A || qtype == TYPE_ANY {
+                if qtype == TYPE_A || qtype == TYPE_AAAA || qtype == TYPE_ANY {
                     for service in self.my_services.values() {
                         if service.get_hostname() == question.entry.name.to_lowercase() {
                             let intf_addrs = service.get_addrs_on_intf(&intf_sock.intf);
-                            if intf_addrs.is_empty() && qtype == TYPE_A {
+                            if intf_addrs.is_empty() && (qtype == TYPE_A || qtype == TYPE_AAAA){
+                                let t = match qtype {
+                                    TYPE_A => "TYPE_A",
+                                    TYPE_AAAA => "TYPE_AAAA",
+                                    _ => panic!(),
+                                };
                                 error!(
-                                    "Cannot find valid addrs for TYPE_A response on intf {:?}",
-                                    &intf_sock.intf
+                                    "Cannot find valid addrs for {} response on intf {:?}",
+                                    t, &intf_sock.intf
                                 );
                                 return;
                             }
                             for address in intf_addrs {
+                                let t = match address {
+                                    IpAddr::V4(_) => TYPE_A,
+                                    IpAddr::V6(_) => TYPE_AAAA,
+                                };
                                 out.add_answer(
                                     &msg,
                                     Box::new(DnsAddress::new(
                                         &question.entry.name,
-                                        TYPE_A,
+                                        t,
                                         CLASS_IN | CLASS_UNIQUE,
                                         service.get_host_ttl(),
                                         address,
@@ -1476,9 +1502,13 @@ impl Zeroconf {
                         return;
                     }
                     for address in intf_addrs {
+                        let t = match address {
+                            IpAddr::V4(_) => TYPE_A,
+                            IpAddr::V6(_) => TYPE_AAAA,
+                        };
                         out.add_additional_answer(Box::new(DnsAddress::new(
                             service.get_hostname(),
-                            TYPE_A,
+                            t,
                             CLASS_IN | CLASS_UNIQUE,
                             service.get_host_ttl(),
                             address,
@@ -1655,6 +1685,7 @@ impl DnsCache {
             TYPE_SRV => self.srv.entry(entry_name).or_default(),
             TYPE_TXT => self.txt.entry(entry_name).or_default(),
             TYPE_A => self.addr.entry(entry_name).or_default(),
+            TYPE_AAAA => self.addr.entry(entry_name).or_default(),
             _ => return None,
         };
 
@@ -1684,6 +1715,7 @@ impl DnsCache {
             TYPE_SRV => self.srv.get_mut(record_name),
             TYPE_TXT => self.txt.get_mut(record_name),
             TYPE_A => self.addr.get_mut(record_name),
+            TYPE_AAAA => self.addr.get_mut(record_name),
             _ => return found,
         };
         if let Some(record_vec) = record_vec {
