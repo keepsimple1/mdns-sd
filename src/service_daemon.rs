@@ -300,12 +300,12 @@ impl ServiceDaemon {
         }
 
         // Add mDNS sockets to the poller.
-        for (ipv4, if_sock) in zc.intf_socks.iter() {
-            // It is OK to convert to `usize` here as we only support 32-bit
-            // or 64-bit platforms.
-            let key = u32::from(*ipv4) as usize;
+        for (ip, if_sock) in zc.intf_socks.iter() {
+            let key = zc.id_count;
+            zc.id_count += 1;
+            let _ = zc.poll_ids.insert(key, *ip);
             if let Err(e) = zc.poller.add(&if_sock.sock, polling::Event::readable(key)) {
-                error!("add socket of {:?} to poller: {}", ipv4, e);
+                error!("add socket of {:?} to poller: {}", ip, e);
                 return;
             }
         }
@@ -671,6 +671,12 @@ struct Zeroconf {
     /// Local interfaces with sockets to recv/send on these interfaces.
     intf_socks: HashMap<IpAddr, IntfSock>,
 
+    /// Map poll id to IpAddr
+    poll_ids: HashMap<usize, IpAddr>,
+
+    /// Next poll id value
+    id_count: usize,
+
     /// Local registered services， keyed by service full names.
     my_services: HashMap<String, ServiceInfo>,
 
@@ -730,6 +736,8 @@ impl Zeroconf {
 
         Ok(Self {
             intf_socks,
+            poll_ids: HashMap::new(),
+            id_count: 0,
             my_services: HashMap::new(),
             broadcast_addr,
             cache: DnsCache::new(),
@@ -833,7 +841,9 @@ impl Zeroconf {
             };
 
             // Add the new interface into the poller.
-            let key = u32::from(new_ip) as usize;
+            let key = self.id_count;
+            self.id_count += 1;
+            let _ = self.poll_ids.insert(key, new_ip);
             if let Err(e) = self.poller.add(&sock, polling::Event::readable(key)) {
                 error!("check_ip_changes: poller add ip {}: {}", new_ip, e);
             }
