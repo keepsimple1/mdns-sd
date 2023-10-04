@@ -1,6 +1,6 @@
 use mdns_sd::AsIpAddrs;
 use std::collections::HashSet;
-use std::net::{Ipv4Addr, Ipv6Addr, IpAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[test]
 fn test_addr_str() {

@@ -3,7 +3,7 @@ use mdns_sd::{
     DaemonEvent, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus,
 };
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, Ipv6Addr, IpAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
@@ -223,7 +223,10 @@ fn service_without_properties_with_alter_net_v4() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
-    let if_addrs: Vec<Interface> = my_ip_interfaces().into_iter().filter(|iface| iface.addr.ip().is_ipv4()).collect();
+    let if_addrs: Vec<Interface> = my_ip_interfaces()
+        .into_iter()
+        .filter(|iface| iface.addr.ip().is_ipv4())
+        .collect();
     let first_ip = if_addrs[0].ip();
     let alter_ip = ipv4_alter_net(&if_addrs);
     let host_ip = vec![first_ip, alter_ip];
@@ -259,7 +262,11 @@ fn service_without_properties_with_alter_net_v4() {
                     );
                     // match only our service and not v6 one
                     if fullname.as_str() == info.get_fullname() {
-                        let addrs: Vec<&IpAddr> = info.get_addresses().into_iter().filter(|a| a.is_ipv4()).collect();
+                        let addrs: Vec<&IpAddr> = info
+                            .get_addresses()
+                            .into_iter()
+                            .filter(|a| a.is_ipv4())
+                            .collect();
                         assert_eq!(addrs.len(), 1); // first_ipv4 but no alter_ipv.
                         found = true;
                         break;
@@ -291,7 +298,10 @@ fn service_without_properties_with_alter_net_v6() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
-    let if_addrs: Vec<Interface> = my_ip_interfaces().into_iter().filter(|iface| iface.addr.ip().is_ipv6()).collect();
+    let if_addrs: Vec<Interface> = my_ip_interfaces()
+        .into_iter()
+        .filter(|iface| iface.addr.ip().is_ipv6())
+        .collect();
     let first_ip = if_addrs[0].ip();
     let alter_ip = ipv6_alter_net(&if_addrs);
     let host_ip = vec![first_ip, alter_ip];
@@ -327,7 +337,11 @@ fn service_without_properties_with_alter_net_v6() {
                     );
                     // match only our service and not v4 one
                     if fullname.as_str() == info.get_fullname() {
-                        let addrs: Vec<&IpAddr> = info.get_addresses().into_iter().filter(|a| a.is_ipv6()).collect();
+                        let addrs: Vec<&IpAddr> = info
+                            .get_addresses()
+                            .into_iter()
+                            .filter(|a| a.is_ipv6())
+                            .collect();
                         assert_eq!(addrs.len(), 1); // first_ipv6 but no alter_ipv.
                         found = true;
                         break;
@@ -439,19 +453,15 @@ fn service_with_invalid_addr_v4() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
-    let if_addrs: Vec<Interface> = my_ip_interfaces().into_iter().filter(|iface| iface.addr.ip().is_ipv4()).collect();
+    let if_addrs: Vec<Interface> = my_ip_interfaces()
+        .into_iter()
+        .filter(|iface| iface.addr.ip().is_ipv4())
+        .collect();
     let alter_ip = ipv4_alter_net(&if_addrs);
     let host_name = "my_host.";
     let port = 5201;
-    let my_service = ServiceInfo::new(
-        ty_domain,
-        &instance_name,
-        host_name,
-        &alter_ip,
-        port,
-        None,
-    )
-    .expect("valid service info");
+    let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, &alter_ip, port, None)
+        .expect("valid service info");
     d.register(my_service)
         .expect("Failed to register our service");
 
@@ -500,19 +510,15 @@ fn service_with_invalid_addr_v6() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
-    let if_addrs: Vec<Interface> = my_ip_interfaces().into_iter().filter(|iface| iface.addr.ip().is_ipv6()).collect();
+    let if_addrs: Vec<Interface> = my_ip_interfaces()
+        .into_iter()
+        .filter(|iface| iface.addr.ip().is_ipv6())
+        .collect();
     let alter_ip = ipv6_alter_net(&if_addrs);
     let host_name = "my_host.";
     let port = 5201;
-    let my_service = ServiceInfo::new(
-        ty_domain,
-        &instance_name,
-        host_name,
-        &alter_ip,
-        port,
-        None,
-    )
-    .expect("valid service info");
+    let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, &alter_ip, port, None)
+        .expect("valid service info");
     d.register(my_service)
         .expect("Failed to register our service");
 
@@ -844,7 +850,7 @@ fn ipv6_alter_net(if_addrs: &[Interface]) -> IpAddr {
                 if net > net_max {
                     net_max = net;
                 }
-            },
+            }
             _ => panic!(),
         }
     }

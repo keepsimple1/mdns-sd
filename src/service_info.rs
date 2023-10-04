@@ -1,7 +1,7 @@
 #[cfg(feature = "logging")]
 use crate::log::error;
 use crate::{Error, Result};
-use if_addrs::{Interface, IfAddr};
+use if_addrs::{IfAddr, Interface};
 use std::{
     collections::{HashMap, HashSet},
     convert::TryInto,
@@ -671,14 +671,14 @@ pub(crate) fn valid_ip_on_intf(addr: &IpAddr, intf: &Interface) -> bool {
             let intf_net = u32::from(intf.ip) & netmask;
             let addr_net = u32::from(*addr) & netmask;
             addr_net == intf_net
-        },
+        }
         (IpAddr::V6(addr), IfAddr::V6(intf)) => {
             let netmask = u128::from(intf.netmask);
             let intf_net = u128::from(intf.ip) & netmask;
             let addr_net = u128::from(*addr) & netmask;
             addr_net == intf_net
-        },
-        _ => false
+        }
+        _ => false,
     }
 }
 

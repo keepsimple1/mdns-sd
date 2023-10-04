@@ -8,7 +8,16 @@
 use crate::log::{debug, error};
 use crate::{Error, Result, ServiceInfo};
 use if_addrs::Interface;
-use std::{any::Any, cmp, collections::HashMap, fmt, net::{IpAddr, Ipv4Addr, Ipv6Addr}, str, time::SystemTime, convert::TryInto};
+use std::{
+    any::Any,
+    cmp,
+    collections::HashMap,
+    convert::TryInto,
+    fmt,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    str,
+    time::SystemTime,
+};
 
 pub(crate) const TYPE_A: u16 = 1; // IPv4 address
 pub(crate) const TYPE_CNAME: u16 = 5;
@@ -1041,13 +1050,17 @@ impl DnsIncoming {
     }
 
     fn read_ipv4(&mut self) -> Ipv4Addr {
-        let bytes: [u8; 4] = (&self.data)[self.offset..self.offset + 4].try_into().unwrap();
+        let bytes: [u8; 4] = (&self.data)[self.offset..self.offset + 4]
+            .try_into()
+            .unwrap();
         self.offset += bytes.len();
         Ipv4Addr::from(bytes)
     }
 
     fn read_ipv6(&mut self) -> Ipv6Addr {
-        let bytes: [u8; 16] = (&self.data)[self.offset..self.offset + 16].try_into().unwrap();
+        let bytes: [u8; 16] = (&self.data)[self.offset..self.offset + 16]
+            .try_into()
+            .unwrap();
         self.offset += bytes.len();
         Ipv6Addr::from(bytes)
     }

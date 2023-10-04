@@ -34,7 +34,8 @@ use crate::{
     dns_parser::{
         current_time_millis, DnsAddress, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
         DnsRecordExt, DnsSrv, DnsTxt, CLASS_IN, CLASS_UNIQUE, FLAGS_AA, FLAGS_QR_QUERY,
-        FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_AAAA, TYPE_ANY, TYPE_PTR, TYPE_SRV, TYPE_TXT,
+        FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_AAAA, TYPE_ANY, TYPE_PTR, TYPE_SRV,
+        TYPE_TXT,
     },
     error::{Error, Result},
     service_info::{split_sub_domain, ServiceInfo},
@@ -49,7 +50,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     io::Read,
-    net::{Ipv4Addr, Ipv6Addr, IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6, UdpSocket},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, UdpSocket},
     str, thread,
     time::Duration,
     vec,
@@ -606,9 +607,14 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
             sock.send_to(&test_packet, &multicast_addr)
                 .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
             Ok(sock)
-        },
+        }
         IpAddr::V6(ip) => {
-            let mut addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0).into(), MDNS_PORT, 0, 0);
+            let mut addr = SocketAddrV6::new(
+                Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0).into(),
+                MDNS_PORT,
+                0,
+                0,
+            );
             addr.set_scope_id(intf.index.unwrap_or(0));
             let sock = new_socket(addr.into(), true)?;
 
@@ -626,9 +632,8 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
             sock.send_to(&test_packet, &multicast_addr)
                 .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
             Ok(sock)
-        },
+        }
     }
-
 }
 
 /// Creates a new UDP socket to bind to `port` with REUSEPORT option.
@@ -826,8 +831,7 @@ impl Zeroconf {
         }
 
         // Keep the interfaces only if they still exist.
-        self.intf_socks
-            .retain(|_, v| my_ifaddrs.contains(&v.intf));
+        self.intf_socks.retain(|_, v| my_ifaddrs.contains(&v.intf));
 
         // Add newly found interfaces.
         for intf in my_ifaddrs {
@@ -1426,7 +1430,7 @@ impl Zeroconf {
                     for service in self.my_services.values() {
                         if service.get_hostname() == question.entry.name.to_lowercase() {
                             let intf_addrs = service.get_addrs_on_intf(&intf_sock.intf);
-                            if intf_addrs.is_empty() && (qtype == TYPE_A || qtype == TYPE_AAAA){
+                            if intf_addrs.is_empty() && (qtype == TYPE_A || qtype == TYPE_AAAA) {
                                 let t = match qtype {
                                     TYPE_A => "TYPE_A",
                                     TYPE_AAAA => "TYPE_AAAA",
@@ -1854,11 +1858,9 @@ fn my_ip_interfaces() -> Vec<Interface> {
     if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|i| {
-            match i.is_loopback() {
-                true => None,
-                false => Some(i),
-            }
+        .filter_map(|i| match i.is_loopback() {
+            true => None,
+            false => Some(i),
         })
         .collect()
 }
