@@ -7,8 +7,8 @@
 #[cfg(feature = "logging")]
 use crate::log::{debug, error};
 use crate::{Error, Result, ServiceInfo};
-use if_addrs::Ifv4Addr;
-use std::{any::Any, cmp, collections::HashMap, fmt, net::Ipv4Addr, str, time::SystemTime};
+use if_addrs::Interface;
+use std::{any::Any, cmp, collections::HashMap, fmt, net::{IpAddr, Ipv4Addr, Ipv6Addr}, str, time::SystemTime, convert::TryInto};
 
 pub(crate) const TYPE_A: u16 = 1; // IPv4 address
 pub(crate) const TYPE_CNAME: u16 = 5;
@@ -179,11 +179,11 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
 #[derive(Debug)]
 pub(crate) struct DnsAddress {
     pub(crate) record: DnsRecord,
-    pub(crate) address: Ipv4Addr,
+    pub(crate) address: IpAddr,
 }
 
 impl DnsAddress {
-    pub(crate) fn new(name: &str, ty: u16, class: u16, ttl: u32, address: Ipv4Addr) -> Self {
+    pub(crate) fn new(name: &str, ty: u16, class: u16, ttl: u32, address: IpAddr) -> Self {
         let record = DnsRecord::new(name, ty, class, ttl);
         Self { record, address }
     }
@@ -695,7 +695,7 @@ impl DnsOutgoing {
         &mut self,
         msg: &DnsIncoming,
         service: &ServiceInfo,
-        intf: &Ifv4Addr,
+        intf: &Interface,
     ) {
         let intf_addrs = service.get_addrs_on_intf(intf);
         if intf_addrs.is_empty() {
