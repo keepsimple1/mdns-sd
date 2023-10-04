@@ -1,3 +1,7 @@
+# Version 0.8.1
+
+* Remove env_logger in dev-dependencies and lower MSRV to 1.60.0. (#128)
+
 # Version 0.8.0
 
 No breaking changes in API. This release brings two potential user-visible changes:
