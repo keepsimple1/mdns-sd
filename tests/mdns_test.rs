@@ -1,9 +1,9 @@
-use if_addrs::{IfAddr, Ifv4Addr};
+use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
     DaemonEvent, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus,
 };
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr, IpAddr};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
@@ -22,9 +22,9 @@ fn integration_success() {
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
 
-    let my_ifaddrs: Vec<_> = my_ipv4_interfaces().iter().map(|intf| intf.ip).collect();
+    let my_ifaddrs: Vec<_> = my_ip_interfaces().iter().map(|intf| intf.ip()).collect();
     let my_addrs_count = my_ifaddrs.len();
-    println!("My IPv4 addr(s): {:?}", &my_ifaddrs);
+    println!("My IP addr(s): {:?}", &my_ifaddrs);
 
     let host_name = "my_host.";
     let port = 5200;
@@ -213,7 +213,7 @@ fn integration_success() {
 }
 
 #[test]
-fn service_without_properties_with_alter_net() {
+fn service_without_properties_with_alter_net_v4() {
     // Create a daemon
     let d = ServiceDaemon::new().expect("Failed to create daemon");
 
@@ -223,17 +223,17 @@ fn service_without_properties_with_alter_net() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
-    let ifv4_addrs = &my_ipv4_interfaces();
-    let first_ipv4 = ifv4_addrs[0].ip;
-    let alter_ipv4 = ipv4_alter_net(ifv4_addrs);
-    let host_ipv4 = vec![first_ipv4, alter_ipv4];
+    let if_addrs: Vec<Interface> = my_ip_interfaces().into_iter().filter(|iface| iface.addr.ip().is_ipv4()).collect();
+    let first_ip = if_addrs[0].ip();
+    let alter_ip = ipv4_alter_net(&if_addrs);
+    let host_ip = vec![first_ip, alter_ip];
     let host_name = "serv-no-prop.";
     let port = 5201;
     let my_service = ServiceInfo::new(
         ty_domain,
         &instance_name,
         host_name,
-        &host_ipv4[..],
+        &host_ip[..],
         port,
         None,
     )
@@ -241,12 +241,14 @@ fn service_without_properties_with_alter_net() {
     let fullname = my_service.get_fullname().to_string();
     d.register(my_service)
         .expect("Failed to register our service");
-    println!("Registered service with host_ipv4: {:?}", &host_ipv4);
+    println!("Registered service with host_ip: {:?}", &host_ip);
 
     // Browse for a service
     let browse_chan = d.browse(ty_domain).unwrap();
     let timeout = Duration::from_secs(2);
-    loop {
+    let timer = std::time::Instant::now() + timeout;
+    let mut found = false;
+    while std::time::Instant::now() < timer {
         match browse_chan.recv_timeout(timeout) {
             Ok(event) => match event {
                 ServiceEvent::ServiceResolved(info) => {
@@ -255,10 +257,13 @@ fn service_without_properties_with_alter_net() {
                         &info.get_fullname(),
                         info.get_addresses()
                     );
-                    assert_eq!(fullname.as_str(), info.get_fullname());
-                    let addrs = info.get_addresses();
-                    assert_eq!(addrs.len(), 1); // first_ipv4 but no alter_ipv4.
-                    break;
+                    // match only our service and not v6 one
+                    if fullname.as_str() == info.get_fullname() {
+                        let addrs: Vec<&IpAddr> = info.get_addresses().into_iter().filter(|a| a.is_ipv4()).collect();
+                        assert_eq!(addrs.len(), 1); // first_ipv4 but no alter_ipv.
+                        found = true;
+                        break;
+                    }
                 }
                 e => {
                     println!("Received event {:?}", e);
@@ -272,6 +277,75 @@ fn service_without_properties_with_alter_net() {
     }
 
     d.shutdown().unwrap();
+    assert!(found);
+}
+
+#[test]
+fn service_without_properties_with_alter_net_v6() {
+    // Create a daemon
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+    // Register a service without properties.
+    let ty_domain = "_serv-no-prop._tcp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string(); // Create a unique name.
+    let if_addrs: Vec<Interface> = my_ip_interfaces().into_iter().filter(|iface| iface.addr.ip().is_ipv6()).collect();
+    let first_ip = if_addrs[0].ip();
+    let alter_ip = ipv6_alter_net(&if_addrs);
+    let host_ip = vec![first_ip, alter_ip];
+    let host_name = "serv-no-prop.";
+    let port = 5201;
+    let my_service = ServiceInfo::new(
+        ty_domain,
+        &instance_name,
+        host_name,
+        &host_ip[..],
+        port,
+        None,
+    )
+    .expect("valid service info");
+    let fullname = my_service.get_fullname().to_string();
+    d.register(my_service)
+        .expect("Failed to register our service");
+    println!("Registered service with host_ip: {:?}", &host_ip);
+
+    // Browse for a service
+    let browse_chan = d.browse(ty_domain).unwrap();
+    let timeout = Duration::from_secs(2);
+    let timer = std::time::Instant::now() + timeout;
+    let mut found = false;
+    while std::time::Instant::now() < timer {
+        match browse_chan.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    println!(
+                        "Resolved a service of {} addr(s): {:?}",
+                        &info.get_fullname(),
+                        info.get_addresses()
+                    );
+                    // match only our service and not v4 one
+                    if fullname.as_str() == info.get_fullname() {
+                        let addrs: Vec<&IpAddr> = info.get_addresses().into_iter().filter(|a| a.is_ipv6()).collect();
+                        assert_eq!(addrs.len(), 1); // first_ipv6 but no alter_ipv.
+                        found = true;
+                        break;
+                    }
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            },
+            Err(e) => {
+                println!("browse error: {}", e);
+                assert!(false);
+            }
+        }
+    }
+
+    d.shutdown().unwrap();
+    assert!(found);
 }
 
 #[test]
@@ -355,7 +429,7 @@ fn test_into_txt_properties() {
 }
 
 #[test]
-fn service_with_invalid_addr() {
+fn service_with_invalid_addr_v4() {
     // Create a daemon
     let d = ServiceDaemon::new().expect("Failed to create daemon");
 
@@ -365,15 +439,76 @@ fn service_with_invalid_addr() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
-    let ifv4_addrs = &my_ipv4_interfaces();
-    let alter_ipv4 = ipv4_alter_net(ifv4_addrs);
+    let if_addrs: Vec<Interface> = my_ip_interfaces().into_iter().filter(|iface| iface.addr.ip().is_ipv4()).collect();
+    let alter_ip = ipv4_alter_net(&if_addrs);
     let host_name = "my_host.";
     let port = 5201;
     let my_service = ServiceInfo::new(
         ty_domain,
         &instance_name,
         host_name,
-        &alter_ipv4,
+        &alter_ip,
+        port,
+        None,
+    )
+    .expect("valid service info");
+    d.register(my_service)
+        .expect("Failed to register our service");
+
+    // Browse for a service
+    let browse_chan = d.browse(ty_domain).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+    loop {
+        match browse_chan.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    println!(
+                        "Resolved a service of {} addr(s): {:?}",
+                        &info.get_fullname(),
+                        info.get_addresses()
+                    );
+                    resolved = true;
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            },
+            Err(e) => {
+                println!("browse error: {}", e);
+                break;
+            }
+        }
+    }
+
+    d.shutdown().unwrap();
+
+    // We cannot resolve the service because the published address
+    // is not valid in the LAN.
+    assert_eq!(resolved, false);
+}
+
+#[test]
+fn service_with_invalid_addr_v6() {
+    // Create a daemon
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+    // Register a service without properties.
+    let ty_domain = "_invalid-addr._tcp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string(); // Create a unique name.
+    let if_addrs: Vec<Interface> = my_ip_interfaces().into_iter().filter(|iface| iface.addr.ip().is_ipv6()).collect();
+    let alter_ip = ipv6_alter_net(&if_addrs);
+    let host_name = "my_host.";
+    let port = 5201;
+    let my_service = ServiceInfo::new(
+        ty_domain,
+        &instance_name,
+        host_name,
+        &alter_ip,
         port,
         None,
     )
@@ -427,7 +562,7 @@ fn subtype() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
-    let host_ipv4 = my_ipv4_interfaces()[0].ip.to_string();
+    let host_ipv4 = my_ip_interfaces()[0].ip().to_string();
     let host_name = "my_host.";
     let port = 5201;
     let my_service = ServiceInfo::new(
@@ -632,7 +767,7 @@ fn instance_name_two_dots() {
     server_daemon.shutdown().unwrap();
 }
 
-fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
+fn my_ip_interfaces() -> Vec<Interface> {
     // Use a random port for binding test.
     let test_port = fastrand::u16(8000u16..9000u16);
 
@@ -643,19 +778,31 @@ fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
             if i.is_loopback() {
                 None
             } else {
-                match i.addr {
+                match &i.addr {
                     IfAddr::V4(ifv4) =>
                     // Use a 'bind' to check if this is a valid IPv4 addr.
                     {
                         match std::net::UdpSocket::bind((ifv4.ip, test_port)) {
-                            Ok(_) => Some(ifv4),
+                            Ok(_) => Some(i),
                             Err(e) => {
                                 println!("bind {}: {}, skipped.", ifv4.ip, e);
                                 None
                             }
                         }
                     }
-                    _ => None,
+                    IfAddr::V6(ifv6) =>
+                    // Use a 'bind' to check if this is a valid IPv6 addr.
+                    {
+                        let mut sock = std::net::SocketAddrV6::new(ifv6.ip, test_port, 0, 0);
+                        sock.set_scope_id(i.index.unwrap_or(0));
+                        match std::net::UdpSocket::bind(sock) {
+                            Ok(_) => Some(i),
+                            Err(e) => {
+                                println!("bind {}: {}, skipped.", ifv6.ip, e);
+                                None
+                            }
+                        }
+                    }
                 }
             }
         })
@@ -667,13 +814,39 @@ fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
 ///
 /// The idea is that this made-up address does not belong to
 /// the same network as any of the host addresses.
-fn ipv4_alter_net(ifv4_addrs: &Vec<Ifv4Addr>) -> Ipv4Addr {
+fn ipv4_alter_net(if_addrs: &[Interface]) -> IpAddr {
     let mut net_max = 0;
-    for ifv4_addr in ifv4_addrs.iter() {
-        let net = ifv4_addr.ip.octets()[0];
-        if net > net_max {
-            net_max = net;
+    for if_addr in if_addrs.iter() {
+        match &if_addr.addr {
+            IfAddr::V4(iface) => {
+                let net = iface.ip.octets()[0];
+                if net > net_max {
+                    net_max = net;
+                }
+            }
+            _ => panic!(),
         }
     }
-    Ipv4Addr::new(net_max + 1, 1, 1, 1)
+    Ipv4Addr::new(net_max + 1, 1, 1, 1).into()
+}
+
+/// Returns a made-up IPv6 address "net:1:1:1:1:1:1:1", where
+/// `net` is one higher than any of IPv6 addresses on the host.
+///
+/// The idea is that this made-up address does not belong to
+/// the same network as any of the host addresses.
+fn ipv6_alter_net(if_addrs: &[Interface]) -> IpAddr {
+    let mut net_max = 0;
+    for if_addr in if_addrs.iter() {
+        match &if_addr.addr {
+            IfAddr::V6(iface) => {
+                let net = iface.ip.octets()[0];
+                if net > net_max {
+                    net_max = net;
+                }
+            },
+            _ => panic!(),
+        }
+    }
+    Ipv6Addr::new(net_max as u16 + 1, 1, 1, 1, 1, 1, 1, 1).into()
 }
