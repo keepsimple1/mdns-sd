@@ -585,24 +585,47 @@ impl ServiceDaemon {
 /// Creates a new UDP socket that uses `intf_ip` to send and recv multicast.
 fn new_socket_bind(intf: &Interface) -> Result<Socket> {
     // Use the same socket for receiving and sending multicast packets.
-    // Such socket has to bind to INADDR_ANY.
-    let sock = new_socket(Ipv4Addr::new(0, 0, 0, 0), MDNS_PORT, true)?;
+    // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
+    let intf_ip = &intf.ip();
+    match intf_ip {
+        IpAddr::V4(ip) => {
+            let sock = new_socket(Ipv4Addr::new(0, 0, 0, 0).into(), MDNS_PORT, true)?;
 
-    // Join mDNS group to receive packets.
-    sock.join_multicast_v4(&GROUP_ADDR, intf_ip)
-        .map_err(|e| e_fmt!("join multicast group on addr {}: {}", intf_ip, e))?;
+            // Join mDNS group to receive packets.
+            sock.join_multicast_v4(&GROUP_ADDR_V4, ip)
+                .map_err(|e| e_fmt!("join multicast group on addr {}: {}", intf_ip, e))?;
 
-    // Set IP_MULTICAST_IF to send packets.
-    sock.set_multicast_if_v4(intf_ip)
-        .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", intf_ip, e))?;
+            // Set IP_MULTICAST_IF to send packets.
+            sock.set_multicast_if_v4(ip)
+                .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
 
-    // Test if we can send packets successfully.
-    let multicast_addr = SocketAddrV4::new(GROUP_ADDR, MDNS_PORT).into();
-    let test_packet = DnsOutgoing::new(0).to_packet_data();
-    sock.send_to(&test_packet, &multicast_addr)
-        .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", intf_ip, e))?;
+            // Test if we can send packets successfully.
+            let multicast_addr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
+            let test_packet = DnsOutgoing::new(0).to_packet_data();
+            sock.send_to(&test_packet, &multicast_addr)
+                .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
+            Ok(sock)
+        },
+        IpAddr::V6(ip) => {
+            let sock = new_socket(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0).into(), MDNS_PORT, true)?;
 
-    Ok(sock)
+            // Join mDNS group to receive packets.
+            sock.join_multicast_v6(&GROUP_ADDR_V6, intf.index.unwrap_or(0))
+                .map_err(|e| e_fmt!("join multicast group on addr {}: {}", ip, e))?;
+
+            // Set I6P_MULTICAST_IF to send packets.
+            sock.set_multicast_if_v6(intf.index.unwrap_or(0))
+                .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
+
+            // Test if we can send packets successfully.
+            let multicast_addr = SocketAddrV6::new(GROUP_ADDR_V6, MDNS_PORT, 0, 0).into();
+            let test_packet = DnsOutgoing::new(0).to_packet_data();
+            sock.send_to(&test_packet, &multicast_addr)
+                .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
+            Ok(sock)
+        },
+    }
+
 }
 
 /// Creates a new UDP socket to bind to `port` with REUSEPORT option.

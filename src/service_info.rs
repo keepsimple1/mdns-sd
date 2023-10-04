@@ -664,11 +664,22 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
 }
 
 /// Returns true if `addr` is in the same network of `intf`.
-pub(crate) fn valid_ipv4_on_intf(addr: &Ipv4Addr, intf: &Ifv4Addr) -> bool {
-    let netmask = u32::from(intf.netmask);
-    let intf_net = u32::from(intf.ip) & netmask;
-    let addr_net = u32::from(*addr) & netmask;
-    addr_net == intf_net
+pub(crate) fn valid_ip_on_intf(addr: &IpAddr, intf: &Interface) -> bool {
+    match (addr, &intf.addr) {
+        (IpAddr::V4(addr), IfAddr::V4(intf)) => {
+            let netmask = u32::from(intf.netmask);
+            let intf_net = u32::from(intf.ip) & netmask;
+            let addr_net = u32::from(*addr) & netmask;
+            addr_net == intf_net
+        },
+        (IpAddr::V6(addr), IfAddr::V6(intf)) => {
+            let netmask = u128::from(intf.netmask);
+            let intf_net = u128::from(intf.ip) & netmask;
+            let addr_net = u128::from(*addr) & netmask;
+            addr_net == intf_net
+        },
+        _ => false
+    }
 }
 
 #[cfg(test)]

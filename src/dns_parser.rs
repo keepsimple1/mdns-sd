@@ -199,7 +199,10 @@ impl DnsRecordExt for DnsAddress {
     }
 
     fn write(&self, packet: &mut DnsOutPacket) {
-        packet.write_bytes(self.address.octets().as_ref());
+        match self.address {
+            IpAddr::V4(addr) => packet.write_bytes(addr.octets().as_ref()),
+            IpAddr::V6(addr) => packet.write_bytes(addr.octets().as_ref()),
+        };
     }
 
     fn any(&self) -> &dyn Any {
@@ -954,7 +957,7 @@ impl DnsIncoming {
                     ty,
                     class,
                     ttl,
-                    self.read_ipv4(),
+                    self.read_ipv4().into(),
                 ))),
                 TYPE_CNAME | TYPE_PTR => Some(Box::new(DnsPointer::new(
                     &name,
@@ -987,11 +990,13 @@ impl DnsIncoming {
                     self.read_char_string(),
                     self.read_char_string(),
                 ))),
-                TYPE_AAAA => {
-                    debug!("We don't support IPv6 TYPE_AAAA records");
-                    self.offset += length;
-                    None
-                }
+                TYPE_AAAA => Some(Box::new(DnsAddress::new(
+                    &name,
+                    ty,
+                    class,
+                    ttl,
+                    self.read_ipv6().into(),
+                ))),
                 _ => {
                     debug!("Unknown DNS record type");
                     self.offset += length;
@@ -1036,9 +1041,15 @@ impl DnsIncoming {
     }
 
     fn read_ipv4(&mut self) -> Ipv4Addr {
-        let bytes = &self.data[self.offset..self.offset + 4];
+        let bytes: [u8; 4] = (&self.data)[self.offset..self.offset + 4].try_into().unwrap();
         self.offset += bytes.len();
-        Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3])
+        Ipv4Addr::from(bytes)
+    }
+
+    fn read_ipv6(&mut self) -> Ipv6Addr {
+        let bytes: [u8; 16] = (&self.data)[self.offset..self.offset + 16].try_into().unwrap();
+        self.offset += bytes.len();
+        Ipv6Addr::from(bytes)
     }
 
     fn read_string(&mut self, length: usize) -> String {
