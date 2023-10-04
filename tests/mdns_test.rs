@@ -123,14 +123,14 @@ fn integration_success() {
     });
 
     // Wait a bit to let the daemon process commands in the channel.
-    sleep(Duration::from_millis(1200));
+    sleep(Duration::from_secs(2));
 
     // Unregister the service
     let receiver = d.unregister(&fullname).unwrap();
     let response = receiver.recv().unwrap();
     assert!(matches!(response, UnregisterStatus::OK));
 
-    sleep(Duration::from_secs(1));
+    sleep(Duration::from_secs(2));
 
     // All addrs should have been resolved.
     let count = addr_count.lock().unwrap();

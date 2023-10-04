@@ -509,14 +509,14 @@ impl ServiceDaemon {
                         UnregisterStatus::NotFound
                     }
                     Some((_k, info)) => {
-                        for (ipv4, intf_sock) in zc.intf_socks.iter() {
+                        for (ip, intf_sock) in zc.intf_socks.iter() {
                             let packet = zc.unregister_service(&info, intf_sock);
                             // repeat for one time just in case some peers miss the message
                             if !repeating && !packet.is_empty() {
                                 let next_time = current_time_millis() + 120;
                                 zc.retransmissions.push(ReRun {
                                     next_time,
-                                    command: Command::UnregisterResend(packet, *ipv4),
+                                    command: Command::UnregisterResend(packet, *ip),
                                 });
                                 zc.timers.push(next_time);
                             }
@@ -530,10 +530,10 @@ impl ServiceDaemon {
                 }
             }
 
-            Command::UnregisterResend(packet, ipv4) => {
-                if let Some(intf_sock) = zc.intf_socks.get(&ipv4) {
+            Command::UnregisterResend(packet, ip) => {
+                if let Some(intf_sock) = zc.intf_socks.get(&ip) {
                     debug!("Send a packet length of {}", packet.len());
-                    send_packet(&packet[..], &zc.broadcast_addr, intf_sock);
+                    broadcast_on_intf(&packet[..], intf_sock);
                     zc.increase_counter(Counter::UnregisterResend, 1);
                 }
             }
@@ -590,7 +590,7 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
     let intf_ip = &intf.ip();
     match intf_ip {
         IpAddr::V4(ip) => {
-            let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0).into(), MDNS_PORT);
+            let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), MDNS_PORT);
             let sock = new_socket(addr.into(), true)?;
 
             // Join mDNS group to receive packets.
@@ -610,7 +610,7 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
         }
         IpAddr::V6(ip) => {
             let mut addr = SocketAddrV6::new(
-                Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0).into(),
+                Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0),
                 MDNS_PORT,
                 0,
                 0,
@@ -694,9 +694,6 @@ struct Zeroconf {
     /// Local registered services， keyed by service full names.
     my_services: HashMap<String, ServiceInfo>,
 
-    /// Well-known mDNS IPv4 address and port
-    broadcast_addr: SockAddr,
-
     cache: DnsCache,
 
     /// Active "Browse" commands.
@@ -729,7 +726,7 @@ impl Zeroconf {
         // Get interfaces.
         let my_ifaddrs = my_ip_interfaces();
 
-        // Create a socket for every IPv4 interface.
+        // Create a socket for every IP addr.
         let mut intf_socks = HashMap::new();
         for intf in my_ifaddrs {
             let sock = match new_socket_bind(&intf) {
@@ -739,10 +736,10 @@ impl Zeroconf {
                     continue;
                 }
             };
+
             intf_socks.insert(intf.ip(), IntfSock { intf, sock });
         }
 
-        let broadcast_addr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
         let monitors = Vec::new();
         let service_name_len_max = SERVICE_NAME_LEN_MAX_DEFAULT;
 
@@ -753,7 +750,6 @@ impl Zeroconf {
             poll_ids: HashMap::new(),
             id_count: 0,
             my_services: HashMap::new(),
-            broadcast_addr,
             cache: DnsCache::new(),
             queriers: HashMap::new(),
             retransmissions: Vec::new(),
@@ -994,7 +990,7 @@ impl Zeroconf {
             );
         }
 
-        self.send(&out, &self.broadcast_addr, intf_sock);
+        broadcast_dns_on_intf(&out, intf_sock);
         true
     }
 
@@ -1065,7 +1061,7 @@ impl Zeroconf {
             );
         }
 
-        self.send(&out, &self.broadcast_addr, intf_sock)
+        broadcast_dns_on_intf(&out, intf_sock)
     }
 
     /// Binds a channel `listener` to querying mDNS domain type `ty`.
@@ -1075,34 +1071,12 @@ impl Zeroconf {
         self.queriers.insert(ty, listener);
     }
 
-    /// Sends an outgoing packet, and returns the packet bytes.
-    fn send(&self, out: &DnsOutgoing, addr: &SockAddr, intf: &IntfSock) -> Vec<u8> {
-        let qtype = if out.is_query() { "query" } else { "response" };
-        debug!(
-            "Sending {} to {:?}: {} questions {} answers {} authorities {} additional",
-            qtype,
-            addr.as_socket(),
-            out.questions.len(),
-            out.answers.len(),
-            out.authorities.len(),
-            out.additionals.len()
-        );
-        let packet = out.to_packet_data();
-        if packet.len() > MAX_MSG_ABSOLUTE {
-            error!("Drop over-sized packet ({})", packet.len());
-            return Vec::new();
-        }
-
-        send_packet(&packet[..], addr, intf);
-        packet
-    }
-
     fn send_query(&self, name: &str, qtype: u16) {
         debug!("Sending multicast query for {}", name);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         out.add_question(name, qtype);
         for (_, intf_sock) in self.intf_socks.iter() {
-            self.send(&out, &self.broadcast_addr, intf_sock);
+            broadcast_dns_on_intf(&out, intf_sock);
         }
     }
 
@@ -1524,7 +1498,7 @@ impl Zeroconf {
 
         if !out.answers.is_empty() {
             out.id = msg.id;
-            self.send(&out, &self.broadcast_addr, intf_sock);
+            broadcast_dns_on_intf(&out, intf_sock);
 
             self.increase_counter(Counter::Respond, 1);
         }
@@ -1863,6 +1837,42 @@ fn my_ip_interfaces() -> Vec<Interface> {
             false => Some(i),
         })
         .collect()
+}
+
+/// Send an outgoing broadcast DNS query or response, and returns the packet bytes.
+fn broadcast_dns_on_intf(out: &DnsOutgoing, intf: &IntfSock) -> Vec<u8> {
+    let qtype = if out.is_query() { "query" } else { "response" };
+    debug!(
+        "Broadcasting {}: {} questions {} answers {} authorities {} additional",
+        qtype,
+        out.questions.len(),
+        out.answers.len(),
+        out.authorities.len(),
+        out.additionals.len()
+    );
+    let packet = out.to_packet_data();
+    broadcast_on_intf(&packet[..], intf);
+    packet
+}
+
+/// Sends an outgoing broadcast packet, and returns the packet bytes.
+fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock) -> &'a [u8] {
+    let sock: SocketAddr = match intf.intf.addr {
+        if_addrs::IfAddr::V4(_) => SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into(),
+        if_addrs::IfAddr::V6(_) => {
+            let mut sock = SocketAddrV6::new(GROUP_ADDR_V6, MDNS_PORT, 0, 0);
+            sock.set_scope_id(intf.intf.index.unwrap_or(0));
+            sock.into()
+        },
+    };
+
+    if packet.len() > MAX_MSG_ABSOLUTE {
+        error!("Drop over-sized packet ({})", packet.len());
+        return &[];
+    }
+
+    send_packet(packet, &SockAddr::from(sock), intf);
+    packet
 }
 
 /// Sends out `packet` to `addr` on the socket in `intf_sock`.
