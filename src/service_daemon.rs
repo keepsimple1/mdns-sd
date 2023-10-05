@@ -1879,10 +1879,7 @@ fn my_ip_interfaces() -> Vec<Interface> {
     if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|i| match i.is_loopback() {
-            true => None,
-            false => Some(i),
-        })
+        .filter(|i| !i.is_loopback())
         .collect()
 }
 
