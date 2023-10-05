@@ -157,7 +157,8 @@ impl ServiceDaemon {
             .map_err(|e| e_fmt!("failed to create signal_sock for daemon: {}", e))?;
 
         // Get the socket with the OS chosen port
-        let signal_addr = signal_sock.local_addr()
+        let signal_addr = signal_sock
+            .local_addr()
             .map_err(|e| e_fmt!("failed to get signal sock addr: {}", e))?;
 
         // Must be nonblocking so we can listen to it together with mDNS sockets.
@@ -200,7 +201,14 @@ impl ServiceDaemon {
             .map_err(|e| e_fmt!("Failed to create socket to send signal: {}", e))?;
         socket
             .send_to(cmd_name.as_bytes(), self.signal_addr)
-            .map_err(|e| e_fmt!("signal socket send_to {} ({}) failed: {}", self.signal_addr, cmd_name, e))?;
+            .map_err(|e| {
+                e_fmt!(
+                    "signal socket send_to {} ({}) failed: {}",
+                    self.signal_addr,
+                    cmd_name,
+                    e
+                )
+            })?;
 
         Ok(())
     }
@@ -825,7 +833,11 @@ impl Zeroconf {
 
     /// Insert a new IP into the poll map and return key
     /// This exist to satisfy the borrow checker
-    fn add_poll_impl(poll_ids: &mut HashMap<usize, IpAddr>, poll_id_count: &mut usize, ip: IpAddr) -> usize {
+    fn add_poll_impl(
+        poll_ids: &mut HashMap<usize, IpAddr>,
+        poll_id_count: &mut usize,
+        ip: IpAddr
+    ) -> usize {
         let key = *poll_id_count;
         *poll_id_count += 1;
         let _ = (*poll_ids).insert(key, ip);
