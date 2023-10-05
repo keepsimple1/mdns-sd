@@ -836,7 +836,7 @@ impl Zeroconf {
     fn add_poll_impl(
         poll_ids: &mut HashMap<usize, IpAddr>,
         poll_id_count: &mut usize,
-        ip: IpAddr
+        ip: IpAddr,
     ) -> usize {
         let key = *poll_id_count;
         *poll_id_count += 1;
