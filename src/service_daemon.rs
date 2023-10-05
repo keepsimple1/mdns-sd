@@ -71,6 +71,8 @@ pub const SERVICE_NAME_LEN_MAX_DEFAULT: u8 = 15;
 const MDNS_PORT: u16 = 5353;
 const GROUP_ADDR_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const GROUP_ADDR_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
+const LOOPBACK_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
+const LOOPBACK_V6: Ipv6Addr = Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1);
 
 /// Response status code for the service `unregister` call.
 #[derive(Debug)]
@@ -136,17 +138,32 @@ impl ServiceDaemon {
     pub fn new() -> Result<Self> {
         // Use port 0 to allow the system assign a random available port,
         // no need for a pre-defined port number.
-        let signal_sock = UdpSocket::bind("127.0.0.1:0")
+        Self::new_with_signal_addr(SocketAddrV4::new(LOOPBACK_V4, 0).into())
+    }
+
+    /// Creates a new daemon and spawns a thread to run the daemon.
+    ///
+    /// The daemon (re)uses the default mDNS port 5353. To keep it simple, we don't
+    /// ask callers to set the port.
+    /// This one uses an ipv6 local address for the signal mechanism.
+    pub fn new_signal_v6() -> Result<Self> {
+        // Use port 0 to allow the system assign a random available port,
+        // no need for a pre-defined port number.
+        Self::new_with_signal_addr(SocketAddrV6::new(LOOPBACK_V6, 0, 0, 0).into())
+    }
+
+    fn new_with_signal_addr(signal_addr: SocketAddr) -> Result<Self> {
+        let signal_sock = UdpSocket::bind(signal_addr)
             .map_err(|e| e_fmt!("failed to create signal_sock for daemon: {}", e))?;
+
+        // Get the socket with the OS chosen port
+        let signal_addr = signal_sock.local_addr()
+            .map_err(|e| e_fmt!("failed to get signal sock addr: {}", e))?;
 
         // Must be nonblocking so we can listen to it together with mDNS sockets.
         signal_sock
             .set_nonblocking(true)
             .map_err(|e| e_fmt!("failed to set nonblocking for signal socket: {}", e))?;
-
-        let signal_addr = signal_sock
-            .local_addr()
-            .map_err(|e| e_fmt!("failed to get signal sock addr: {}", e))?;
 
         let zc = Zeroconf::new(signal_sock)?;
         let (sender, receiver) = bounded(100);
@@ -175,11 +192,15 @@ impl ServiceDaemon {
         })?;
 
         // Second, send a signal to notify the daemon.
-        let socket = UdpSocket::bind("127.0.0.1:0")
+        let addr: SocketAddr = match self.signal_addr {
+            SocketAddr::V4(_) => SocketAddrV4::new(LOOPBACK_V4, 0).into(),
+            SocketAddr::V6(_) => SocketAddrV6::new(LOOPBACK_V6, 0, 0, 0).into(),
+        };
+        let socket = UdpSocket::bind(addr)
             .map_err(|e| e_fmt!("Failed to create socket to send signal: {}", e))?;
         socket
             .send_to(cmd_name.as_bytes(), self.signal_addr)
-            .map_err(|e| e_fmt!("signal socket send_to failed: {}", e))?;
+            .map_err(|e| e_fmt!("signal socket send_to {} ({}) failed: {}", self.signal_addr, cmd_name, e))?;
 
         Ok(())
     }
@@ -302,9 +323,7 @@ impl ServiceDaemon {
 
         // Add mDNS sockets to the poller.
         for (ip, if_sock) in zc.intf_socks.iter() {
-            let key = zc.id_count;
-            zc.id_count += 1;
-            let _ = zc.poll_ids.insert(key, *ip);
+            let key = Zeroconf::add_poll_impl(&mut zc.poll_ids, &mut zc.poll_id_count, *ip);
             if let Err(e) = zc.poller.add(&if_sock.sock, polling::Event::readable(key)) {
                 error!("add socket of {:?} to poller: {}", ip, e);
                 return;
@@ -357,7 +376,13 @@ impl ServiceDaemon {
                         }
 
                         // Read until no more packets available.
-                        let ip = *zc.poll_ids.get(&ev.key).unwrap();
+                        let ip = match zc.poll_ids.get(&ev.key) {
+                            Some(ip) => *ip,
+                            None => {
+                                error!("Ip for event key {} not found", ev.key);
+                                break;
+                            }
+                        };
                         while zc.handle_read(&ip) {}
 
                         if let Some(intf_sock) = zc.intf_socks.get(&ip) {
@@ -609,12 +634,8 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
             Ok(sock)
         }
         IpAddr::V6(ip) => {
-            let mut addr = SocketAddrV6::new(
-                Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0),
-                MDNS_PORT,
-                0,
-                0,
-            );
+            let mut addr =
+                SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), MDNS_PORT, 0, 0);
             addr.set_scope_id(intf.index.unwrap_or(0));
             let sock = new_socket(addr.into(), true)?;
 
@@ -639,13 +660,11 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
 /// Creates a new UDP socket to bind to `port` with REUSEPORT option.
 /// `non_block` indicates whether to set O_NONBLOCK for the socket.
 fn new_socket(addr: SocketAddr, non_block: bool) -> Result<Socket> {
-    let domain = if addr.is_ipv6() {
-        socket2::Domain::IPV6
-    } else if addr.is_ipv4() {
-        socket2::Domain::IPV4
-    } else {
-        panic!()
+    let domain = match addr {
+        SocketAddr::V4(_) => socket2::Domain::IPV4,
+        SocketAddr::V6(_) => socket2::Domain::IPV6,
     };
+
     let fd = Socket::new(domain, socket2::Type::DGRAM, None)
         .map_err(|e| e_fmt!("create socket failed: {}", e))?;
 
@@ -689,7 +708,7 @@ struct Zeroconf {
     poll_ids: HashMap<usize, IpAddr>,
 
     /// Next poll id value
-    id_count: usize,
+    poll_id_count: usize,
 
     /// Local registered services， keyed by service full names.
     my_services: HashMap<String, ServiceInfo>,
@@ -748,7 +767,7 @@ impl Zeroconf {
         Ok(Self {
             intf_socks,
             poll_ids: HashMap::new(),
-            id_count: 0,
+            poll_id_count: 0,
             my_services: HashMap::new(),
             cache: DnsCache::new(),
             queriers: HashMap::new(),
@@ -799,20 +818,38 @@ impl Zeroconf {
         }
     }
 
+    /// Insert a new IP into the poll map and return key
+    fn add_poll(&mut self, ip: IpAddr) -> usize {
+        Self::add_poll_impl(&mut self.poll_ids, &mut self.poll_id_count, ip)
+    }
+
+    /// Insert a new IP into the poll map and return key
+    /// This exist to satisfy the borrow checker
+    fn add_poll_impl(poll_ids: &mut HashMap<usize, IpAddr>, poll_id_count: &mut usize, ip: IpAddr) -> usize {
+        let key = *poll_id_count;
+        *poll_id_count += 1;
+        let _ = (*poll_ids).insert(key, ip);
+        key
+    }
+
     /// Check for IP changes and update intf_socks as needed.
     fn check_ip_changes(&mut self) {
         // Get the current interfaces.
         let my_ifaddrs = my_ip_interfaces();
 
+        let poll_ids = &mut self.poll_ids;
+        let poller = &mut self.poller;
         // Remove unused sockets in the poller.
         let deleted_addrs = self
             .intf_socks
             .iter()
             .filter_map(|(_, if_sock)| {
                 if !my_ifaddrs.contains(&if_sock.intf) {
-                    if let Err(e) = self.poller.delete(&if_sock.sock) {
+                    if let Err(e) = poller.delete(&if_sock.sock) {
                         error!("check_ip_changes: poller.delete {:?}: {}", &if_sock.intf, e);
                     }
+                    // Remove from poll_ids
+                    poll_ids.retain(|_, v| v != &if_sock.intf.addr.ip());
                     Some(if_sock.intf.ip())
                 } else {
                     None
@@ -850,9 +887,7 @@ impl Zeroconf {
             };
 
             // Add the new interface into the poller.
-            let key = self.id_count;
-            self.id_count += 1;
-            let _ = self.poll_ids.insert(key, new_ip);
+            let key = self.add_poll(new_ip);
             if let Err(e) = self.poller.add(&sock, polling::Event::readable(key)) {
                 error!("check_ip_changes: poller add ip {}: {}", new_ip, e);
             }
@@ -1408,7 +1443,7 @@ impl Zeroconf {
                                 let t = match qtype {
                                     TYPE_A => "TYPE_A",
                                     TYPE_AAAA => "TYPE_AAAA",
-                                    _ => panic!(),
+                                    _ => "invalid_type",
                                 };
                                 error!(
                                     "Cannot find valid addrs for {} response on intf {:?}",
@@ -1863,7 +1898,7 @@ fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock) -> &'a [u8] {
             let mut sock = SocketAddrV6::new(GROUP_ADDR_V6, MDNS_PORT, 0, 0);
             sock.set_scope_id(intf.intf.index.unwrap_or(0));
             sock.into()
-        },
+        }
     };
 
     if packet.len() > MAX_MSG_ABSOLUTE {
