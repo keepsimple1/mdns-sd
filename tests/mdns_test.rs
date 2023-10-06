@@ -2,7 +2,7 @@ use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
     DaemonEvent, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
@@ -22,7 +22,8 @@ fn integration_success() {
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
 
-    let my_ifaddrs: Vec<_> = my_ip_interfaces().iter().map(|intf| intf.ip()).collect();
+    let ifaddrs_set: HashSet<_> = my_ip_interfaces().iter().map(|intf| intf.ip()).collect();
+    let my_ifaddrs: Vec<_> = ifaddrs_set.into_iter().collect();
     let my_addrs_count = my_ifaddrs.len();
     println!("My IP addr(s): {:?}", &my_ifaddrs);
 
