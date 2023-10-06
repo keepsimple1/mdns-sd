@@ -642,16 +642,15 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
             Ok(sock)
         }
         IpAddr::V6(ip) => {
-            let mut addr =
+            let addr =
                 SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), MDNS_PORT, 0, 0);
-            addr.set_scope_id(intf.index.unwrap_or(0));
             let sock = new_socket(addr.into(), true)?;
 
             // Join mDNS group to receive packets.
             sock.join_multicast_v6(&GROUP_ADDR_V6, intf.index.unwrap_or(0))
                 .map_err(|e| e_fmt!("join multicast group on addr {}: {}", ip, e))?;
 
-            // Set IP6_MULTICAST_IF to send packets.
+            // Set IPV6_MULTICAST_IF to send packets.
             sock.set_multicast_if_v6(intf.index.unwrap_or(0))
                 .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
 
@@ -1905,7 +1904,7 @@ fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock) -> &'a [u8] {
         if_addrs::IfAddr::V4(_) => SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into(),
         if_addrs::IfAddr::V6(_) => {
             let mut sock = SocketAddrV6::new(GROUP_ADDR_V6, MDNS_PORT, 0, 0);
-            sock.set_scope_id(intf.intf.index.unwrap_or(0));
+            sock.set_scope_id(intf.intf.index.unwrap_or(0)); // Choose iface for multicast
             sock.into()
         }
     };
