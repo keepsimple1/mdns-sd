@@ -642,8 +642,7 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
             Ok(sock)
         }
         IpAddr::V6(ip) => {
-            let addr =
-                SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), MDNS_PORT, 0, 0);
+            let addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), MDNS_PORT, 0, 0);
             let sock = new_socket(addr.into(), true)?;
 
             // Join mDNS group to receive packets.
