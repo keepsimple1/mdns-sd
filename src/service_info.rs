@@ -1,12 +1,12 @@
 #[cfg(feature = "logging")]
 use crate::log::error;
 use crate::{Error, Result};
-use if_addrs::Ifv4Addr;
+use if_addrs::{IfAddr, Interface};
 use std::{
     collections::{HashMap, HashSet},
     convert::TryInto,
     fmt,
-    net::Ipv4Addr,
+    net::IpAddr,
     str::FromStr,
 };
 
@@ -24,7 +24,7 @@ pub struct ServiceInfo {
     sub_domain: Option<String>, // <subservice>._sub.<service>.<domain>
     fullname: String,           // <instance>.<service>.<domain>
     server: String,             // fully qualified name for service host
-    addresses: HashSet<Ipv4Addr>,
+    addresses: HashSet<IpAddr>,
     port: u16,
     host_ttl: u32,  // used for SRV and Address records
     other_ttl: u32, // used for PTR and TXT records
@@ -48,20 +48,24 @@ impl ServiceInfo {
     /// - `Option<HashMap<String, String>>`
     /// - slice of tuple: `&[(K, V)]` where `K` and `V` are [`std::string::ToString`].
     ///
-    /// `host_ipv4` can be one or more IPv4 addresses, in a type that implements
-    /// [`AsIpv4Addrs`] trait. It supports:
+    /// `ip` can be one or more IP addresses, in a type that implements
+    /// [`AsIpAddrs`] trait. It supports:
     ///
     /// - Single IPv4: `"192.168.0.1"`
+    /// - Single IPv6: `"2001:0db8::7334"`
     /// - Multiple IPv4 separated by comma: `"192.168.0.1,192.168.0.2"`
+    /// - Multiple IPv6 separated by comma: `"2001:0db8::7334,2001:0db8::7335"`
     /// - A slice of IPv4: `&["192.168.0.1", "192.168.0.2"]`
-    /// - All the above formats with [Ipv4Addr] or `String` instead of `&str`.
+    /// - A slice of IPv6: `&["2001:0db8::7334", "2001:0db8::7335"]`
+    /// - A mix of IPv4 and IPv6: `"192.168.0.1,2001:0db8::7334"`
+    /// - All the above formats with [IpAddr] or `String` instead of `&str`.
     ///
     /// The host TTL and other TTL are set to default values.
-    pub fn new<Ip: AsIpv4Addrs, P: IntoTxtProperties>(
+    pub fn new<Ip: AsIpAddrs, P: IntoTxtProperties>(
         ty_domain: &str,
         my_name: &str,
         host_name: &str,
-        host_ipv4: Ip,
+        ip: Ip,
         port: u16,
         properties: P,
     ) -> Result<Self> {
@@ -71,7 +75,7 @@ impl ServiceInfo {
         let ty_domain = ty_domain.to_string();
         let sub_domain = sub_domain.map(str::to_string);
         let server = host_name.to_string();
-        let addresses = host_ipv4.as_ipv4_addrs()?;
+        let addresses = ip.as_ip_addrs()?;
         let txt_properties = properties.into_txt_properties();
 
         // RFC6763 section 6.4: https://www.rfc-editor.org/rfc/rfc6763#section-6.4
@@ -112,7 +116,7 @@ impl ServiceInfo {
     }
 
     /// Indicates that the library should automatically
-    /// update the addresses of this service, when IPv4
+    /// update the addresses of this service, when IP
     /// address(es) are added or removed on the host.
     pub fn enable_addr_auto(mut self) -> Self {
         self.addr_auto = true;
@@ -120,7 +124,7 @@ impl ServiceInfo {
     }
 
     /// Returns if the service's addresses will be updated
-    /// automatically when the host IPv4 addrs change.
+    /// automatically when the host IP addrs change.
     pub fn is_addr_auto(&self) -> bool {
         self.addr_auto
     }
@@ -194,7 +198,7 @@ impl ServiceInfo {
 
     /// Returns the service's addresses
     #[inline]
-    pub fn get_addresses(&self) -> &HashSet<Ipv4Addr> {
+    pub fn get_addresses(&self) -> &HashSet<IpAddr> {
         &self.addresses
     }
 
@@ -224,10 +228,10 @@ impl ServiceInfo {
 
     /// Returns a list of addresses that are in the same LAN as
     /// the interface `intf`.
-    pub(crate) fn get_addrs_on_intf(&self, intf: &Ifv4Addr) -> Vec<Ipv4Addr> {
+    pub(crate) fn get_addrs_on_intf(&self, intf: &Interface) -> Vec<IpAddr> {
         self.addresses
             .iter()
-            .filter(|a| valid_ipv4_on_intf(a, intf))
+            .filter(|a| valid_ip_on_intf(a, intf))
             .copied()
             .collect()
     }
@@ -243,11 +247,11 @@ impl ServiceInfo {
     }
 
     /// Insert `addr` into service info addresses.
-    pub(crate) fn insert_ipv4addr(&mut self, addr: Ipv4Addr) {
+    pub(crate) fn insert_ipaddr(&mut self, addr: IpAddr) {
         self.addresses.insert(addr);
     }
 
-    pub(crate) fn remove_ipv4addr(&mut self, addr: &Ipv4Addr) {
+    pub(crate) fn remove_ipaddr(&mut self, addr: &IpAddr) {
         self.addresses.remove(addr);
     }
 
@@ -276,13 +280,13 @@ impl ServiceInfo {
 }
 
 /// This trait allows for parsing an input into a set of one or multiple [`Ipv4Addr`].
-pub trait AsIpv4Addrs {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>>;
+pub trait AsIpAddrs {
+    fn as_ip_addrs(&self) -> Result<HashSet<IpAddr>>;
 }
 
-impl<T: AsIpv4Addrs> AsIpv4Addrs for &T {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
-        (*self).as_ipv4_addrs()
+impl<T: AsIpAddrs> AsIpAddrs for &T {
+    fn as_ip_addrs(&self) -> Result<HashSet<IpAddr>> {
+        (*self).as_ip_addrs()
     }
 }
 
@@ -290,12 +294,12 @@ impl<T: AsIpv4Addrs> AsIpv4Addrs for &T {
 /// For example: "127.0.0.1,127.0.0.2".
 ///
 /// If the string is empty, will return an empty set.
-impl AsIpv4Addrs for &str {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+impl AsIpAddrs for &str {
+    fn as_ip_addrs(&self) -> Result<HashSet<IpAddr>> {
         let mut addrs = HashSet::new();
 
         if !self.is_empty() {
-            let iter = self.split(',').map(str::trim).map(Ipv4Addr::from_str);
+            let iter = self.split(',').map(str::trim).map(IpAddr::from_str);
             for addr in iter {
                 let addr = addr.map_err(|err| Error::ParseIpAddr(err.to_string()))?;
                 addrs.insert(addr);
@@ -306,18 +310,18 @@ impl AsIpv4Addrs for &str {
     }
 }
 
-impl AsIpv4Addrs for String {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
-        self.as_str().as_ipv4_addrs()
+impl AsIpAddrs for String {
+    fn as_ip_addrs(&self) -> Result<HashSet<IpAddr>> {
+        self.as_str().as_ip_addrs()
     }
 }
 
 /// Support slice. Example: &["127.0.0.1", "127.0.0.2"]
-impl<I: AsIpv4Addrs> AsIpv4Addrs for &[I] {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+impl<I: AsIpAddrs> AsIpAddrs for &[I] {
+    fn as_ip_addrs(&self) -> Result<HashSet<IpAddr>> {
         let mut addrs = HashSet::new();
 
-        for result in self.iter().map(I::as_ipv4_addrs) {
+        for result in self.iter().map(I::as_ip_addrs) {
             addrs.extend(result?);
         }
 
@@ -327,14 +331,14 @@ impl<I: AsIpv4Addrs> AsIpv4Addrs for &[I] {
 
 /// Optimization for zero sized/empty values, as `()` will never take up any space or evaluate to
 /// anything, helpful in contexts where we just want an empty value.
-impl AsIpv4Addrs for () {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+impl AsIpAddrs for () {
+    fn as_ip_addrs(&self) -> Result<HashSet<IpAddr>> {
         Ok(HashSet::new())
     }
 }
 
-impl AsIpv4Addrs for std::net::Ipv4Addr {
-    fn as_ipv4_addrs(&self) -> Result<HashSet<Ipv4Addr>> {
+impl AsIpAddrs for std::net::IpAddr {
+    fn as_ip_addrs(&self) -> Result<HashSet<IpAddr>> {
         let mut ips = HashSet::new();
         ips.insert(*self);
 
@@ -660,11 +664,22 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
 }
 
 /// Returns true if `addr` is in the same network of `intf`.
-pub(crate) fn valid_ipv4_on_intf(addr: &Ipv4Addr, intf: &Ifv4Addr) -> bool {
-    let netmask = u32::from(intf.netmask);
-    let intf_net = u32::from(intf.ip) & netmask;
-    let addr_net = u32::from(*addr) & netmask;
-    addr_net == intf_net
+pub(crate) fn valid_ip_on_intf(addr: &IpAddr, intf: &Interface) -> bool {
+    match (addr, &intf.addr) {
+        (IpAddr::V4(addr), IfAddr::V4(intf)) => {
+            let netmask = u32::from(intf.netmask);
+            let intf_net = u32::from(intf.ip) & netmask;
+            let addr_net = u32::from(*addr) & netmask;
+            addr_net == intf_net
+        }
+        (IpAddr::V6(addr), IfAddr::V6(intf)) => {
+            let netmask = u128::from(intf.netmask);
+            let intf_net = u128::from(intf.ip) & netmask;
+            let addr_net = u128::from(*addr) & netmask;
+            addr_net == intf_net
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]

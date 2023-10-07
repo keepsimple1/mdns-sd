@@ -34,14 +34,15 @@ use crate::{
     dns_parser::{
         current_time_millis, DnsAddress, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
         DnsRecordExt, DnsSrv, DnsTxt, CLASS_IN, CLASS_UNIQUE, FLAGS_AA, FLAGS_QR_QUERY,
-        FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_ANY, TYPE_PTR, TYPE_SRV, TYPE_TXT,
+        FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_AAAA, TYPE_ANY, TYPE_PTR, TYPE_SRV,
+        TYPE_TXT,
     },
     error::{Error, Result},
     service_info::{split_sub_domain, ServiceInfo},
     Receiver,
 };
 use flume::{bounded, Sender, TrySendError};
-use if_addrs::{IfAddr, Ifv4Addr};
+use if_addrs::Interface;
 use polling::Poller;
 use socket2::{SockAddr, Socket};
 use std::{
@@ -49,7 +50,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     io::Read,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, UdpSocket},
     str, thread,
     time::Duration,
     vec,
@@ -68,7 +69,9 @@ macro_rules! e_fmt {
 pub const SERVICE_NAME_LEN_MAX_DEFAULT: u8 = 15;
 
 const MDNS_PORT: u16 = 5353;
-const GROUP_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+const GROUP_ADDR_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+const GROUP_ADDR_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
+const LOOPBACK_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
 /// Response status code for the service `unregister` call.
 #[derive(Debug)]
@@ -134,17 +137,20 @@ impl ServiceDaemon {
     pub fn new() -> Result<Self> {
         // Use port 0 to allow the system assign a random available port,
         // no need for a pre-defined port number.
-        let signal_sock = UdpSocket::bind("127.0.0.1:0")
+        let signal_addr = SocketAddrV4::new(LOOPBACK_V4, 0);
+
+        let signal_sock = UdpSocket::bind(signal_addr)
             .map_err(|e| e_fmt!("failed to create signal_sock for daemon: {}", e))?;
+
+        // Get the socket with the OS chosen port
+        let signal_addr = signal_sock
+            .local_addr()
+            .map_err(|e| e_fmt!("failed to get signal sock addr: {}", e))?;
 
         // Must be nonblocking so we can listen to it together with mDNS sockets.
         signal_sock
             .set_nonblocking(true)
             .map_err(|e| e_fmt!("failed to set nonblocking for signal socket: {}", e))?;
-
-        let signal_addr = signal_sock
-            .local_addr()
-            .map_err(|e| e_fmt!("failed to get signal sock addr: {}", e))?;
 
         let zc = Zeroconf::new(signal_sock)?;
         let (sender, receiver) = bounded(100);
@@ -173,11 +179,19 @@ impl ServiceDaemon {
         })?;
 
         // Second, send a signal to notify the daemon.
-        let socket = UdpSocket::bind("127.0.0.1:0")
+        let addr = SocketAddrV4::new(LOOPBACK_V4, 0);
+        let socket = UdpSocket::bind(addr)
             .map_err(|e| e_fmt!("Failed to create socket to send signal: {}", e))?;
         socket
             .send_to(cmd_name.as_bytes(), self.signal_addr)
-            .map_err(|e| e_fmt!("signal socket send_to failed: {}", e))?;
+            .map_err(|e| {
+                e_fmt!(
+                    "signal socket send_to {} ({}) failed: {}",
+                    self.signal_addr,
+                    cmd_name,
+                    e
+                )
+            })?;
 
         Ok(())
     }
@@ -212,8 +226,8 @@ impl ServiceDaemon {
         check_service_name(service_info.get_fullname())?;
 
         if service_info.is_addr_auto() {
-            for ifv4 in my_ipv4_interfaces() {
-                service_info.insert_ipv4addr(ifv4.ip);
+            for iface in my_ip_interfaces() {
+                service_info.insert_ipaddr(iface.ip());
             }
         }
 
@@ -299,12 +313,10 @@ impl ServiceDaemon {
         }
 
         // Add mDNS sockets to the poller.
-        for (ipv4, if_sock) in zc.intf_socks.iter() {
-            // It is OK to convert to `usize` here as we only support 32-bit
-            // or 64-bit platforms.
-            let key = u32::from(*ipv4) as usize;
+        for (ip, if_sock) in zc.intf_socks.iter() {
+            let key = Zeroconf::add_poll_impl(&mut zc.poll_ids, &mut zc.poll_id_count, *ip);
             if let Err(e) = zc.poller.add(&if_sock.sock, polling::Event::readable(key)) {
-                error!("add socket of {:?} to poller: {}", ipv4, e);
+                error!("add socket of {:?} to poller: {}", ip, e);
                 return;
             }
         }
@@ -355,15 +367,21 @@ impl ServiceDaemon {
                         }
 
                         // Read until no more packets available.
-                        let ipv4 = (ev.key as u32).into();
-                        while zc.handle_read(&ipv4) {}
+                        let ip = match zc.poll_ids.get(&ev.key) {
+                            Some(ip) => *ip,
+                            None => {
+                                error!("Ip for event key {} not found", ev.key);
+                                break;
+                            }
+                        };
+                        while zc.handle_read(&ip) {}
 
-                        if let Some(intf_sock) = zc.intf_socks.get(&ipv4) {
+                        if let Some(intf_sock) = zc.intf_socks.get(&ip) {
                             if let Err(e) = zc
                                 .poller
                                 .modify(&intf_sock.sock, polling::Event::readable(ev.key))
                             {
-                                error!("modify poller for IP {}: {}", &ipv4, e);
+                                error!("modify poller for IP {}: {}", &ip, e);
                                 break;
                             }
                         }
@@ -507,14 +525,14 @@ impl ServiceDaemon {
                         UnregisterStatus::NotFound
                     }
                     Some((_k, info)) => {
-                        for (ipv4, intf_sock) in zc.intf_socks.iter() {
+                        for (ip, intf_sock) in zc.intf_socks.iter() {
                             let packet = zc.unregister_service(&info, intf_sock);
                             // repeat for one time just in case some peers miss the message
                             if !repeating && !packet.is_empty() {
                                 let next_time = current_time_millis() + 120;
                                 zc.retransmissions.push(ReRun {
                                     next_time,
-                                    command: Command::UnregisterResend(packet, *ipv4),
+                                    command: Command::UnregisterResend(packet, *ip),
                                 });
                                 zc.timers.push(next_time);
                             }
@@ -528,10 +546,10 @@ impl ServiceDaemon {
                 }
             }
 
-            Command::UnregisterResend(packet, ipv4) => {
-                if let Some(intf_sock) = zc.intf_socks.get(&ipv4) {
+            Command::UnregisterResend(packet, ip) => {
+                if let Some(intf_sock) = zc.intf_socks.get(&ip) {
                     debug!("Send a packet length of {}", packet.len());
-                    send_packet(&packet[..], &zc.broadcast_addr, intf_sock);
+                    broadcast_on_intf(&packet[..], intf_sock);
                     zc.increase_counter(Counter::UnregisterResend, 1);
                 }
             }
@@ -582,32 +600,61 @@ impl ServiceDaemon {
 }
 
 /// Creates a new UDP socket that uses `intf_ip` to send and recv multicast.
-fn new_socket_bind(intf_ip: &Ipv4Addr) -> Result<Socket> {
+fn new_socket_bind(intf: &Interface) -> Result<Socket> {
     // Use the same socket for receiving and sending multicast packets.
-    // Such socket has to bind to INADDR_ANY.
-    let sock = new_socket(Ipv4Addr::new(0, 0, 0, 0), MDNS_PORT, true)?;
+    // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
+    let intf_ip = &intf.ip();
+    match intf_ip {
+        IpAddr::V4(ip) => {
+            let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), MDNS_PORT);
+            let sock = new_socket(addr.into(), true)?;
 
-    // Join mDNS group to receive packets.
-    sock.join_multicast_v4(&GROUP_ADDR, intf_ip)
-        .map_err(|e| e_fmt!("join multicast group on addr {}: {}", intf_ip, e))?;
+            // Join mDNS group to receive packets.
+            sock.join_multicast_v4(&GROUP_ADDR_V4, ip)
+                .map_err(|e| e_fmt!("join multicast group on addr {}: {}", intf_ip, e))?;
 
-    // Set IP_MULTICAST_IF to send packets.
-    sock.set_multicast_if_v4(intf_ip)
-        .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", intf_ip, e))?;
+            // Set IP_MULTICAST_IF to send packets.
+            sock.set_multicast_if_v4(ip)
+                .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
 
-    // Test if we can send packets successfully.
-    let multicast_addr = SocketAddrV4::new(GROUP_ADDR, MDNS_PORT).into();
-    let test_packet = DnsOutgoing::new(0).to_packet_data();
-    sock.send_to(&test_packet, &multicast_addr)
-        .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", intf_ip, e))?;
+            // Test if we can send packets successfully.
+            let multicast_addr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
+            let test_packet = DnsOutgoing::new(0).to_packet_data();
+            sock.send_to(&test_packet, &multicast_addr)
+                .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
+            Ok(sock)
+        }
+        IpAddr::V6(ip) => {
+            let addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), MDNS_PORT, 0, 0);
+            let sock = new_socket(addr.into(), true)?;
 
-    Ok(sock)
+            // Join mDNS group to receive packets.
+            sock.join_multicast_v6(&GROUP_ADDR_V6, intf.index.unwrap_or(0))
+                .map_err(|e| e_fmt!("join multicast group on addr {}: {}", ip, e))?;
+
+            // Set IPV6_MULTICAST_IF to send packets.
+            sock.set_multicast_if_v6(intf.index.unwrap_or(0))
+                .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
+
+            // Test if we can send packets successfully.
+            let multicast_addr = SocketAddrV6::new(GROUP_ADDR_V6, MDNS_PORT, 0, 0).into();
+            let test_packet = DnsOutgoing::new(0).to_packet_data();
+            sock.send_to(&test_packet, &multicast_addr)
+                .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
+            Ok(sock)
+        }
+    }
 }
 
 /// Creates a new UDP socket to bind to `port` with REUSEPORT option.
 /// `non_block` indicates whether to set O_NONBLOCK for the socket.
-fn new_socket(ipv4: Ipv4Addr, port: u16, non_block: bool) -> Result<Socket> {
-    let fd = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)
+fn new_socket(addr: SocketAddr, non_block: bool) -> Result<Socket> {
+    let domain = match addr {
+        SocketAddr::V4(_) => socket2::Domain::IPV4,
+        SocketAddr::V6(_) => socket2::Domain::IPV6,
+    };
+
+    let fd = Socket::new(domain, socket2::Type::DGRAM, None)
         .map_err(|e| e_fmt!("create socket failed: {}", e))?;
 
     fd.set_reuse_address(true)
@@ -621,11 +668,10 @@ fn new_socket(ipv4: Ipv4Addr, port: u16, non_block: bool) -> Result<Socket> {
             .map_err(|e| e_fmt!("set O_NONBLOCK: {}", e))?;
     }
 
-    let inet_addr = SocketAddrV4::new(ipv4, port);
-    fd.bind(&inet_addr.into())
-        .map_err(|e| e_fmt!("socket bind to {} failed: {}", &inet_addr, e))?;
+    fd.bind(&addr.into())
+        .map_err(|e| e_fmt!("socket bind to {} failed: {}", &addr, e))?;
 
-    debug!("new socket bind to {}", &inet_addr);
+    debug!("new socket bind to {}", &addr);
     Ok(fd)
 }
 
@@ -638,20 +684,23 @@ struct ReRun {
 /// multicast packets on the interface.
 #[derive(Debug)]
 struct IntfSock {
-    intf: Ifv4Addr,
+    intf: Interface,
     sock: Socket,
 }
 
 /// A struct holding the state. It was inspired by `zeroconf` package in Python.
 struct Zeroconf {
     /// Local interfaces with sockets to recv/send on these interfaces.
-    intf_socks: HashMap<Ipv4Addr, IntfSock>,
+    intf_socks: HashMap<IpAddr, IntfSock>,
+
+    /// Map poll id to IpAddr
+    poll_ids: HashMap<usize, IpAddr>,
+
+    /// Next poll id value
+    poll_id_count: usize,
 
     /// Local registered services， keyed by service full names.
     my_services: HashMap<String, ServiceInfo>,
-
-    /// Well-known mDNS IPv4 address and port
-    broadcast_addr: SockAddr,
 
     cache: DnsCache,
 
@@ -682,23 +731,23 @@ impl Zeroconf {
     fn new(signal_sock: UdpSocket) -> Result<Self> {
         let poller = Poller::new().map_err(|e| e_fmt!("create Poller: {}", e))?;
 
-        // Get IPv4 interfaces.
-        let my_ifv4addrs = my_ipv4_interfaces();
+        // Get interfaces.
+        let my_ifaddrs = my_ip_interfaces();
 
-        // Create a socket for every IPv4 interface.
+        // Create a socket for every IP addr.
         let mut intf_socks = HashMap::new();
-        for intf in my_ifv4addrs {
-            let sock = match new_socket_bind(&intf.ip) {
+        for intf in my_ifaddrs {
+            let sock = match new_socket_bind(&intf) {
                 Ok(s) => s,
                 Err(e) => {
-                    debug!("bind a socket to {}: {}. Skipped.", &intf.ip, e);
+                    debug!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
                     continue;
                 }
             };
-            intf_socks.insert(intf.ip, IntfSock { intf, sock });
+
+            intf_socks.insert(intf.ip(), IntfSock { intf, sock });
         }
 
-        let broadcast_addr = SocketAddrV4::new(GROUP_ADDR, MDNS_PORT).into();
         let monitors = Vec::new();
         let service_name_len_max = SERVICE_NAME_LEN_MAX_DEFAULT;
 
@@ -706,8 +755,9 @@ impl Zeroconf {
 
         Ok(Self {
             intf_socks,
+            poll_ids: HashMap::new(),
+            poll_id_count: 0,
             my_services: HashMap::new(),
-            broadcast_addr,
             cache: DnsCache::new(),
             queriers: HashMap::new(),
             retransmissions: Vec::new(),
@@ -740,76 +790,97 @@ impl Zeroconf {
     }
 
     /// Add `addr` in my services that enabled `addr_auto`.
-    fn add_addr_in_my_services(&mut self, addr: Ipv4Addr) {
+    fn add_addr_in_my_services(&mut self, addr: IpAddr) {
         for (_, service_info) in self.my_services.iter_mut() {
             if service_info.is_addr_auto() {
-                service_info.insert_ipv4addr(addr);
+                service_info.insert_ipaddr(addr);
             }
         }
     }
 
     /// Remove `addr` in my services that enabled `addr_auto`.
-    fn del_addr_in_my_services(&mut self, addr: &Ipv4Addr) {
+    fn del_addr_in_my_services(&mut self, addr: &IpAddr) {
         for (_, service_info) in self.my_services.iter_mut() {
             if service_info.is_addr_auto() {
-                service_info.remove_ipv4addr(addr);
+                service_info.remove_ipaddr(addr);
             }
         }
     }
 
+    /// Insert a new IP into the poll map and return key
+    fn add_poll(&mut self, ip: IpAddr) -> usize {
+        Self::add_poll_impl(&mut self.poll_ids, &mut self.poll_id_count, ip)
+    }
+
+    /// Insert a new IP into the poll map and return key
+    /// This exist to satisfy the borrow checker
+    fn add_poll_impl(
+        poll_ids: &mut HashMap<usize, IpAddr>,
+        poll_id_count: &mut usize,
+        ip: IpAddr,
+    ) -> usize {
+        let key = *poll_id_count;
+        *poll_id_count += 1;
+        let _ = (*poll_ids).insert(key, ip);
+        key
+    }
+
     /// Check for IP changes and update intf_socks as needed.
     fn check_ip_changes(&mut self) {
-        // Get the current IPv4 interfaces.
-        let my_ifv4addrs = my_ipv4_interfaces();
+        // Get the current interfaces.
+        let my_ifaddrs = my_ip_interfaces();
 
+        let poll_ids = &mut self.poll_ids;
+        let poller = &mut self.poller;
         // Remove unused sockets in the poller.
         let deleted_addrs = self
             .intf_socks
             .iter()
             .filter_map(|(_, if_sock)| {
-                if !my_ifv4addrs.contains(&if_sock.intf) {
-                    if let Err(e) = self.poller.delete(&if_sock.sock) {
+                if !my_ifaddrs.contains(&if_sock.intf) {
+                    if let Err(e) = poller.delete(&if_sock.sock) {
                         error!("check_ip_changes: poller.delete {:?}: {}", &if_sock.intf, e);
                     }
-                    Some(if_sock.intf.ip)
+                    // Remove from poll_ids
+                    poll_ids.retain(|_, v| v != &if_sock.intf.addr.ip());
+                    Some(if_sock.intf.ip())
                 } else {
                     None
                 }
             })
-            .collect::<Vec<Ipv4Addr>>();
+            .collect::<Vec<IpAddr>>();
 
         // Remove deleted addrs from my services that enabled `addr_auto`.
-        for ipv4 in deleted_addrs.iter() {
-            self.del_addr_in_my_services(ipv4);
-            self.notify_monitors(DaemonEvent::Ipv4Del(*ipv4));
+        for ip in deleted_addrs.iter() {
+            self.del_addr_in_my_services(ip);
+            self.notify_monitors(DaemonEvent::IpDel(*ip));
         }
 
         // Keep the interfaces only if they still exist.
-        self.intf_socks
-            .retain(|_, v| my_ifv4addrs.contains(&v.intf));
+        self.intf_socks.retain(|_, v| my_ifaddrs.contains(&v.intf));
 
         // Add newly found interfaces.
-        for intf in my_ifv4addrs {
+        for intf in my_ifaddrs {
             // Skip existing interfaces.
-            if self.intf_socks.get(&intf.ip).is_some() {
+            if self.intf_socks.get(&intf.ip()).is_some() {
                 continue;
             }
 
             // Bind the new interface.
-            let new_ip = intf.ip;
-            let sock = match new_socket_bind(&new_ip) {
+            let new_ip = intf.ip();
+            let sock = match new_socket_bind(&intf) {
                 Ok(s) => {
-                    debug!("check_ip_changes: bind {}", &intf.ip);
+                    debug!("check_ip_changes: bind {}", &intf.ip());
                     s
                 }
                 Err(e) => {
-                    debug!("bind a socket to {}: {}. Skipped.", &intf.ip, e);
+                    debug!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
                     continue;
                 }
             };
 
             // Add the new interface into the poller.
-            let key = u32::from(new_ip) as usize;
+            let key = self.add_poll(new_ip);
             if let Err(e) = self.poller.add(&sock, polling::Event::readable(key)) {
                 error!("check_ip_changes: poller add ip {}: {}", new_ip, e);
             }
@@ -819,7 +890,7 @@ impl Zeroconf {
             self.add_addr_in_my_services(new_ip);
 
             // Notify the monitors.
-            self.notify_monitors(DaemonEvent::Ipv4Add(new_ip));
+            self.notify_monitors(DaemonEvent::IpAdd(new_ip));
         }
     }
 
@@ -861,11 +932,11 @@ impl Zeroconf {
 
     /// Sends out annoucement of `info` on every valid interface.
     /// Returns the list of interface IPs that sent out the annoucement.
-    fn send_unsolicited_response(&self, info: &ServiceInfo) -> Vec<Ipv4Addr> {
+    fn send_unsolicited_response(&self, info: &ServiceInfo) -> Vec<IpAddr> {
         let mut outgoing_addrs = Vec::new();
         for (_, intf_sock) in self.intf_socks.iter() {
             if self.broadcast_service_on_intf(info, intf_sock) {
-                outgoing_addrs.push(intf_sock.intf.ip);
+                outgoing_addrs.push(intf_sock.intf.ip());
             }
         }
         outgoing_addrs
@@ -931,10 +1002,14 @@ impl Zeroconf {
             return false;
         }
         for addr in intf_addrs {
+            let t = match addr {
+                IpAddr::V4(_) => TYPE_A,
+                IpAddr::V6(_) => TYPE_AAAA,
+            };
             out.add_answer_at_time(
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
-                    TYPE_A,
+                    t,
                     CLASS_IN | CLASS_UNIQUE,
                     info.get_host_ttl(),
                     addr,
@@ -943,7 +1018,7 @@ impl Zeroconf {
             );
         }
 
-        self.send(&out, &self.broadcast_addr, intf_sock);
+        broadcast_dns_on_intf(&out, intf_sock);
         true
     }
 
@@ -998,10 +1073,14 @@ impl Zeroconf {
         );
 
         for addr in info.get_addrs_on_intf(&intf_sock.intf) {
+            let t = match addr {
+                IpAddr::V4(_) => TYPE_A,
+                IpAddr::V6(_) => TYPE_AAAA,
+            };
             out.add_answer_at_time(
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
-                    TYPE_A,
+                    t,
                     CLASS_IN | CLASS_UNIQUE,
                     0,
                     addr,
@@ -1010,7 +1089,7 @@ impl Zeroconf {
             );
         }
 
-        self.send(&out, &self.broadcast_addr, intf_sock)
+        broadcast_dns_on_intf(&out, intf_sock)
     }
 
     /// Binds a channel `listener` to querying mDNS domain type `ty`.
@@ -1020,43 +1099,21 @@ impl Zeroconf {
         self.queriers.insert(ty, listener);
     }
 
-    /// Sends an outgoing packet, and returns the packet bytes.
-    fn send(&self, out: &DnsOutgoing, addr: &SockAddr, intf: &IntfSock) -> Vec<u8> {
-        let qtype = if out.is_query() { "query" } else { "response" };
-        debug!(
-            "Sending {} to {:?}: {} questions {} answers {} authorities {} additional",
-            qtype,
-            addr.as_socket(),
-            out.questions.len(),
-            out.answers.len(),
-            out.authorities.len(),
-            out.additionals.len()
-        );
-        let packet = out.to_packet_data();
-        if packet.len() > MAX_MSG_ABSOLUTE {
-            error!("Drop over-sized packet ({})", packet.len());
-            return Vec::new();
-        }
-
-        send_packet(&packet[..], addr, intf);
-        packet
-    }
-
     fn send_query(&self, name: &str, qtype: u16) {
         debug!("Sending multicast query for {}", name);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         out.add_question(name, qtype);
         for (_, intf_sock) in self.intf_socks.iter() {
-            self.send(&out, &self.broadcast_addr, intf_sock);
+            broadcast_dns_on_intf(&out, intf_sock);
         }
     }
 
-    /// Reads from the socket of `ipv4`.
+    /// Reads from the socket of `ip`.
     ///
     /// Returns false if failed to receive a packet,
     /// otherwise returns true.
-    fn handle_read(&mut self, ipv4: &Ipv4Addr) -> bool {
-        let intf_sock = match self.intf_socks.get_mut(ipv4) {
+    fn handle_read(&mut self, ip: &IpAddr) -> bool {
+        let intf_sock = match self.intf_socks.get_mut(ip) {
             Some(if_sock) => if_sock,
             None => return false,
         };
@@ -1081,13 +1138,13 @@ impl Zeroconf {
             }
 
             // Replace the closed socket with a new one.
-            match new_socket_bind(&intf_sock.intf.ip) {
+            match new_socket_bind(&intf_sock.intf) {
                 Ok(sock) => {
                     let intf = intf_sock.intf.clone();
-                    self.intf_socks.insert(*ipv4, IntfSock { intf, sock });
-                    debug!("reset socket for IP {}", ipv4);
+                    self.intf_socks.insert(*ip, IntfSock { intf, sock });
+                    debug!("reset socket for IP {}", ip);
                 }
-                Err(e) => error!("re-bind a socket to {}: {}", ipv4, e),
+                Err(e) => error!("re-bind a socket to {}: {}", ip, e),
             }
             return false;
         }
@@ -1095,7 +1152,7 @@ impl Zeroconf {
         match DnsIncoming::new(buf) {
             Ok(msg) => {
                 if msg.is_query() {
-                    self.handle_query(msg, ipv4);
+                    self.handle_query(msg, ip);
                 } else if msg.is_response() {
                     self.handle_response(msg);
                 } else {
@@ -1199,7 +1256,7 @@ impl Zeroconf {
         if let Some(records) = self.cache.addr.get(info.get_hostname()) {
             for answer in records.iter() {
                 if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {
-                    info.insert_ipv4addr(dns_a.address);
+                    info.insert_ipaddr(dns_a.address);
                 }
             }
         }
@@ -1290,7 +1347,7 @@ impl Zeroconf {
                 TYPE_SRV | TYPE_TXT => {
                     updated_instances.insert(update.name);
                 }
-                TYPE_A => {
+                TYPE_A | TYPE_AAAA => {
                     let instances = self.cache.get_instances_on_host(&update.name);
                     updated_instances.extend(instances);
                 }
@@ -1330,8 +1387,8 @@ impl Zeroconf {
         }
     }
 
-    fn handle_query(&mut self, msg: DnsIncoming, ipv4: &Ipv4Addr) {
-        let intf_sock = match self.intf_socks.get(ipv4) {
+    fn handle_query(&mut self, msg: DnsIncoming, ip: &IpAddr) {
+        let intf_sock = match self.intf_socks.get(ip) {
             Some(sock) => sock,
             None => return,
         };
@@ -1371,23 +1428,32 @@ impl Zeroconf {
                     }
                 }
             } else {
-                if qtype == TYPE_A || qtype == TYPE_ANY {
+                if qtype == TYPE_A || qtype == TYPE_AAAA || qtype == TYPE_ANY {
                     for service in self.my_services.values() {
                         if service.get_hostname() == question.entry.name.to_lowercase() {
                             let intf_addrs = service.get_addrs_on_intf(&intf_sock.intf);
-                            if intf_addrs.is_empty() && qtype == TYPE_A {
+                            if intf_addrs.is_empty() && (qtype == TYPE_A || qtype == TYPE_AAAA) {
+                                let t = match qtype {
+                                    TYPE_A => "TYPE_A",
+                                    TYPE_AAAA => "TYPE_AAAA",
+                                    _ => "invalid_type",
+                                };
                                 error!(
-                                    "Cannot find valid addrs for TYPE_A response on intf {:?}",
-                                    &intf_sock.intf
+                                    "Cannot find valid addrs for {} response on intf {:?}",
+                                    t, &intf_sock.intf
                                 );
                                 return;
                             }
                             for address in intf_addrs {
+                                let t = match address {
+                                    IpAddr::V4(_) => TYPE_A,
+                                    IpAddr::V6(_) => TYPE_AAAA,
+                                };
                                 out.add_answer(
                                     &msg,
                                     Box::new(DnsAddress::new(
                                         &question.entry.name,
-                                        TYPE_A,
+                                        t,
                                         CLASS_IN | CLASS_UNIQUE,
                                         service.get_host_ttl(),
                                         address,
@@ -1442,9 +1508,13 @@ impl Zeroconf {
                         return;
                     }
                     for address in intf_addrs {
+                        let t = match address {
+                            IpAddr::V4(_) => TYPE_A,
+                            IpAddr::V6(_) => TYPE_AAAA,
+                        };
                         out.add_additional_answer(Box::new(DnsAddress::new(
                             service.get_hostname(),
-                            TYPE_A,
+                            t,
                             CLASS_IN | CLASS_UNIQUE,
                             service.get_host_ttl(),
                             address,
@@ -1456,7 +1526,7 @@ impl Zeroconf {
 
         if !out.answers.is_empty() {
             out.id = msg.id;
-            self.send(&out, &self.broadcast_addr, intf_sock);
+            broadcast_dns_on_intf(&out, intf_sock);
 
             self.increase_counter(Counter::Respond, 1);
         }
@@ -1518,11 +1588,11 @@ pub enum DaemonEvent {
     /// Daemon encountered an error.
     Error(Error),
 
-    /// Daemon detected a new IPv4 address from the host.
-    Ipv4Add(Ipv4Addr),
+    /// Daemon detected a new IP address from the host.
+    IpAdd(IpAddr),
 
-    /// Daemon detected a IPv4 address removed from the host.
-    Ipv4Del(Ipv4Addr),
+    /// Daemon detected a IP address removed from the host.
+    IpDel(IpAddr),
 }
 
 /// Commands supported by the daemon
@@ -1541,7 +1611,7 @@ enum Command {
     RegisterResend(String), // (fullname)
 
     /// Resend unregister packet.
-    UnregisterResend(Vec<u8>, Ipv4Addr), // (packet content)
+    UnregisterResend(Vec<u8>, IpAddr), // (packet content)
 
     /// Stop browsing a service type
     StopBrowse(String), // (ty_domain)
@@ -1621,6 +1691,7 @@ impl DnsCache {
             TYPE_SRV => self.srv.entry(entry_name).or_default(),
             TYPE_TXT => self.txt.entry(entry_name).or_default(),
             TYPE_A => self.addr.entry(entry_name).or_default(),
+            TYPE_AAAA => self.addr.entry(entry_name).or_default(),
             _ => return None,
         };
 
@@ -1650,6 +1721,7 @@ impl DnsCache {
             TYPE_SRV => self.srv.get_mut(record_name),
             TYPE_TXT => self.txt.get_mut(record_name),
             TYPE_A => self.addr.get_mut(record_name),
+            TYPE_AAAA => self.addr.get_mut(record_name),
             _ => return found,
         };
         if let Some(record_vec) = record_vec {
@@ -1782,23 +1854,50 @@ fn call_listener(
     }
 }
 
-/// Returns valid IPv4 interfaces in the host system.
+/// Returns valid network interfaces in the host system.
 /// Loopback interfaces are excluded.
-fn my_ipv4_interfaces() -> Vec<Ifv4Addr> {
+fn my_ip_interfaces() -> Vec<Interface> {
     if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|i| {
-            if i.is_loopback() {
-                None
-            } else {
-                match i.addr {
-                    IfAddr::V4(ifv4) => Some(ifv4),
-                    _ => None,
-                }
-            }
-        })
+        .filter(|i| !i.is_loopback())
         .collect()
+}
+
+/// Send an outgoing broadcast DNS query or response, and returns the packet bytes.
+fn broadcast_dns_on_intf(out: &DnsOutgoing, intf: &IntfSock) -> Vec<u8> {
+    let qtype = if out.is_query() { "query" } else { "response" };
+    debug!(
+        "Broadcasting {}: {} questions {} answers {} authorities {} additional",
+        qtype,
+        out.questions.len(),
+        out.answers.len(),
+        out.authorities.len(),
+        out.additionals.len()
+    );
+    let packet = out.to_packet_data();
+    broadcast_on_intf(&packet[..], intf);
+    packet
+}
+
+/// Sends an outgoing broadcast packet, and returns the packet bytes.
+fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock) -> &'a [u8] {
+    let sock: SocketAddr = match intf.intf.addr {
+        if_addrs::IfAddr::V4(_) => SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into(),
+        if_addrs::IfAddr::V6(_) => {
+            let mut sock = SocketAddrV6::new(GROUP_ADDR_V6, MDNS_PORT, 0, 0);
+            sock.set_scope_id(intf.intf.index.unwrap_or(0)); // Choose iface for multicast
+            sock.into()
+        }
+    };
+
+    if packet.len() > MAX_MSG_ABSOLUTE {
+        error!("Drop over-sized packet ({})", packet.len());
+        return &[];
+    }
+
+    send_packet(packet, &SockAddr::from(sock), intf);
+    packet
 }
 
 /// Sends out `packet` to `addr` on the socket in `intf_sock`.

@@ -7,8 +7,17 @@
 #[cfg(feature = "logging")]
 use crate::log::{debug, error};
 use crate::{Error, Result, ServiceInfo};
-use if_addrs::Ifv4Addr;
-use std::{any::Any, cmp, collections::HashMap, fmt, net::Ipv4Addr, str, time::SystemTime};
+use if_addrs::Interface;
+use std::{
+    any::Any,
+    cmp,
+    collections::HashMap,
+    convert::TryInto,
+    fmt,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    str,
+    time::SystemTime,
+};
 
 pub(crate) const TYPE_A: u16 = 1; // IPv4 address
 pub(crate) const TYPE_CNAME: u16 = 5;
@@ -179,11 +188,11 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
 #[derive(Debug)]
 pub(crate) struct DnsAddress {
     pub(crate) record: DnsRecord,
-    pub(crate) address: Ipv4Addr,
+    pub(crate) address: IpAddr,
 }
 
 impl DnsAddress {
-    pub(crate) fn new(name: &str, ty: u16, class: u16, ttl: u32, address: Ipv4Addr) -> Self {
+    pub(crate) fn new(name: &str, ty: u16, class: u16, ttl: u32, address: IpAddr) -> Self {
         let record = DnsRecord::new(name, ty, class, ttl);
         Self { record, address }
     }
@@ -199,7 +208,10 @@ impl DnsRecordExt for DnsAddress {
     }
 
     fn write(&self, packet: &mut DnsOutPacket) {
-        packet.write_bytes(self.address.octets().as_ref());
+        match self.address {
+            IpAddr::V4(addr) => packet.write_bytes(addr.octets().as_ref()),
+            IpAddr::V6(addr) => packet.write_bytes(addr.octets().as_ref()),
+        };
     }
 
     fn any(&self) -> &dyn Any {
@@ -695,7 +707,7 @@ impl DnsOutgoing {
         &mut self,
         msg: &DnsIncoming,
         service: &ServiceInfo,
-        intf: &Ifv4Addr,
+        intf: &Interface,
     ) {
         let intf_addrs = service.get_addrs_on_intf(intf);
         if intf_addrs.is_empty() {
@@ -954,7 +966,7 @@ impl DnsIncoming {
                     ty,
                     class,
                     ttl,
-                    self.read_ipv4(),
+                    self.read_ipv4().into(),
                 ))),
                 TYPE_CNAME | TYPE_PTR => Some(Box::new(DnsPointer::new(
                     &name,
@@ -987,11 +999,13 @@ impl DnsIncoming {
                     self.read_char_string(),
                     self.read_char_string(),
                 ))),
-                TYPE_AAAA => {
-                    debug!("We don't support IPv6 TYPE_AAAA records");
-                    self.offset += length;
-                    None
-                }
+                TYPE_AAAA => Some(Box::new(DnsAddress::new(
+                    &name,
+                    ty,
+                    class,
+                    ttl,
+                    self.read_ipv6().into(),
+                ))),
                 _ => {
                     debug!("Unknown DNS record type");
                     self.offset += length;
@@ -1036,9 +1050,19 @@ impl DnsIncoming {
     }
 
     fn read_ipv4(&mut self) -> Ipv4Addr {
-        let bytes = &self.data[self.offset..self.offset + 4];
+        let bytes: [u8; 4] = (&self.data)[self.offset..self.offset + 4]
+            .try_into()
+            .unwrap();
         self.offset += bytes.len();
-        Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3])
+        Ipv4Addr::from(bytes)
+    }
+
+    fn read_ipv6(&mut self) -> Ipv6Addr {
+        let bytes: [u8; 16] = (&self.data)[self.offset..self.offset + 16]
+            .try_into()
+            .unwrap();
+        self.offset += bytes.len();
+        Ipv6Addr::from(bytes)
     }
 
     fn read_string(&mut self, length: usize) -> String {
