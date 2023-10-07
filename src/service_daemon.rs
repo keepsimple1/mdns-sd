@@ -72,7 +72,6 @@ const MDNS_PORT: u16 = 5353;
 const GROUP_ADDR_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const GROUP_ADDR_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
 const LOOPBACK_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
-const LOOPBACK_V6: Ipv6Addr = Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1);
 
 /// Response status code for the service `unregister` call.
 #[derive(Debug)]
@@ -138,21 +137,8 @@ impl ServiceDaemon {
     pub fn new() -> Result<Self> {
         // Use port 0 to allow the system assign a random available port,
         // no need for a pre-defined port number.
-        Self::new_with_signal_addr(SocketAddrV4::new(LOOPBACK_V4, 0).into())
-    }
+        let signal_addr = SocketAddrV4::new(LOOPBACK_V4, 0);
 
-    /// Creates a new daemon and spawns a thread to run the daemon.
-    ///
-    /// The daemon (re)uses the default mDNS port 5353. To keep it simple, we don't
-    /// ask callers to set the port.
-    /// This one uses an ipv6 local address for the signal mechanism.
-    pub fn new_signal_v6() -> Result<Self> {
-        // Use port 0 to allow the system assign a random available port,
-        // no need for a pre-defined port number.
-        Self::new_with_signal_addr(SocketAddrV6::new(LOOPBACK_V6, 0, 0, 0).into())
-    }
-
-    fn new_with_signal_addr(signal_addr: SocketAddr) -> Result<Self> {
         let signal_sock = UdpSocket::bind(signal_addr)
             .map_err(|e| e_fmt!("failed to create signal_sock for daemon: {}", e))?;
 
@@ -193,10 +179,7 @@ impl ServiceDaemon {
         })?;
 
         // Second, send a signal to notify the daemon.
-        let addr: SocketAddr = match self.signal_addr {
-            SocketAddr::V4(_) => SocketAddrV4::new(LOOPBACK_V4, 0).into(),
-            SocketAddr::V6(_) => SocketAddrV6::new(LOOPBACK_V6, 0, 0, 0).into(),
-        };
+        let addr = SocketAddrV4::new(LOOPBACK_V4, 0);
         let socket = UdpSocket::bind(addr)
             .map_err(|e| e_fmt!("Failed to create socket to send signal: {}", e))?;
         socket
