@@ -263,11 +263,7 @@ fn service_without_properties_with_alter_net_v4() {
                     );
                     // match only our service and not v6 one
                     if fullname.as_str() == info.get_fullname() {
-                        let addrs: Vec<&IpAddr> = info
-                            .get_addresses()
-                            .into_iter()
-                            .filter(|a| a.is_ipv4())
-                            .collect();
+                        let addrs = info.get_addresses_v4();
                         assert_eq!(addrs.len(), 1); // first_ipv4 but no alter_ipv.
                         found = true;
                         break;
