@@ -203,12 +203,12 @@ impl ServiceInfo {
     }
 
     /// Returns the service's IPv4 addresses only.
-    pub fn get_addresses_v4(&self) -> HashSet<Ipv4Addr> {
+    pub fn get_addresses_v4(&self) -> HashSet<&Ipv4Addr> {
         let mut ipv4_addresses = HashSet::new();
 
         for ip in &self.addresses {
             if let IpAddr::V4(ipv4) = ip {
-                ipv4_addresses.insert(*ipv4);
+                ipv4_addresses.insert(ipv4);
             }
         }
 
