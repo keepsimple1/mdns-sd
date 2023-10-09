@@ -6,7 +6,7 @@ use std::{
     collections::{HashMap, HashSet},
     convert::TryInto,
     fmt,
-    net::IpAddr,
+    net::{IpAddr, Ipv4Addr},
     str::FromStr,
 };
 
@@ -200,6 +200,19 @@ impl ServiceInfo {
     #[inline]
     pub fn get_addresses(&self) -> &HashSet<IpAddr> {
         &self.addresses
+    }
+
+    /// Returns the service's IPv4 addresses only.
+    pub fn get_addresses_v4(&self) -> HashSet<&Ipv4Addr> {
+        let mut ipv4_addresses = HashSet::new();
+
+        for ip in &self.addresses {
+            if let IpAddr::V4(ipv4) = ip {
+                ipv4_addresses.insert(ipv4);
+            }
+        }
+
+        ipv4_addresses
     }
 
     /// Returns the service's TTL used for SRV and Address records.
