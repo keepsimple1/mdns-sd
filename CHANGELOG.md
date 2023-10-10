@@ -1,3 +1,11 @@
+# Version 0.9.0
+
+* Ssupports IPv6 (#130) (Thanks to @izissise)
+
+This is a breaking change, namely:
+
+- `AsIpv4Addrs` changes to `AsIpAddrs`
+
 # Version 0.8.1
 
 * Remove env_logger in dev-dependencies and lower MSRV to 1.60.0. (#128)

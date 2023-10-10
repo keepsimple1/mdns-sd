@@ -8,6 +8,7 @@ This is a small implementation of mDNS (Multicast DNS) based service discovery i
 
 - supports both the client (querier) and the server (responder) uses.
 - supports macOS, Linux and Windows.
+- supports IPv4 and IPv6.
 - works with both sync and async code.
 - no dependency on any async runtimes.
 
@@ -27,7 +28,6 @@ This implementation is based on the following RFCs:
 This is still beta software. We focus on the common use cases at hand. And we tested with some existing common tools (e.g. `Avahi` on Linux, `dns-sd` on MacOS, and `Bonjour` library on iOS) to verify the basic compatibility.
 
 Currently this library has the following limitations:
-- Only support IPv4, not IPv6.
 - Only support multicast, no unicast send/recv.
 
 ## Minimum Rust version
