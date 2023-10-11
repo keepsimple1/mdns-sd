@@ -763,9 +763,14 @@ impl DnsOutgoing {
         )));
 
         for address in intf_addrs {
+            let t = match address {
+                IpAddr::V4(_) => TYPE_A,
+                IpAddr::V6(_) => TYPE_AAAA,
+            };
+
             self.add_additional_answer(Box::new(DnsAddress::new(
                 service.get_hostname(),
-                TYPE_A,
+                t,
                 CLASS_IN | CLASS_UNIQUE,
                 service.get_host_ttl(),
                 address,
@@ -1016,7 +1021,7 @@ impl DnsIncoming {
             // sanity check.
             if self.offset != next_offset {
                 return Err(Error::Msg(format!(
-                    "read_name: decode offset error for RData type {} record: {:?} offset: {} expected offset: {}",
+                    "read_others: decode offset error for RData type {} record: {:?} offset: {} expected offset: {}",
                     ty, &rec, self.offset, next_offset,
                 )));
             }

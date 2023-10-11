@@ -1159,7 +1159,7 @@ impl Zeroconf {
                     error!("Invalid message: not query and not response");
                 }
             }
-            Err(e) => error!("Invalid incoming message: {}", e),
+            Err(e) => error!("Invalid incoming DNS message: {}", e),
         }
 
         true
