@@ -2,9 +2,13 @@
 
 * Ssupports IPv6 (#130) (Thanks to @izissise)
 
-This is a breaking change, namely:
+This is a breaking change, including:
 
-- `AsIpv4Addrs` changes to `AsIpAddrs`
+- Trait `AsIpv4Addrs` changes to `AsIpAddrs` to support both IPv4 and IPv6.
+- `ServiceInfo::new()` uses the new `AsIpAddrs` trait.
+- `ServiceInfo::get_addresses()` returns both IPv4 and IPv6 addresses, while a new convenience method `get_addresses_v4` returns IPv4 only.
+
+But in general, because the trait hides away details, the user code is likely keeping working without code changes.
 
 # Version 0.8.1
 
