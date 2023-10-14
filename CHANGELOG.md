@@ -1,6 +1,8 @@
 # Version 0.9.0
 
 * Ssupports IPv6 (#130) (Thanks to @izissise)
+* ServiceInfo: support get_addresses_v4 (#132)
+* bugfix: set address type correctly (#134)
 
 This is a breaking change, including:
 
@@ -9,6 +11,10 @@ This is a breaking change, including:
 - `ServiceInfo::get_addresses()` returns both IPv4 and IPv6 addresses, while a new convenience method `get_addresses_v4` returns IPv4 only.
 
 But in general, because the trait hides away details, the user code is likely keeping working without code changes.
+
+Improvements:
+
+* avoid redundant annoucement or query packets (#135)
 
 # Version 0.8.1
 
