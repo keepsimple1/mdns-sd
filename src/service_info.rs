@@ -695,6 +695,14 @@ pub(crate) fn valid_ip_on_intf(addr: &IpAddr, intf: &Interface) -> bool {
     }
 }
 
+/// Returns the netmask part of `addr` as `u128` for IPv4 and IPv6 address.
+pub(crate) fn ifaddr_netmask(addr: &IfAddr) -> u128 {
+    match addr {
+        IfAddr::V4(addrv4) => u32::from(addrv4.netmask) as u128,
+        IfAddr::V6(addrv6) => u128::from(addrv6.netmask),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{decode_txt, encode_txt, u8_slice_to_hex, ServiceInfo, TxtProperty};
