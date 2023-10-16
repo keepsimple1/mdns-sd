@@ -294,16 +294,16 @@ impl ServiceDaemon {
     }
 
     pub fn enable_interface(&self, if_kind: impl IfKindIter) -> Result<()> {
-        let iter = if_kind.into_vec();
+        let if_kind_vec = if_kind.into_vec();
         self.send_cmd(Command::SetOption(DaemonOption::EnableInterface(
-            iter.kinds,
+            if_kind_vec.kinds,
         )))
     }
 
     pub fn disable_interface(&self, if_kind: impl IfKindIter) -> Result<()> {
-        let iter = if_kind.into_vec();
+        let if_kind_vec = if_kind.into_vec();
         self.send_cmd(Command::SetOption(DaemonOption::DisableInterface(
-            iter.kinds,
+            if_kind_vec.kinds,
         )))
     }
 
