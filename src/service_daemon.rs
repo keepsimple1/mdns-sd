@@ -710,6 +710,7 @@ struct IfSelection {
 /// Specify kinds of interfaces.
 /// This type is used to enable or to disable interfaces in the daemon.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum IfKind {
     /// All interfaces.
     All,
@@ -722,9 +723,6 @@ pub enum IfKind {
 
     /// By the interface name, for example "en0"
     Name(String),
-
-    /// By the interface address, for example IPv4 "192.168.0.1"
-    Addr(IpAddr),
 }
 
 impl IfKind {
@@ -734,7 +732,7 @@ impl IfKind {
             IfKind::All => true,
             IfKind::IPv4 => intf.ip().is_ipv4(),
             IfKind::IPv6 => intf.ip().is_ipv6(),
-            _ => false,
+            IfKind::Name(ifname) => ifname == &intf.name,
         }
     }
 }
