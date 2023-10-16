@@ -728,11 +728,6 @@ impl IfKind {
         }
     }
 }
-pub struct IfSelection {
-    pub if_kind: IfKind,
-    pub selected: bool,
-}
-
 #[cfg(test)]
 mod tests {
     use super::{decode_txt, encode_txt, u8_slice_to_hex, ServiceInfo, TxtProperty};

@@ -38,7 +38,7 @@ use crate::{
         TYPE_TXT,
     },
     error::{Error, Result},
-    service_info::{ifaddr_netmask, split_sub_domain, IfKind, IfSelection, ServiceInfo},
+    service_info::{ifaddr_netmask, split_sub_domain, IfKind, ServiceInfo},
     Receiver,
 };
 use flume::{bounded, Sender, TrySendError};
@@ -694,6 +694,11 @@ struct ReRun {
 struct IntfSock {
     intf: Interface,
     sock: Socket,
+}
+
+struct IfSelection {
+    if_kind: IfKind,
+    selected: bool,
 }
 
 /// A struct holding the state. It was inspired by `zeroconf` package in Python.
