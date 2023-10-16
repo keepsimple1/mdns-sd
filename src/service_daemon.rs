@@ -1404,7 +1404,7 @@ impl Zeroconf {
             }
         }
 
-        // resolve A records
+        // resolve A and AAAA records
         if let Some(records) = self.cache.addr.get(info.get_hostname()) {
             for answer in records.iter() {
                 if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {

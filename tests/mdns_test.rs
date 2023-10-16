@@ -234,7 +234,7 @@ fn service_without_properties_with_alter_net_v4() {
     let first_ip = if_addrs[0].ip();
     let alter_ip = ipv4_alter_net(&if_addrs);
     let host_ip = vec![first_ip, alter_ip];
-    let host_name = "serv-no-prop.";
+    let host_name = "serv-no-prop-v4.";
     let port = 5201;
     let my_service = ServiceInfo::new(
         ty_domain,
@@ -305,7 +305,7 @@ fn service_without_properties_with_alter_net_v6() {
     let first_ip = if_addrs[0].ip();
     let alter_ip = ipv6_alter_net(&if_addrs);
     let host_ip = vec![first_ip, alter_ip];
-    let host_name = "serv-no-prop.";
+    let host_name = "serv-no-prop-v6.";
     let port = 5201;
     let my_service = ServiceInfo::new(
         ty_domain,
