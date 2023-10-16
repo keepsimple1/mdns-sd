@@ -17,7 +17,7 @@ const DNS_OTHER_TTL: u32 = 4500; // 75 minutes for non-host records (PTR, TXT et
 /// Complete info about a Service Instance.
 ///
 /// We can construct some PTR, one SRV and one TXT record from this info,
-/// as well as A (IPv4 Address) records.
+/// as well as A (IPv4 Address) and AAAA (IPv6 Address) records.
 #[derive(Debug, Clone)]
 pub struct ServiceInfo {
     ty_domain: String,          // <service>.<domain>
@@ -703,9 +703,53 @@ pub(crate) fn ifaddr_netmask(addr: &IfAddr) -> u128 {
     }
 }
 
+/// Specify kinds of interfaces.
+#[derive(Debug, Clone)]
+pub enum IfKind {
+    All,
+    IPv4,
+    IPv6,
+
+    /// By the interface name, for example "en0"
+    Name(String),
+
+    /// By the interface address, for example "192.168.0.1"
+    Addr(IpAddr),
+}
+
+impl IfKind {
+    /// Checks if `intf` matches with this interface kind.
+    pub fn matches(&self, intf: &Interface) -> bool {
+        match self {
+            IfKind::All => true,
+            IfKind::IPv4 => intf.ip().is_ipv4(),
+            IfKind::IPv6 => intf.ip().is_ipv6(),
+            _ => false,
+        }
+    }
+}
+pub struct IfSelection {
+    pub if_kind: IfKind,
+    pub selected: bool,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{decode_txt, encode_txt, u8_slice_to_hex, ServiceInfo, TxtProperty};
+    use super::{decode_txt, encode_txt, u8_slice_to_hex, IfKind, ServiceInfo, TxtProperty};
+
+    #[test]
+    fn test_ifkind() {
+        let single_ifkind = IfKind::IPv4;
+        let vec_ifkind = vec![IfKind::IPv6, IfKind::Name("en0".to_string())];
+
+        for item in single_ifkind {
+            println!("{:?}", item);
+        }
+
+        for item in vec_ifkind {
+            println!("{:?}", item);
+        }
+    }
 
     #[test]
     fn test_txt_encode_decode() {

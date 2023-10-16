@@ -38,7 +38,7 @@ use crate::{
         TYPE_TXT,
     },
     error::{Error, Result},
-    service_info::{ifaddr_netmask, split_sub_domain, ServiceInfo},
+    service_info::{ifaddr_netmask, split_sub_domain, IfKind, IfSelection, ServiceInfo},
     Receiver,
 };
 use flume::{bounded, Sender, TrySendError};
@@ -291,6 +291,14 @@ impl ServiceDaemon {
         }
 
         self.send_cmd(Command::SetOption(DaemonOption::ServiceNameLenMax(len_max)))
+    }
+
+    pub fn enable_interface(&self, if_kind: IfKind) -> Result<()> {
+        self.send_cmd(Command::SetOption(DaemonOption::EnableInterface(if_kind)))
+    }
+
+    pub fn disable_interface(&self, if_kind: IfKind) -> Result<()> {
+        self.send_cmd(Command::SetOption(DaemonOption::DisableInterface(if_kind)))
     }
 
     /// The main event loop of the daemon thread
@@ -599,7 +607,7 @@ impl ServiceDaemon {
     }
 }
 
-/// Creates a new UDP socket that uses `intf_ip` to send and recv multicast.
+/// Creates a new UDP socket that uses `intf` to send and recv multicast.
 fn new_socket_bind(intf: &Interface) -> Result<Socket> {
     // Use the same socket for receiving and sending multicast packets.
     // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
@@ -721,6 +729,8 @@ struct Zeroconf {
     /// Options
     service_name_len_max: u8,
 
+    if_selections: Vec<IfSelection>,
+
     /// Socket for signaling.
     signal_sock: UdpSocket,
 
@@ -753,6 +763,7 @@ impl Zeroconf {
         let service_name_len_max = SERVICE_NAME_LEN_MAX_DEFAULT;
 
         let timers = vec![];
+        let if_selections = vec![];
 
         Ok(Self {
             intf_socks,
@@ -766,6 +777,7 @@ impl Zeroconf {
             poller,
             monitors,
             service_name_len_max,
+            if_selections,
             signal_sock,
             timers,
         })
@@ -774,7 +786,25 @@ impl Zeroconf {
     fn process_set_option(&mut self, daemon_opt: DaemonOption) {
         match daemon_opt {
             DaemonOption::ServiceNameLenMax(length) => self.service_name_len_max = length,
+            DaemonOption::EnableInterface(if_kind) => self.enable_interface(if_kind),
+            DaemonOption::DisableInterface(if_kind) => self.disable_interface(if_kind),
         }
+    }
+
+    fn enable_interface(&mut self, if_kind: IfKind) {
+        self.if_selections.push(IfSelection {
+            if_kind,
+            selected: true,
+        });
+
+        self.process_if_selections();
+    }
+
+    fn disable_interface(&mut self, if_kind: IfKind) {
+        self.if_selections.push(IfSelection {
+            if_kind,
+            selected: false,
+        });
     }
 
     fn notify_monitors(&mut self, event: DaemonEvent) {
@@ -826,6 +856,46 @@ impl Zeroconf {
         key
     }
 
+    fn process_if_selections(&mut self) {
+        // By default, we enable all interfaces.
+        let interfaces = my_ip_interfaces();
+        let intf_count = interfaces.len();
+        let mut intf_selections = vec![true; intf_count];
+
+        // apply if_selections
+        for selection in self.if_selections.iter() {
+            // Mark the interfaces for this selection.
+            for i in 0..intf_count {
+                if selection.if_kind.matches(&interfaces[i]) {
+                    intf_selections[i] = selection.selected;
+                }
+            }
+        }
+
+        // Remove the interfaces not selected.
+        for (idx, intf) in interfaces.into_iter().enumerate() {
+            let ip_addr = intf.ip();
+
+            if intf_selections[idx] {
+                // Add the interface
+                if self.intf_socks.get(&ip_addr).is_none() {
+                    self.add_new_interface(intf);
+                }
+            } else {
+                // Remove the interface
+                if let Some(if_sock) = self.intf_socks.remove(&ip_addr) {
+                    if let Err(e) = self.poller.delete(&if_sock.sock) {
+                        error!("process_if_selections: poller.delete {:?}: {}", &ip_addr, e);
+                    }
+                    // Remove from poll_ids
+                    self.poll_ids.retain(|_, v| v != &ip_addr);
+                }
+            }
+        }
+
+        // Add the interfaces as needed.
+    }
+
     /// Check for IP changes and update intf_socks as needed.
     fn check_ip_changes(&mut self) {
         // Get the current interfaces.
@@ -862,37 +932,36 @@ impl Zeroconf {
 
         // Add newly found interfaces.
         for intf in my_ifaddrs {
-            // Skip existing interfaces.
-            if self.intf_socks.get(&intf.ip()).is_some() {
-                continue;
+            if self.intf_socks.get(&intf.ip()).is_none() {
+                self.add_new_interface(intf);
             }
-
-            // Bind the new interface.
-            let new_ip = intf.ip();
-            let sock = match new_socket_bind(&intf) {
-                Ok(s) => {
-                    debug!("check_ip_changes: bind {}", &intf.ip());
-                    s
-                }
-                Err(e) => {
-                    debug!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
-                    continue;
-                }
-            };
-
-            // Add the new interface into the poller.
-            let key = self.add_poll(new_ip);
-            if let Err(e) = self.poller.add(&sock, polling::Event::readable(key)) {
-                error!("check_ip_changes: poller add ip {}: {}", new_ip, e);
-            }
-
-            self.intf_socks.insert(new_ip, IntfSock { intf, sock });
-
-            self.add_addr_in_my_services(new_ip);
-
-            // Notify the monitors.
-            self.notify_monitors(DaemonEvent::IpAdd(new_ip));
         }
+    }
+
+    fn add_new_interface(&mut self, intf: Interface) {
+        // Bind the new interface.
+        let new_ip = intf.ip();
+        let sock = match new_socket_bind(&intf) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
+                return;
+            }
+        };
+
+        // Add the new interface into the poller.
+        let key = self.add_poll(new_ip);
+        if let Err(e) = self.poller.add(&sock, polling::Event::readable(key)) {
+            error!("check_ip_changes: poller add ip {}: {}", new_ip, e);
+            return;
+        }
+
+        self.intf_socks.insert(new_ip, IntfSock { intf, sock });
+
+        self.add_addr_in_my_services(new_ip);
+
+        // Notify the monitors.
+        self.notify_monitors(DaemonEvent::IpAdd(new_ip));
     }
 
     /// Registers a service.
@@ -1662,6 +1731,8 @@ impl fmt::Display for Command {
 #[derive(Debug)]
 enum DaemonOption {
     ServiceNameLenMax(u8),
+    EnableInterface(IfKind),
+    DisableInterface(IfKind),
 }
 
 struct DnsCache {
