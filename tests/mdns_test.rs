@@ -443,6 +443,105 @@ fn test_into_txt_properties() {
 }
 
 #[test]
+fn service_with_named_interface_only() {
+    // Create a daemon
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+    // First, disable all interfaces.
+    d.disable_interface(IfKind::All).unwrap();
+
+    // Register a service with a name len > 15.
+    let my_ty_domain = "_named_intf_only._udp.local.";
+    let host_name = "my_host.";
+    let host_ipv4 = "";
+    let port = 5202;
+    let my_service = ServiceInfo::new(
+        my_ty_domain,
+        "my_instance",
+        host_name,
+        &host_ipv4,
+        port,
+        None,
+    )
+    .expect("invalid service info")
+    .enable_addr_auto();
+
+    d.register(my_service).unwrap();
+
+    // Browse for a service and verify all addresses are IPv4.
+    let browse_chan = d.browse(my_ty_domain).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+
+    loop {
+        match browse_chan.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    let addrs = info.get_addresses();
+                    resolved = true;
+                    println!(
+                        "Resolved a service of {} addr(s): {:?}",
+                        &info.get_fullname(),
+                        addrs
+                    );
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            },
+            Err(_) => {
+                break;
+            }
+        }
+    }
+
+    assert!(resolved == false);
+
+    // Second, find an interface.
+    let if_addrs: Vec<Interface> = my_ip_interfaces()
+        .into_iter()
+        .filter(|iface| iface.addr.ip().is_ipv4())
+        .collect();
+    let if_name = if_addrs[0].name.clone();
+
+    // Enable the named interface.
+    d.enable_interface(IfKind::Name(if_name)).unwrap();
+
+    // Browse again.
+    let browse_chan = d.browse(my_ty_domain).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+
+    loop {
+        match browse_chan.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    let addrs = info.get_addresses();
+                    resolved = true;
+                    println!(
+                        "Resolved a service of {} addr(s): {:?}",
+                        &info.get_fullname(),
+                        addrs
+                    );
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            },
+            Err(_) => {
+                break;
+            }
+        }
+    }
+
+    assert!(resolved);
+
+    d.shutdown().unwrap();
+}
+
+#[test]
 fn service_with_ipv4_only() {
     // Create a daemon
     let d = ServiceDaemon::new().expect("Failed to create daemon");
