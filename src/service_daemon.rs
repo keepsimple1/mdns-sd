@@ -708,16 +708,22 @@ struct IfSelection {
 }
 
 /// Specify kinds of interfaces.
+/// This type is used to enable or to disable interfaces in the daemon.
 #[derive(Debug, Clone)]
 pub enum IfKind {
+    /// All interfaces.
     All,
+
+    /// All IPv4 interfaces.
     IPv4,
+
+    /// All IPv6 interfaces.
     IPv6,
 
     /// By the interface name, for example "en0"
     Name(String),
 
-    /// By the interface address, for example "192.168.0.1"
+    /// By the interface address, for example IPv4 "192.168.0.1"
     Addr(IpAddr),
 }
 
