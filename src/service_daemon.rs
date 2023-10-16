@@ -294,14 +294,14 @@ impl ServiceDaemon {
     }
 
     pub fn enable_interface(&self, if_kind: impl IfKindIterator) -> Result<()> {
-        let iter = if_kind.into_iter();
+        let iter = if_kind.into_vec();
         self.send_cmd(Command::SetOption(DaemonOption::EnableInterface(
             iter.kinds,
         )))
     }
 
     pub fn disable_interface(&self, if_kind: impl IfKindIterator) -> Result<()> {
-        let iter = if_kind.into_iter();
+        let iter = if_kind.into_vec();
         self.send_cmd(Command::SetOption(DaemonOption::DisableInterface(
             iter.kinds,
         )))
@@ -734,22 +734,22 @@ impl IfKind {
 }
 
 pub trait IfKindIterator {
-    fn into_iter(self) -> IfKindIter;
+    fn into_vec(self) -> IfKindVec;
 }
 
-pub struct IfKindIter {
+pub struct IfKindVec {
     kinds: Vec<IfKind>,
 }
 
 impl IfKindIterator for IfKind {
-    fn into_iter(self) -> IfKindIter {
-        IfKindIter { kinds: vec![self] }
+    fn into_vec(self) -> IfKindVec {
+        IfKindVec { kinds: vec![self] }
     }
 }
 
 impl IfKindIterator for Vec<IfKind> {
-    fn into_iter(self) -> IfKindIter {
-        IfKindIter { kinds: self }
+    fn into_vec(self) -> IfKindVec {
+        IfKindVec { kinds: self }
     }
 }
 
