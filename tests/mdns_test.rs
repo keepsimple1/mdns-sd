@@ -442,6 +442,7 @@ fn test_into_txt_properties() {
     assert_eq!(txt_props.get_property_val_str("key2").unwrap(), "val2");
 }
 
+/// Test enabling an interface using its name, for example "en0".
 #[test]
 fn service_with_named_interface_only() {
     // Create a daemon
@@ -506,6 +507,7 @@ fn service_with_named_interface_only() {
     let if_name = if_addrs[0].name.clone();
 
     // Enable the named interface.
+    println!("Enable interface with name {}", &if_name);
     d.enable_interface(IfKind::Name(if_name)).unwrap();
 
     // Browse again.

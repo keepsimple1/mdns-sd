@@ -293,6 +293,7 @@ impl ServiceDaemon {
         self.send_cmd(Command::SetOption(DaemonOption::ServiceNameLenMax(len_max)))
     }
 
+    /// Include interfaces that match `if_kind` for this service daemon.
     pub fn enable_interface(&self, if_kind: impl IfKindIter) -> Result<()> {
         let if_kind_vec = if_kind.into_vec();
         self.send_cmd(Command::SetOption(DaemonOption::EnableInterface(
@@ -300,6 +301,7 @@ impl ServiceDaemon {
         )))
     }
 
+    /// Ignore/exclude interfaces that match `if_kind` for this daemon.
     pub fn disable_interface(&self, if_kind: impl IfKindIter) -> Result<()> {
         let if_kind_vec = if_kind.into_vec();
         self.send_cmd(Command::SetOption(DaemonOption::DisableInterface(
