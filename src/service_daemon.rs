@@ -38,7 +38,7 @@ use crate::{
         TYPE_TXT,
     },
     error::{Error, Result},
-    service_info::{ifaddr_netmask, split_sub_domain, IfKind, ServiceInfo},
+    service_info::{ifaddr_netmask, split_sub_domain, ServiceInfo},
     Receiver,
 };
 use flume::{bounded, Sender, TrySendError};
@@ -293,12 +293,18 @@ impl ServiceDaemon {
         self.send_cmd(Command::SetOption(DaemonOption::ServiceNameLenMax(len_max)))
     }
 
-    pub fn enable_interface(&self, if_kind: IfKind) -> Result<()> {
-        self.send_cmd(Command::SetOption(DaemonOption::EnableInterface(if_kind)))
+    pub fn enable_interface(&self, if_kind: impl IfKindIterator) -> Result<()> {
+        let iter = if_kind.into_iter();
+        self.send_cmd(Command::SetOption(DaemonOption::EnableInterface(
+            iter.kinds,
+        )))
     }
 
-    pub fn disable_interface(&self, if_kind: IfKind) -> Result<()> {
-        self.send_cmd(Command::SetOption(DaemonOption::DisableInterface(if_kind)))
+    pub fn disable_interface(&self, if_kind: impl IfKindIterator) -> Result<()> {
+        let iter = if_kind.into_iter();
+        self.send_cmd(Command::SetOption(DaemonOption::DisableInterface(
+            iter.kinds,
+        )))
     }
 
     /// The main event loop of the daemon thread
@@ -701,6 +707,52 @@ struct IfSelection {
     selected: bool,
 }
 
+/// Specify kinds of interfaces.
+#[derive(Debug, Clone)]
+pub enum IfKind {
+    All,
+    IPv4,
+    IPv6,
+
+    /// By the interface name, for example "en0"
+    Name(String),
+
+    /// By the interface address, for example "192.168.0.1"
+    Addr(IpAddr),
+}
+
+impl IfKind {
+    /// Checks if `intf` matches with this interface kind.
+    pub fn matches(&self, intf: &Interface) -> bool {
+        match self {
+            IfKind::All => true,
+            IfKind::IPv4 => intf.ip().is_ipv4(),
+            IfKind::IPv6 => intf.ip().is_ipv6(),
+            _ => false,
+        }
+    }
+}
+
+pub trait IfKindIterator {
+    fn into_iter(self) -> IfKindIter;
+}
+
+pub struct IfKindIter {
+    kinds: Vec<IfKind>,
+}
+
+impl IfKindIterator for IfKind {
+    fn into_iter(self) -> IfKindIter {
+        IfKindIter { kinds: vec![self] }
+    }
+}
+
+impl IfKindIterator for Vec<IfKind> {
+    fn into_iter(self) -> IfKindIter {
+        IfKindIter { kinds: self }
+    }
+}
+
 /// A struct holding the state. It was inspired by `zeroconf` package in Python.
 struct Zeroconf {
     /// Local interfaces with sockets to recv/send on these interfaces.
@@ -796,20 +848,24 @@ impl Zeroconf {
         }
     }
 
-    fn enable_interface(&mut self, if_kind: IfKind) {
-        self.if_selections.push(IfSelection {
-            if_kind,
-            selected: true,
-        });
+    fn enable_interface(&mut self, kinds: Vec<IfKind>) {
+        for if_kind in kinds {
+            self.if_selections.push(IfSelection {
+                if_kind,
+                selected: true,
+            });
+        }
 
         self.process_if_selections();
     }
 
-    fn disable_interface(&mut self, if_kind: IfKind) {
-        self.if_selections.push(IfSelection {
-            if_kind,
-            selected: false,
-        });
+    fn disable_interface(&mut self, kinds: Vec<IfKind>) {
+        for if_kind in kinds {
+            self.if_selections.push(IfSelection {
+                if_kind,
+                selected: false,
+            });
+        }
 
         self.process_if_selections();
     }
@@ -1739,8 +1795,8 @@ impl fmt::Display for Command {
 #[derive(Debug)]
 enum DaemonOption {
     ServiceNameLenMax(u8),
-    EnableInterface(IfKind),
-    DisableInterface(IfKind),
+    EnableInterface(Vec<IfKind>),
+    DisableInterface(Vec<IfKind>),
 }
 
 struct DnsCache {

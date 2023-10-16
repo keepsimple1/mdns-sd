@@ -703,31 +703,6 @@ pub(crate) fn ifaddr_netmask(addr: &IfAddr) -> u128 {
     }
 }
 
-/// Specify kinds of interfaces.
-#[derive(Debug, Clone)]
-pub enum IfKind {
-    All,
-    IPv4,
-    IPv6,
-
-    /// By the interface name, for example "en0"
-    Name(String),
-
-    /// By the interface address, for example "192.168.0.1"
-    Addr(IpAddr),
-}
-
-impl IfKind {
-    /// Checks if `intf` matches with this interface kind.
-    pub fn matches(&self, intf: &Interface) -> bool {
-        match self {
-            IfKind::All => true,
-            IfKind::IPv4 => intf.ip().is_ipv4(),
-            IfKind::IPv6 => intf.ip().is_ipv6(),
-            _ => false,
-        }
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::{decode_txt, encode_txt, u8_slice_to_hex, ServiceInfo, TxtProperty};
