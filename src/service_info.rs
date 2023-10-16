@@ -42,6 +42,11 @@ impl ServiceInfo {
     ///
     /// `my_name` is the instance name, without the service type suffix.
     ///
+    /// `host_name` is the "host" in the context of DNS. It is used as the "name"
+    /// in the address records (i.e. TYPE_A and TYPE_AAAA records). It means that
+    /// for the same hostname in the same local network, the service resolves in
+    /// the same addresses. Be sure to check it if you see unexpected addresses resolved.
+    ///
     /// `properties` can be `None` or key/value string pairs, in a type that
     /// implements [`IntoTxtProperties`] trait. It supports:
     /// - `HashMap<String, String>`
