@@ -805,6 +805,8 @@ impl Zeroconf {
             if_kind,
             selected: false,
         });
+
+        self.process_if_selections();
     }
 
     fn notify_monitors(&mut self, event: DaemonEvent) {
@@ -856,6 +858,7 @@ impl Zeroconf {
         key
     }
 
+    /// Apply all selections to the available interfaces.
     fn process_if_selections(&mut self) {
         // By default, we enable all interfaces.
         let interfaces = my_ip_interfaces();

@@ -735,21 +735,7 @@ pub struct IfSelection {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_txt, encode_txt, u8_slice_to_hex, IfKind, ServiceInfo, TxtProperty};
-
-    #[test]
-    fn test_ifkind() {
-        let single_ifkind = IfKind::IPv4;
-        let vec_ifkind = vec![IfKind::IPv6, IfKind::Name("en0".to_string())];
-
-        for item in single_ifkind {
-            println!("{:?}", item);
-        }
-
-        for item in vec_ifkind {
-            println!("{:?}", item);
-        }
-    }
+    use super::{decode_txt, encode_txt, u8_slice_to_hex, ServiceInfo, TxtProperty};
 
     #[test]
     fn test_txt_encode_decode() {
