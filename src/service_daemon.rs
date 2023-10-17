@@ -704,11 +704,6 @@ struct IntfSock {
     sock: Socket,
 }
 
-struct IfSelection {
-    if_kind: IfKind,
-    selected: bool,
-}
-
 /// Specify kinds of interfaces.
 /// This type is used to enable or to disable interfaces in the daemon.
 #[derive(Debug, Clone)]
@@ -729,7 +724,7 @@ pub enum IfKind {
 
 impl IfKind {
     /// Checks if `intf` matches with this interface kind.
-    pub fn matches(&self, intf: &Interface) -> bool {
+    fn matches(&self, intf: &Interface) -> bool {
         match self {
             IfKind::All => true,
             IfKind::IPv4 => intf.ip().is_ipv4(),
@@ -739,6 +734,7 @@ impl IfKind {
     }
 }
 
+/// A trait that converts a type into a Vec of `IfKind`.
 pub trait IfKindIter {
     fn into_vec(self) -> IfKindVec;
 }
@@ -757,6 +753,15 @@ impl IfKindIter for Vec<IfKind> {
     fn into_vec(self) -> IfKindVec {
         IfKindVec { kinds: self }
     }
+}
+
+/// Selection of interfaces.
+struct IfSelection {
+    /// The interfaces to be selected.
+    if_kind: IfKind,
+
+    /// Whether the `if_kind` should be enabled or not.
+    selected: bool,
 }
 
 /// A struct holding the state. It was inspired by `zeroconf` package in Python.
@@ -792,6 +797,7 @@ struct Zeroconf {
     /// Options
     service_name_len_max: u8,
 
+    /// All interface selections called to the daemon.
     if_selections: Vec<IfSelection>,
 
     /// Socket for signaling.
