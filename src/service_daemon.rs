@@ -296,7 +296,7 @@ impl ServiceDaemon {
     /// Include interfaces that match `if_kind` for this service daemon.
     ///
     /// For example:
-    /// ```rust,no_run
+    /// ```ignore
     ///     daemon.enable_interface("en0")?;
     /// ```
     pub fn enable_interface(&self, if_kind: impl IntoIfKindVec) -> Result<()> {
@@ -309,7 +309,7 @@ impl ServiceDaemon {
     /// Ignore/exclude interfaces that match `if_kind` for this daemon.
     ///
     /// For example:
-    /// ```rust,no_run
+    /// ```ignore
     ///     daemon.disable_interface(IfKind::IPv6)?;
     /// ```
     pub fn disable_interface(&self, if_kind: impl IntoIfKindVec) -> Result<()> {
