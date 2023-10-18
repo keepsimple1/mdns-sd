@@ -1,6 +1,7 @@
 use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
-    DaemonEvent, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus,
+    DaemonEvent, IfKind, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo,
+    UnregisterStatus,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -233,7 +234,7 @@ fn service_without_properties_with_alter_net_v4() {
     let first_ip = if_addrs[0].ip();
     let alter_ip = ipv4_alter_net(&if_addrs);
     let host_ip = vec![first_ip, alter_ip];
-    let host_name = "serv-no-prop.";
+    let host_name = "serv-no-prop-v4.";
     let port = 5201;
     let my_service = ServiceInfo::new(
         ty_domain,
@@ -304,7 +305,7 @@ fn service_without_properties_with_alter_net_v6() {
     let first_ip = if_addrs[0].ip();
     let alter_ip = ipv6_alter_net(&if_addrs);
     let host_ip = vec![first_ip, alter_ip];
-    let host_name = "serv-no-prop.";
+    let host_name = "serv-no-prop-v6.";
     let port = 5201;
     let my_service = ServiceInfo::new(
         ty_domain,
@@ -439,6 +440,169 @@ fn test_into_txt_properties() {
     let properties = vec![(String::from("key2"), String::from("val2"))];
     let txt_props = properties.into_txt_properties();
     assert_eq!(txt_props.get_property_val_str("key2").unwrap(), "val2");
+}
+
+/// Test enabling an interface using its name, for example "en0".
+#[test]
+fn service_with_named_interface_only() {
+    // Create a daemon
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+    // First, disable all interfaces.
+    d.disable_interface(IfKind::All).unwrap();
+
+    // Register a service with a name len > 15.
+    let my_ty_domain = "_named_intf_only._udp.local.";
+    let host_name = "my_host.";
+    let host_ipv4 = "";
+    let port = 5202;
+    let my_service = ServiceInfo::new(
+        my_ty_domain,
+        "my_instance",
+        host_name,
+        &host_ipv4,
+        port,
+        None,
+    )
+    .expect("invalid service info")
+    .enable_addr_auto();
+
+    d.register(my_service).unwrap();
+
+    // Browse for a service and verify all addresses are IPv4.
+    let browse_chan = d.browse(my_ty_domain).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+
+    loop {
+        match browse_chan.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    let addrs = info.get_addresses();
+                    resolved = true;
+                    println!(
+                        "Resolved a service of {} addr(s): {:?}",
+                        &info.get_fullname(),
+                        addrs
+                    );
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            },
+            Err(_) => {
+                break;
+            }
+        }
+    }
+
+    assert!(resolved == false);
+
+    // Second, find an interface.
+    let if_addrs: Vec<Interface> = my_ip_interfaces()
+        .into_iter()
+        .filter(|iface| iface.addr.ip().is_ipv4())
+        .collect();
+    let if_name = if_addrs[0].name.clone();
+
+    // Enable the named interface.
+    println!("Enable interface with name {}", &if_name);
+    d.enable_interface(&if_name).unwrap();
+
+    // Browse again.
+    let browse_chan = d.browse(my_ty_domain).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+
+    loop {
+        match browse_chan.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    let addrs = info.get_addresses();
+                    resolved = true;
+                    println!(
+                        "Resolved a service of {} addr(s): {:?}",
+                        &info.get_fullname(),
+                        addrs
+                    );
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            },
+            Err(_) => {
+                break;
+            }
+        }
+    }
+
+    assert!(resolved);
+
+    d.shutdown().unwrap();
+}
+
+#[test]
+fn service_with_ipv4_only() {
+    // Create a daemon
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+    // Disable IPv6, so the daemon is IPv4 only now.
+    d.disable_interface(IfKind::IPv6).unwrap();
+
+    // Register a service with a name len > 15.
+    let service_ipv4_only = "_test_ipv4_only._udp.local.";
+    let host_name = "my_host_ipv4_only.";
+    let host_ipv4 = "";
+    let port = 5201;
+    let my_service = ServiceInfo::new(
+        service_ipv4_only,
+        "my_instance",
+        host_name,
+        &host_ipv4,
+        port,
+        None,
+    )
+    .expect("invalid service info")
+    .enable_addr_auto();
+    let result = d.register(my_service);
+    assert!(result.is_ok());
+
+    // Browse for a service and verify all addresses are IPv4.
+    let browse_chan = d.browse(service_ipv4_only).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+
+    loop {
+        match browse_chan.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    let addrs = info.get_addresses();
+                    resolved = true;
+                    println!(
+                        "Resolved a service of {} addr(s): {:?}",
+                        &info.get_fullname(),
+                        addrs
+                    );
+                    assert!(info.get_addresses().len() > 0);
+                    for addr in info.get_addresses().iter() {
+                        assert!(addr.is_ipv4());
+                    }
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            },
+            Err(_) => {
+                break;
+            }
+        }
+    }
+
+    assert!(resolved);
+    d.shutdown().unwrap();
 }
 
 #[test]

@@ -17,7 +17,7 @@ const DNS_OTHER_TTL: u32 = 4500; // 75 minutes for non-host records (PTR, TXT et
 /// Complete info about a Service Instance.
 ///
 /// We can construct some PTR, one SRV and one TXT record from this info,
-/// as well as A (IPv4 Address) records.
+/// as well as A (IPv4 Address) and AAAA (IPv6 Address) records.
 #[derive(Debug, Clone)]
 pub struct ServiceInfo {
     ty_domain: String,          // <service>.<domain>
@@ -41,6 +41,11 @@ impl ServiceInfo {
     /// "_my-service._udp.local.".
     ///
     /// `my_name` is the instance name, without the service type suffix.
+    ///
+    /// `host_name` is the "host" in the context of DNS. It is used as the "name"
+    /// in the address records (i.e. TYPE_A and TYPE_AAAA records). It means that
+    /// for the same hostname in the same local network, the service resolves in
+    /// the same addresses. Be sure to check it if you see unexpected addresses resolved.
     ///
     /// `properties` can be `None` or key/value string pairs, in a type that
     /// implements [`IntoTxtProperties`] trait. It supports:

@@ -966,13 +966,6 @@ impl DnsIncoming {
 
             // decode RDATA based on the record type.
             let rec: Option<DnsRecordBox> = match ty {
-                TYPE_A => Some(Box::new(DnsAddress::new(
-                    &name,
-                    ty,
-                    class,
-                    ttl,
-                    self.read_ipv4().into(),
-                ))),
                 TYPE_CNAME | TYPE_PTR => Some(Box::new(DnsPointer::new(
                     &name,
                     ty,
@@ -1003,6 +996,13 @@ impl DnsIncoming {
                     ttl,
                     self.read_char_string(),
                     self.read_char_string(),
+                ))),
+                TYPE_A => Some(Box::new(DnsAddress::new(
+                    &name,
+                    ty,
+                    class,
+                    ttl,
+                    self.read_ipv4().into(),
                 ))),
                 TYPE_AAAA => Some(Box::new(DnsAddress::new(
                     &name,
