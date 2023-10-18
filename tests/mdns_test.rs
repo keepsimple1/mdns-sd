@@ -508,7 +508,7 @@ fn service_with_named_interface_only() {
 
     // Enable the named interface.
     println!("Enable interface with name {}", &if_name);
-    d.enable_interface(IfKind::Name(if_name)).unwrap();
+    d.enable_interface(&if_name).unwrap();
 
     // Browse again.
     let browse_chan = d.browse(my_ty_domain).unwrap();

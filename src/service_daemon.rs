@@ -745,6 +745,12 @@ impl From<&str> for IfKind {
     }
 }
 
+impl From<&String> for IfKind {
+    fn from(val: &String) -> IfKind {
+        IfKind::Name(val.to_string())
+    }
+}
+
 /// Still for ergonomic reasons.
 impl From<IpAddr> for IfKind {
     fn from(val: IpAddr) -> IfKind {
