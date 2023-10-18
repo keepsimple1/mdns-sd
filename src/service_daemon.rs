@@ -294,7 +294,7 @@ impl ServiceDaemon {
     }
 
     /// Include interfaces that match `if_kind` for this service daemon.
-    pub fn enable_interface(&self, if_kind: impl IfKindIter) -> Result<()> {
+    pub fn enable_interface(&self, if_kind: impl IntoIfKindVec) -> Result<()> {
         let if_kind_vec = if_kind.into_vec();
         self.send_cmd(Command::SetOption(DaemonOption::EnableInterface(
             if_kind_vec.kinds,
@@ -302,7 +302,7 @@ impl ServiceDaemon {
     }
 
     /// Ignore/exclude interfaces that match `if_kind` for this daemon.
-    pub fn disable_interface(&self, if_kind: impl IfKindIter) -> Result<()> {
+    pub fn disable_interface(&self, if_kind: impl IntoIfKindVec) -> Result<()> {
         let if_kind_vec = if_kind.into_vec();
         self.send_cmd(Command::SetOption(DaemonOption::DisableInterface(
             if_kind_vec.kinds,
@@ -564,7 +564,7 @@ impl ServiceDaemon {
 
             Command::UnregisterResend(packet, ip) => {
                 if let Some(intf_sock) = zc.intf_socks.get(&ip) {
-                    debug!("Send a packet length of {}", packet.len());
+                    debug!("UnregisterResend from {}", &ip);
                     broadcast_on_intf(&packet[..], intf_sock);
                     zc.increase_counter(Counter::UnregisterResend, 1);
                 }
@@ -652,11 +652,10 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
             sock.set_multicast_if_v6(intf.index.unwrap_or(0))
                 .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
 
-            // Test if we can send packets successfully.
-            let multicast_addr = SocketAddrV6::new(GROUP_ADDR_V6, MDNS_PORT, 0, 0).into();
-            let test_packet = DnsOutgoing::new(0).to_packet_data();
-            sock.send_to(&test_packet, &multicast_addr)
-                .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
+            // We are not sending multicast packets to test this socket as there might
+            // be many IPv6 interfaces on a host and could cause such send error:
+            // "No buffer space available (os error 55)".
+
             Ok(sock)
         }
     }
@@ -720,6 +719,9 @@ pub enum IfKind {
 
     /// By the interface name, for example "en0"
     Name(String),
+
+    /// By the address type.
+    Addr(IpAddr),
 }
 
 impl IfKind {
@@ -730,12 +732,28 @@ impl IfKind {
             IfKind::IPv4 => intf.ip().is_ipv4(),
             IfKind::IPv6 => intf.ip().is_ipv6(),
             IfKind::Name(ifname) => ifname == &intf.name,
+            IfKind::Addr(addr) => addr == &intf.ip(),
         }
     }
 }
 
+/// The first use case of specifying an interface was to
+/// use an interface name. Hence adding this for ergonomic reasons.
+impl Into<IfKind> for &str {
+    fn into(self) -> IfKind {
+        IfKind::Name(self.to_string())
+    }
+}
+
+/// Still for ergonomic reasons.
+impl Into<IfKind> for IpAddr {
+    fn into(self) -> IfKind {
+        IfKind::Addr(self)
+    }
+}
+
 /// A trait that converts a type into a Vec of `IfKind`.
-pub trait IfKindIter {
+pub trait IntoIfKindVec {
     fn into_vec(self) -> IfKindVec;
 }
 
@@ -743,15 +761,19 @@ pub struct IfKindVec {
     kinds: Vec<IfKind>,
 }
 
-impl IfKindIter for IfKind {
+impl<T: Into<IfKind>> IntoIfKindVec for T {
     fn into_vec(self) -> IfKindVec {
-        IfKindVec { kinds: vec![self] }
+        let if_kind: IfKind = self.into();
+        IfKindVec {
+            kinds: vec![if_kind],
+        }
     }
 }
 
-impl IfKindIter for Vec<IfKind> {
+impl<T: Into<IfKind>> IntoIfKindVec for Vec<T> {
     fn into_vec(self) -> IfKindVec {
-        IfKindVec { kinds: self }
+        let kinds: Vec<IfKind> = self.into_iter().map(|x| x.into()).collect();
+        IfKindVec { kinds }
     }
 }
 
@@ -1350,8 +1372,7 @@ impl Zeroconf {
         if let Some(records) = self.cache.ptr.get(ty_domain) {
             for record in records.iter() {
                 if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
-                    let info = self.create_service_info_from_cache(ty_domain, &ptr.alias);
-                    let info = match info {
+                    let info = match self.create_service_info_from_cache(ty_domain, &ptr.alias) {
                         Ok(ok) => ok,
                         Err(err) => {
                             error!("Error while creating service info from cache: {}", err);

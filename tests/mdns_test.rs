@@ -553,7 +553,7 @@ fn service_with_ipv4_only() {
 
     // Register a service with a name len > 15.
     let service_ipv4_only = "_test_ipv4_only._udp.local.";
-    let host_name = "my_host.";
+    let host_name = "my_host_ipv4_only.";
     let host_ipv4 = "";
     let port = 5201;
     let my_service = ServiceInfo::new(
