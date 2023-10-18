@@ -294,6 +294,11 @@ impl ServiceDaemon {
     }
 
     /// Include interfaces that match `if_kind` for this service daemon.
+    ///
+    /// For example:
+    /// ```rust,no_run
+    ///     daemon.enable_interface("en0")?;
+    /// ```
     pub fn enable_interface(&self, if_kind: impl IntoIfKindVec) -> Result<()> {
         let if_kind_vec = if_kind.into_vec();
         self.send_cmd(Command::SetOption(DaemonOption::EnableInterface(
@@ -302,6 +307,11 @@ impl ServiceDaemon {
     }
 
     /// Ignore/exclude interfaces that match `if_kind` for this daemon.
+    ///
+    /// For example:
+    /// ```rust,no_run
+    ///     daemon.disable_interface(IfKind::IPv6)?;
+    /// ```
     pub fn disable_interface(&self, if_kind: impl IntoIfKindVec) -> Result<()> {
         let if_kind_vec = if_kind.into_vec();
         self.send_cmd(Command::SetOption(DaemonOption::DisableInterface(
@@ -703,8 +713,9 @@ struct IntfSock {
     sock: Socket,
 }
 
-/// Specify kinds of interfaces.
-/// This type is used to enable or to disable interfaces in the daemon.
+/// Specify kinds of interfaces. It is used to enable or to disable interfaces in the daemon.
+///
+/// Note that for ergonomic reasons, `From<&str>` and `From<IpAddr>` are implemented.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum IfKind {
