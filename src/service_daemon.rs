@@ -988,7 +988,7 @@ impl Zeroconf {
             }
         }
 
-        // Remove the interfaces not selected.
+        // Update `intf_socks` based on the selections.
         for (idx, intf) in interfaces.into_iter().enumerate() {
             let ip_addr = intf.ip();
 
@@ -1008,8 +1008,6 @@ impl Zeroconf {
                 }
             }
         }
-
-        // Add the interfaces as needed.
     }
 
     /// Check for IP changes and update intf_socks as needed.
