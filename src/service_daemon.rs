@@ -720,7 +720,7 @@ pub enum IfKind {
     /// By the interface name, for example "en0"
     Name(String),
 
-    /// By the address type.
+    /// By an IPv4 or IPv6 address.
     Addr(IpAddr),
 }
 
@@ -739,26 +739,27 @@ impl IfKind {
 
 /// The first use case of specifying an interface was to
 /// use an interface name. Hence adding this for ergonomic reasons.
-impl Into<IfKind> for &str {
-    fn into(self) -> IfKind {
-        IfKind::Name(self.to_string())
+impl From<&str> for IfKind {
+    fn from(val: &str) -> IfKind {
+        IfKind::Name(val.to_string())
     }
 }
 
 /// Still for ergonomic reasons.
-impl Into<IfKind> for IpAddr {
-    fn into(self) -> IfKind {
-        IfKind::Addr(self)
+impl From<IpAddr> for IfKind {
+    fn from(val: IpAddr) -> IfKind {
+        IfKind::Addr(val)
     }
+}
+
+/// A list of `IfKind` that can be used to match interfaces.
+pub struct IfKindVec {
+    kinds: Vec<IfKind>,
 }
 
 /// A trait that converts a type into a Vec of `IfKind`.
 pub trait IntoIfKindVec {
     fn into_vec(self) -> IfKindVec;
-}
-
-pub struct IfKindVec {
-    kinds: Vec<IfKind>,
 }
 
 impl<T: Into<IfKind>> IntoIfKindVec for T {
