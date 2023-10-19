@@ -1,3 +1,11 @@
+# Version 0.9.1
+
+There are no breaking changes.
+
+*  support interface selection (#137)
+
+Added two new methods for `ServiceDaemon`: `enable_interface` and `disable_interface`, and some refactoring.
+
 # Version 0.9.0
 
 * Ssupports IPv6 (#130) (Thanks to @izissise)
