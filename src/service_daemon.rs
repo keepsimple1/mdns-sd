@@ -1527,6 +1527,10 @@ impl Zeroconf {
                             name,
                             ServiceEvent::ServiceFound(name.to_string(), dns_ptr.alias.clone()),
                         );
+                        changes.push(InstanceChange {
+                            ty,
+                            name: dns_ptr.alias.clone(),
+                        });
                     }
                 } else {
                     changes.push(InstanceChange {
@@ -1541,7 +1545,7 @@ impl Zeroconf {
         let mut updated_instances = HashSet::new();
         for update in changes {
             match update.ty {
-                TYPE_SRV | TYPE_TXT => {
+                TYPE_PTR | TYPE_SRV | TYPE_TXT => {
                     updated_instances.insert(update.name);
                 }
                 TYPE_A | TYPE_AAAA => {
@@ -2119,12 +2123,130 @@ fn valid_instance_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_instance_name;
+    use super::{
+        broadcast_dns_on_intf, my_ip_interfaces, new_socket_bind, valid_instance_name, IntfSock,
+        ServiceDaemon, ServiceEvent, ServiceInfo,
+    };
+    use crate::dns_parser::{
+        DnsOutgoing, DnsPointer, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE, TYPE_PTR,
+    };
+    use std::time::Duration;
 
     #[test]
     fn test_instance_name() {
         assert_eq!(valid_instance_name("my-laser._printer._tcp.local."), true);
         assert_eq!(valid_instance_name("my-laser.._printer._tcp.local."), true);
         assert_eq!(valid_instance_name("_printer._tcp.local."), false);
+    }
+
+    #[test]
+    fn service_with_temporarily_invalidated_ptr() {
+        // Create a daemon
+        let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+        let service = "_test_inval_ptr._udp.local.";
+        let host_name = "my_host_tmp_invalidated_ptr.";
+        let intfs: Vec<_> = my_ip_interfaces();
+        let intf_ips: Vec<_> = intfs.iter().map(|intf| intf.ip()).collect();
+        let port = 5201;
+        let my_service =
+            ServiceInfo::new(service, "my_instance", host_name, &intf_ips[..], port, None)
+                .expect("invalid service info")
+                .enable_addr_auto();
+        let result = d.register(my_service.clone());
+        assert!(result.is_ok());
+
+        // Browse for a service
+        let browse_chan = d.browse(service).unwrap();
+        let timeout = Duration::from_secs(2);
+        let mut resolved = false;
+
+        while let Ok(event) = browse_chan.recv_timeout(timeout) {
+            match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    resolved = true;
+                    println!("Resolved a service of {}", &info.get_fullname());
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            }
+        }
+
+        assert!(resolved);
+
+        println!("Stopping browse of {}", service);
+        // Pause browsing so restarting will cause a new immediate query.
+        // Unregistering will not work here, it will invalidate all the records.
+        d.stop_browse(service).unwrap();
+
+        // Ensure the search is stopped.
+        // Reduces the chance of receiving an answer adding the ptr back to the
+        // cache causing the later browse to return directly from the cache.
+        // (which invalidates what this test is trying to test for.)
+        let mut stopped = false;
+        while let Ok(event) = browse_chan.recv_timeout(timeout) {
+            match event {
+                ServiceEvent::SearchStopped(_) => {
+                    stopped = true;
+                    println!("Stopped browsing service");
+                    break;
+                }
+                // Other `ServiceResolved` messages may be received
+                // here as they come from different interfaces.
+                // That's fine for this test.
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            }
+        }
+
+        assert!(stopped);
+
+        // Invalidate the ptr from the service to the host.
+        let invalidate_ptr_packet = DnsPointer::new(
+            my_service.get_type(),
+            TYPE_PTR,
+            CLASS_IN,
+            0,
+            my_service.get_fullname().to_string(),
+        );
+
+        let mut packet_buffer = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+        packet_buffer.add_additional_answer(Box::new(invalidate_ptr_packet));
+
+        for intf in intfs {
+            let intf_sock = IntfSock {
+                intf: intf.clone(),
+                sock: new_socket_bind(&intf).unwrap(),
+            };
+            broadcast_dns_on_intf(&packet_buffer, &intf_sock);
+        }
+
+        println!(
+            "Sent PTR record invalidation. Starting second browse for {}",
+            service
+        );
+
+        // Restart the browse to force the sender to re-send the announcements.
+        let browse_chan = d.browse(service).unwrap();
+
+        resolved = false;
+        while let Ok(event) = browse_chan.recv_timeout(timeout) {
+            match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    resolved = true;
+                    println!("Resolved a service of {}", &info.get_fullname());
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            }
+        }
+
+        assert!(resolved);
+        d.shutdown().unwrap();
     }
 }
