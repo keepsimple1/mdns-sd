@@ -1,3 +1,10 @@
+# Version 0.9.2
+
+The release includes a bugfix, thanks to @Mornix !
+
+* fix PTR expiration from preventing later service resolution (#140)
+* updated doc comments for `DnsCache::add_or_update`.
+
 # Version 0.9.1
 
 There are no breaking changes.
