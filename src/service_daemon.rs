@@ -1886,7 +1886,10 @@ impl DnsCache {
             .collect()
     }
 
-    /// Update a DNSRecord if already exists, otherwise insert a new record
+    /// Update a DNSRecord TTL if already exists, otherwise insert a new record.
+    ///
+    /// Returns `None` if `incoming` is invalid / unrecognized, otherwise returns
+    /// (a new record, true) or (existing record with TTL updated, false).
     fn add_or_update(&mut self, incoming: DnsRecordBox) -> Option<(&DnsRecordBox, bool)> {
         let entry_name = incoming.get_name().to_string();
         let record_vec = match incoming.get_type() {

@@ -155,6 +155,7 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
     fn write(&self, packet: &mut DnsOutPacket);
     fn any(&self) -> &dyn Any;
 
+    /// Returns whether `other` record is considered the same except TTL.
     fn matches(&self, other: &dyn DnsRecordExt) -> bool;
 
     fn get_name(&self) -> &str {
