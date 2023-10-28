@@ -908,7 +908,7 @@ impl Zeroconf {
             });
         }
 
-        self.apply_if_selections(my_ip_interfaces());
+        self.apply_intf_selections(my_ip_interfaces());
     }
 
     fn disable_interface(&mut self, kinds: Vec<IfKind>) {
@@ -919,7 +919,7 @@ impl Zeroconf {
             });
         }
 
-        self.apply_if_selections(my_ip_interfaces());
+        self.apply_intf_selections(my_ip_interfaces());
     }
 
     fn notify_monitors(&mut self, event: DaemonEvent) {
@@ -974,8 +974,8 @@ impl Zeroconf {
     /// Apply all selections to `interfaces`.
     ///
     /// For any interface, add it if selected but not bound yet,
-    /// delete it if not selected but already bound.
-    fn apply_if_selections(&mut self, interfaces: Vec<Interface>) {
+    /// delete it if not selected but still bound.
+    fn apply_intf_selections(&mut self, interfaces: Vec<Interface>) {
         // By default, we enable all interfaces.
         let intf_count = interfaces.len();
         let mut intf_selections = vec![true; intf_count];
@@ -1047,7 +1047,7 @@ impl Zeroconf {
         self.intf_socks.retain(|_, v| my_ifaddrs.contains(&v.intf));
 
         // Add newly found interfaces only if in our selections.
-        self.apply_if_selections(my_ifaddrs);
+        self.apply_intf_selections(my_ifaddrs);
     }
 
     fn add_new_interface(&mut self, intf: Interface) {
