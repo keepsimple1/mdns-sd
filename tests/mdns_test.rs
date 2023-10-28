@@ -26,7 +26,10 @@ fn integration_success() {
     let ifaddrs_set: HashSet<_> = my_ip_interfaces().iter().map(|intf| intf.ip()).collect();
     let my_ifaddrs: Vec<_> = ifaddrs_set.into_iter().collect();
     let my_addrs_count = my_ifaddrs.len();
-    println!("My IP {} addr(s): {:?}", my_ifaddrs.len(), &my_ifaddrs);
+    println!("My IP {} addr(s):", my_ifaddrs.len());
+    for item in my_ifaddrs.iter() {
+        println!("{}", &item);
+    }
 
     let host_name = "my_host.";
     let port = 5200;
@@ -71,11 +74,13 @@ fn integration_success() {
                 ServiceEvent::ServiceResolved(info) => {
                     let addrs = info.get_addresses();
                     println!(
-                        "Resolved a new service: {} with {} addr(s): {:?}",
+                        "Resolved a new service: {} with {} addr(s)",
                         info.get_fullname(),
-                        addrs.len(),
-                        addrs
+                        addrs.len()
                     );
+                    for a in addrs.iter() {
+                        println!("{}", a);
+                    }
                     if info.get_fullname().contains(&instance_name) {
                         let mut num = resolve_count_clone.lock().unwrap();
                         *num += 1;
