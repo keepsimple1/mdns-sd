@@ -1128,8 +1128,8 @@ impl DnsIncoming {
                     let pointer = (u16_from_be_slice(&data[offset..]) ^ 0xC000) as usize;
                     if pointer >= offset {
                         return Err(Error::Msg(format!(
-                            "Bad domain name with invalid message compression: pointer {} offset {} self.offset {}, data: {:x?}",
-                            &pointer, &offset, &self.offset, data
+                            "Bad name with invalid message compression: pointer {} offset {} data (so far): {:x?}",
+                            &pointer, &offset, &data[..offset]
                         )));
                     }
 
@@ -1141,8 +1141,10 @@ impl DnsIncoming {
                 }
                 _ => {
                     return Err(Error::Msg(format!(
-                        "Bad domain name with invalid length: 0x{:x} (offset {}), data: {:x?}",
-                        length, offset, data
+                        "Bad name with invalid length: 0x{:x} offset {}, data (so far): {:x?}",
+                        length,
+                        offset,
+                        &data[..offset]
                     )));
                 }
             };
