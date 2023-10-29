@@ -1192,8 +1192,8 @@ mod tests {
         let name_length_offset = 12;
 
         // 0x9 is the length of `name`
-        // 0xB0 has two leading bits `10`, which is invalid.
-        data_with_invalid_name_length[name_length_offset] = 0x9 | 0xB0;
+        // 0x80 (0b1000_0000) has two leading bits `10`, which is invalid.
+        data_with_invalid_name_length[name_length_offset] = 0x9 | 0b1000_0000;
 
         // The original data is fine.
         let incoming = DnsIncoming::new(data);
