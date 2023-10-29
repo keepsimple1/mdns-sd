@@ -5,7 +5,7 @@
 //! [DnsOutPacket] is the encoded packet for [DnsOutgoing].
 
 #[cfg(feature = "logging")]
-use crate::log::{debug, error};
+use crate::log::debug;
 use crate::{Error, Result, ServiceInfo};
 use if_addrs::Interface;
 use std::{
@@ -1077,12 +1077,20 @@ impl DnsIncoming {
         s.to_string()
     }
 
+    /// Reads a domain name at the current location of `self.data`.
+    ///
+    /// See https://datatracker.ietf.org/doc/html/rfc1035#section-3.1 for
+    /// domain name encoding.
     fn read_name(&mut self) -> Result<String> {
         let data = &self.data[..];
         let mut offset = self.offset;
         let mut name = "".to_string();
         let mut at_end = false;
 
+        // From RFC1035:
+        // "...Domain names in messages are expressed in terms of a sequence of labels.
+        // Each label is represented as a one octet length field followed by that
+        // number of octets."
         loop {
             if offset >= data.len() {
                 return Err(Error::Msg(format!(
@@ -1093,6 +1101,10 @@ impl DnsIncoming {
                 )));
             }
             let length = data[offset];
+
+            // From RFC1035:
+            // "...Since every domain name ends with the null label of
+            // the root, a domain name is terminated by a length byte of zero."
             if length == 0 {
                 if !at_end {
                     self.offset = offset + 1;
@@ -1100,8 +1112,8 @@ impl DnsIncoming {
                 break; // The end of the name
             }
 
+            // Check the first 2 bits for possible "Message compression".
             match length & 0xC0 {
-                // Check the first 2 bits
                 0x00 => {
                     // regular utf8 string with length
                     offset += 1;
@@ -1111,13 +1123,14 @@ impl DnsIncoming {
                     offset += length as usize;
                 }
                 0xC0 => {
+                    // Message compression.
+                    // See https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.4
                     let pointer = (u16_from_be_slice(&data[offset..]) ^ 0xC000) as usize;
                     if pointer >= offset {
-                        println!("data: {:x?}", data);
-                        panic!(
-                            "Bad name: pointer {} offset {} self.offset {}",
-                            &pointer, &offset, &self.offset
-                        );
+                        return Err(Error::Msg(format!(
+                            "Bad name with invalid message compression: pointer {} offset {} data (so far): {:x?}",
+                            &pointer, &offset, &data[..offset]
+                        )));
                     }
 
                     if !at_end {
@@ -1127,11 +1140,12 @@ impl DnsIncoming {
                     offset = pointer;
                 }
                 _ => {
-                    error!("self offset {}, data: {:x?}", &self.offset, data);
-                    panic!(
-                        "Bad domain name at length byte 0x{:x} (offset {})",
-                        length, offset
-                    );
+                    return Err(Error::Msg(format!(
+                        "Bad name with invalid length: 0x{:x} offset {}, data (so far): {:x?}",
+                        length,
+                        offset,
+                        &data[..offset]
+                    )));
                 }
             };
         }
@@ -1162,4 +1176,36 @@ fn u32_from_be_slice(s: &[u8]) -> u32 {
 /// by a certain percentage.
 fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
     created + (ttl * percent * 10) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DnsIncoming, DnsOutgoing, FLAGS_QR_QUERY, TYPE_PTR};
+
+    #[test]
+    fn test_read_name_invalid_length() {
+        let name = "test_read";
+        let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
+        out.add_question(name, TYPE_PTR);
+        let data = out.to_packet_data();
+
+        // construct invalid data.
+        let mut data_with_invalid_name_length = data.clone();
+        let name_length_offset = 12;
+
+        // 0x9 is the length of `name`
+        // 0x80 (0b1000_0000) has two leading bits `10`, which is invalid.
+        data_with_invalid_name_length[name_length_offset] = 0x9 | 0b1000_0000;
+
+        // The original data is fine.
+        let incoming = DnsIncoming::new(data);
+        assert!(incoming.is_ok());
+
+        // The data with invalid name length is not fine.
+        let invalid = DnsIncoming::new(data_with_invalid_name_length);
+        assert!(invalid.is_err());
+        if let Err(e) = invalid {
+            println!("error: {}", e);
+        }
+    }
 }
