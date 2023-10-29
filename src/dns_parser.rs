@@ -5,7 +5,7 @@
 //! [DnsOutPacket] is the encoded packet for [DnsOutgoing].
 
 #[cfg(feature = "logging")]
-use crate::log::{debug, error};
+use crate::log::debug;
 use crate::{Error, Result, ServiceInfo};
 use if_addrs::Interface;
 use std::{
@@ -1077,12 +1077,18 @@ impl DnsIncoming {
         s.to_string()
     }
 
+    /// Reads a domain name at the current location of `self.data`
+    /// See https://datatracker.ietf.org/doc/html/rfc1035#section-3.1 for
+    /// domain name encoding.
     fn read_name(&mut self) -> Result<String> {
         let data = &self.data[..];
         let mut offset = self.offset;
         let mut name = "".to_string();
         let mut at_end = false;
 
+        // Domain names in messages are expressed in terms of a sequence of labels.
+        // Each label is represented as a one octet length field followed by that
+        // number of octets.
         loop {
             if offset >= data.len() {
                 return Err(Error::Msg(format!(
@@ -1093,6 +1099,9 @@ impl DnsIncoming {
                 )));
             }
             let length = data[offset];
+
+            // Since every domain name ends with the null label of
+            // the root, a domain name is terminated by a length byte of zero.
             if length == 0 {
                 if !at_end {
                     self.offset = offset + 1;
@@ -1100,8 +1109,8 @@ impl DnsIncoming {
                 break; // The end of the name
             }
 
+            // Check the first 2 bits for possible "Message compression".
             match length & 0xC0 {
-                // Check the first 2 bits
                 0x00 => {
                     // regular utf8 string with length
                     offset += 1;
@@ -1111,13 +1120,14 @@ impl DnsIncoming {
                     offset += length as usize;
                 }
                 0xC0 => {
+                    // Message compression.
+                    // See https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.4
                     let pointer = (u16_from_be_slice(&data[offset..]) ^ 0xC000) as usize;
                     if pointer >= offset {
-                        println!("data: {:x?}", data);
-                        panic!(
-                            "Bad name: pointer {} offset {} self.offset {}",
-                            &pointer, &offset, &self.offset
-                        );
+                        return Err(Error::Msg(format!(
+                            "Bad domain name with invalid message compression: pointer {} offset {} self.offset {}, data: {:x?}",
+                            &pointer, &offset, &self.offset, data
+                        )));
                     }
 
                     if !at_end {
@@ -1127,11 +1137,10 @@ impl DnsIncoming {
                     offset = pointer;
                 }
                 _ => {
-                    error!("self offset {}, data: {:x?}", &self.offset, data);
-                    panic!(
-                        "Bad domain name at length byte 0x{:x} (offset {})",
-                        length, offset
-                    );
+                    return Err(Error::Msg(format!(
+                        "Bad domain name with invalid length: 0x{:x} (offset {}), data: {:x?}",
+                        length, offset, data
+                    )));
                 }
             };
         }
