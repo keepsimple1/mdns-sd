@@ -1428,6 +1428,17 @@ impl Zeroconf {
 
         let mut info = ServiceInfo::new(ty_domain, &my_name, "", (), 0, None)?;
 
+        if let Some(subtype) = self.cache.subtype.get(fullname) {
+            debug!(
+                "ty_domain: {} found subtype {} for instance: {}",
+                ty_domain, subtype, fullname
+            );
+            if info.get_subtype().is_none() {
+                // Even when querying the parent domain, we include the subtype info.
+                info.set_subtype(subtype.clone());
+            }
+        }
+
         // resolve SRV record
         if let Some(records) = self.cache.srv.get(fullname) {
             if let Some(answer) = records.get(0) {
@@ -1855,6 +1866,9 @@ struct DnsCache {
     srv: HashMap<String, Vec<DnsRecordBox>>,
     txt: HashMap<String, Vec<DnsRecordBox>>,
     addr: HashMap<String, Vec<DnsRecordBox>>,
+
+    /// A reverse lookup table from "instance fullname" to "subtype PTR name"
+    subtype: HashMap<String, String>,
 }
 
 impl DnsCache {
@@ -1864,6 +1878,7 @@ impl DnsCache {
             srv: HashMap::new(),
             txt: HashMap::new(),
             addr: HashMap::new(),
+            subtype: HashMap::new(),
         }
     }
 
@@ -1890,6 +1905,18 @@ impl DnsCache {
     /// (a new record, true) or (existing record with TTL updated, false).
     fn add_or_update(&mut self, incoming: DnsRecordBox) -> Option<(&DnsRecordBox, bool)> {
         let entry_name = incoming.get_name().to_string();
+
+        if incoming.get_type() == TYPE_PTR {
+            let (_, subtype_opt) = split_sub_domain(&entry_name);
+            if let Some(subtype) = subtype_opt {
+                if let Some(ptr) = incoming.any().downcast_ref::<DnsPointer>() {
+                    if !self.subtype.contains_key(&ptr.alias) {
+                        self.subtype.insert(ptr.alias.clone(), subtype.to_string());
+                    }
+                }
+            }
+        }
+
         let record_vec = match incoming.get_type() {
             TYPE_PTR => self.ptr.entry(entry_name).or_default(),
             TYPE_SRV => self.srv.entry(entry_name).or_default(),

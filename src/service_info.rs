@@ -295,6 +295,10 @@ impl ServiceInfo {
             false
         }
     }
+
+    pub(crate) fn set_subtype(&mut self, subtype: String) {
+        self.sub_domain = Some(subtype);
+    }
 }
 
 /// This trait allows for parsing an input into a set of one or multiple [`Ipv4Addr`].

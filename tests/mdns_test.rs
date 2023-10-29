@@ -760,8 +760,13 @@ fn subtype() {
             match browse_chan.recv_timeout(timeout) {
                 Ok(event) => match event {
                     ServiceEvent::ServiceResolved(info) => {
-                        println!("Resolved a service of {}", &info.get_fullname());
+                        println!(
+                            "Resolved a service of {} subdomain {:?}",
+                            &info.get_fullname(),
+                            info.get_subtype()
+                        );
                         assert_eq!(fullname.as_str(), info.get_fullname());
+                        assert_eq!(subtype_domain, info.get_subtype().as_ref().unwrap());
                         break;
                     }
                     e => {
