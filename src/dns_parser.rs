@@ -1077,7 +1077,8 @@ impl DnsIncoming {
         s.to_string()
     }
 
-    /// Reads a domain name at the current location of `self.data`
+    /// Reads a domain name at the current location of `self.data`.
+    ///
     /// See https://datatracker.ietf.org/doc/html/rfc1035#section-3.1 for
     /// domain name encoding.
     fn read_name(&mut self) -> Result<String> {
@@ -1086,9 +1087,10 @@ impl DnsIncoming {
         let mut name = "".to_string();
         let mut at_end = false;
 
-        // Domain names in messages are expressed in terms of a sequence of labels.
+        // From RFC1035:
+        // "...Domain names in messages are expressed in terms of a sequence of labels.
         // Each label is represented as a one octet length field followed by that
-        // number of octets.
+        // number of octets."
         loop {
             if offset >= data.len() {
                 return Err(Error::Msg(format!(
@@ -1100,8 +1102,9 @@ impl DnsIncoming {
             }
             let length = data[offset];
 
-            // Since every domain name ends with the null label of
-            // the root, a domain name is terminated by a length byte of zero.
+            // From RFC1035:
+            // "...Since every domain name ends with the null label of
+            // the root, a domain name is terminated by a length byte of zero."
             if length == 0 {
                 if !at_end {
                     self.offset = offset + 1;
