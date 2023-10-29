@@ -1175,3 +1175,35 @@ fn u32_from_be_slice(s: &[u8]) -> u32 {
 fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
     created + (ttl * percent * 10) as u64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{DnsIncoming, DnsOutgoing, FLAGS_QR_QUERY, TYPE_PTR};
+
+    #[test]
+    fn test_read_name_invalid_length() {
+        let name = "test_read";
+        let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
+        out.add_question(name, TYPE_PTR);
+        let data = out.to_packet_data();
+
+        // construct invalid data.
+        let mut data_with_invalid_name_length = data.clone();
+        let name_length_offset = 12;
+
+        // 0x9 is the length of `name`
+        // 0xB0 has two leading bits `10`, which is invalid.
+        data_with_invalid_name_length[name_length_offset] = 0x9 | 0xB0;
+
+        // The original data is fine.
+        let incoming = DnsIncoming::new(data);
+        assert!(incoming.is_ok());
+
+        // The data with invalid name length is not fine.
+        let invalid = DnsIncoming::new(data_with_invalid_name_length);
+        assert!(invalid.is_err());
+        if let Err(e) = invalid {
+            println!("error: {}", e);
+        }
+    }
+}
