@@ -21,7 +21,11 @@ const DNS_OTHER_TTL: u32 = 4500; // 75 minutes for non-host records (PTR, TXT et
 #[derive(Debug, Clone)]
 pub struct ServiceInfo {
     ty_domain: String,          // <service>.<domain>
+
+    /// See RFC6763 section 7.1 about "Subtypes":
+    /// https://datatracker.ietf.org/doc/html/rfc6763#section-7.1
     sub_domain: Option<String>, // <subservice>._sub.<service>.<domain>
+
     fullname: String,           // <instance>.<service>.<domain>
     server: String,             // fully qualified name for service host
     addresses: HashSet<IpAddr>,

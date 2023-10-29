@@ -1428,13 +1428,13 @@ impl Zeroconf {
 
         let mut info = ServiceInfo::new(ty_domain, &my_name, "", (), 0, None)?;
 
+        // Be sure setting `subtype` if available even when querying for the parent domain.
         if let Some(subtype) = self.cache.subtype.get(fullname) {
             debug!(
                 "ty_domain: {} found subtype {} for instance: {}",
                 ty_domain, subtype, fullname
             );
             if info.get_subtype().is_none() {
-                // Even when querying the parent domain, we include the subtype info.
                 info.set_subtype(subtype.clone());
             }
         }
@@ -1906,6 +1906,8 @@ impl DnsCache {
     fn add_or_update(&mut self, incoming: DnsRecordBox) -> Option<(&DnsRecordBox, bool)> {
         let entry_name = incoming.get_name().to_string();
 
+        // If it is PTR with subtype, store a mapping from the instance fullname
+        // to the subtype in this cache.
         if incoming.get_type() == TYPE_PTR {
             let (_, subtype_opt) = split_sub_domain(&entry_name);
             if let Some(subtype) = subtype_opt {
