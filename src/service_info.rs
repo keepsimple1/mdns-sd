@@ -20,10 +20,14 @@ const DNS_OTHER_TTL: u32 = 4500; // 75 minutes for non-host records (PTR, TXT et
 /// as well as A (IPv4 Address) and AAAA (IPv6 Address) records.
 #[derive(Debug, Clone)]
 pub struct ServiceInfo {
-    ty_domain: String,          // <service>.<domain>
+    ty_domain: String, // <service>.<domain>
+
+    /// See RFC6763 section 7.1 about "Subtypes":
+    /// https://datatracker.ietf.org/doc/html/rfc6763#section-7.1
     sub_domain: Option<String>, // <subservice>._sub.<service>.<domain>
-    fullname: String,           // <instance>.<service>.<domain>
-    server: String,             // fully qualified name for service host
+
+    fullname: String, // <instance>.<service>.<domain>
+    server: String,   // fully qualified name for service host
     addresses: HashSet<IpAddr>,
     port: u16,
     host_ttl: u32,  // used for SRV and Address records
@@ -294,6 +298,10 @@ impl ServiceInfo {
         } else {
             false
         }
+    }
+
+    pub(crate) fn set_subtype(&mut self, subtype: String) {
+        self.sub_domain = Some(subtype);
     }
 }
 
