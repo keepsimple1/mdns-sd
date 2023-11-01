@@ -1,3 +1,13 @@
+# Version 0.9.3
+
+This is a bugfix release.
+
+* apply interface selections when IP addresses change (#142)
+* Remove un-necessary panic (#144)
+* Always include subtype info if exists (#146)
+
+p.s. Happy Halloween!
+
 # Version 0.9.2
 
 The release includes a bugfix, thanks to @Mornix !
