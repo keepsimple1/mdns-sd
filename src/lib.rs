@@ -131,7 +131,7 @@ mod service_info;
 
 pub use error::{Error, Result};
 pub use service_daemon::{
-    DaemonEvent, IfKind, Metrics, ServiceDaemon, ServiceEvent, UnregisterStatus,
+    DaemonEvent, DaemonStatus, IfKind, Metrics, ServiceDaemon, ServiceEvent, UnregisterStatus,
     SERVICE_NAME_LEN_MAX_DEFAULT,
 };
 pub use service_info::{AsIpAddrs, IntoTxtProperties, ServiceInfo, TxtProperties, TxtProperty};
