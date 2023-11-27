@@ -267,7 +267,7 @@ impl ServiceDaemon {
         Ok(resp_r)
     }
 
-    /// Shuts down the daemon thread.
+    /// Shuts down the daemon thread and returns a channel to receive the status.
     ///
     /// When an error is returned, the caller should retry only when
     /// the error is `Error::Again`, otherwise should log and move on.
