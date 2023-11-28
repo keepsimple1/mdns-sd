@@ -1,6 +1,6 @@
 use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
-    DaemonEvent, IfKind, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo,
+    DaemonEvent, DaemonStatus, IfKind, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo,
     UnregisterStatus,
 };
 use std::collections::{HashMap, HashSet};
@@ -1028,4 +1028,45 @@ fn ipv6_alter_net(if_addrs: &[Interface]) -> IpAddr {
         }
     }
     Ipv6Addr::new(net_max as u16 + 1, 1, 1, 1, 1, 1, 1, 1).into()
+}
+
+#[test]
+fn test_shutdown() {
+    let mdns = ServiceDaemon::new().unwrap();
+
+    // Check the status.
+    let receiver = mdns.status().unwrap();
+    let status = receiver.recv().unwrap();
+    assert!(matches!(status, DaemonStatus::Running));
+
+    // Shutdown the daemon immediately.
+    let receiver = mdns.shutdown().unwrap();
+    let status = receiver.recv().unwrap();
+    println!("daemon status: {:?}", status);
+
+    // Try to register and it should fail.
+    let service_type = "_mdns-sd-my-test._udp.local.";
+    let instance_name = "my_instance";
+    let ip = "192.168.1.12";
+    let host_name = "192.168.1.12.local.";
+    let port = 5200;
+    let properties = [("property_1", "test"), ("property_2", "1234")];
+
+    let my_service = ServiceInfo::new(
+        service_type,
+        instance_name,
+        host_name,
+        ip,
+        port,
+        &properties[..],
+    )
+    .unwrap();
+
+    let result = mdns.register(my_service);
+    assert!(result.is_err());
+
+    // Check the status again.
+    let receiver = mdns.status().unwrap();
+    let status = receiver.recv().unwrap();
+    assert!(matches!(status, DaemonStatus::Shutdown));
 }

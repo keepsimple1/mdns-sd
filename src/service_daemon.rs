@@ -82,6 +82,17 @@ pub enum UnregisterStatus {
     NotFound,
 }
 
+/// Status code for the service daemon.
+#[derive(Debug, PartialEq, Clone)]
+#[non_exhaustive]
+pub enum DaemonStatus {
+    /// The daemon is running as normal.
+    Running,
+
+    /// The daemon has been shutdown.
+    Shutdown,
+}
+
 /// Different counters included in the metrics.
 /// Currently all counters are for outgoing packets.
 #[derive(Hash, Eq, PartialEq, Clone)]
@@ -158,7 +169,7 @@ impl ServiceDaemon {
         // Spawn the daemon thread
         thread::Builder::new()
             .name("mDNS_daemon".to_string())
-            .spawn(move || Self::run(zc, receiver))
+            .spawn(move || Self::daemon_thread(zc, receiver))
             .map_err(|e| e_fmt!("thread builder failed to spawn: {}", e))?;
 
         Ok(Self {
@@ -256,12 +267,33 @@ impl ServiceDaemon {
         Ok(resp_r)
     }
 
-    /// Shuts down the daemon thread.
+    /// Shuts down the daemon thread and returns a channel to receive the status.
     ///
     /// When an error is returned, the caller should retry only when
     /// the error is `Error::Again`, otherwise should log and move on.
-    pub fn shutdown(&self) -> Result<()> {
-        self.send_cmd(Command::Exit)
+    pub fn shutdown(&self) -> Result<Receiver<DaemonStatus>> {
+        let (resp_s, resp_r) = bounded(1);
+        self.send_cmd(Command::Exit(resp_s))?;
+        Ok(resp_r)
+    }
+
+    /// Returns the status of the daemon.
+    ///
+    /// When an error is returned, the caller should retry only when
+    /// the error is `Error::Again`, otherwise should consider the daemon
+    /// stopped working and move on.
+    pub fn status(&self) -> Result<Receiver<DaemonStatus>> {
+        let (resp_s, resp_r) = bounded(1);
+
+        if self.sender.is_disconnected() {
+            resp_s
+                .send(DaemonStatus::Shutdown)
+                .map_err(|e| e_fmt!("failed to send daemon status to the client: {}", e))?;
+        } else {
+            self.send_cmd(Command::GetStatus(resp_s))?;
+        }
+
+        Ok(resp_r)
     }
 
     /// Returns a channel receiver for the metrics, e.g. input/output counters.
@@ -319,6 +351,23 @@ impl ServiceDaemon {
         )))
     }
 
+    fn daemon_thread(zc: Zeroconf, receiver: Receiver<Command>) {
+        if let Some(cmd) = Self::run(zc, receiver) {
+            match cmd {
+                Command::Exit(resp_s) => {
+                    // It is guaranteed that the receiver already dropped,
+                    // i.e. the daemon command channel closed.
+                    if let Err(e) = resp_s.send(DaemonStatus::Shutdown) {
+                        error!("exit: failed to send response of shutdown: {}", e);
+                    }
+                }
+                _ => {
+                    error!("Unexpected command: {:?}", cmd);
+                }
+            }
+        }
+    }
+
     /// The main event loop of the daemon thread
     ///
     /// In each round, it will:
@@ -327,7 +376,7 @@ impl ServiceDaemon {
     /// 3. try_recv on its channel and execute commands.
     /// 4. announce its registered services.
     /// 5. process retransmissions if any.
-    fn run(mut zc: Zeroconf, receiver: Receiver<Command>) {
+    fn run(mut zc: Zeroconf, receiver: Receiver<Command>) -> Option<Command> {
         // Add the daemon's signal socket to the poller.
         let signal_event_key = 7;
         if let Err(e) = zc
@@ -335,7 +384,7 @@ impl ServiceDaemon {
             .add(&zc.signal_sock, polling::Event::readable(signal_event_key))
         {
             error!("failed to add signal socket to the poller: {}", e);
-            return;
+            return None;
         }
 
         // Add mDNS sockets to the poller.
@@ -343,7 +392,7 @@ impl ServiceDaemon {
             let key = Zeroconf::add_poll_impl(&mut zc.poll_ids, &mut zc.poll_id_count, *ip);
             if let Err(e) = zc.poller.add(&if_sock.sock, polling::Event::readable(key)) {
                 error!("add socket of {:?} to poller: {}", ip, e);
-                return;
+                return None;
             }
         }
 
@@ -430,18 +479,12 @@ impl ServiceDaemon {
             zc.query_missing_srv();
 
             // process commands from the command channel
-            let mut should_exit = false;
             while let Ok(command) = receiver.try_recv() {
-                if let Command::Exit = command {
-                    should_exit = true;
-                    break;
+                if matches!(command, Command::Exit(_)) {
+                    zc.status = DaemonStatus::Shutdown;
+                    return Some(command);
                 }
                 Self::exec_command(&mut zc, command, false);
-            }
-
-            if should_exit {
-                debug!("Exit from daemon");
-                break;
             }
 
             // check for repeated commands and run them if their time is up.
@@ -608,6 +651,11 @@ impl ServiceDaemon {
             Command::GetMetrics(resp_s) => match resp_s.send(zc.counters.clone()) {
                 Ok(()) => debug!("Sent metrics to the client"),
                 Err(e) => error!("Failed to send metrics: {}", e),
+            },
+
+            Command::GetStatus(resp_s) => match resp_s.send(zc.status.clone()) {
+                Ok(()) => debug!("Sent status to the client"),
+                Err(e) => error!("Failed to send status: {}", e),
             },
 
             Command::Monitor(resp_s) => {
@@ -844,6 +892,8 @@ struct Zeroconf {
     signal_sock: UdpSocket,
 
     timers: Vec<u64>,
+
+    status: DaemonStatus,
 }
 
 impl Zeroconf {
@@ -874,6 +924,8 @@ impl Zeroconf {
         let timers = vec![];
         let if_selections = vec![];
 
+        let status = DaemonStatus::Running;
+
         Ok(Self {
             intf_socks,
             poll_ids: HashMap::new(),
@@ -889,6 +941,7 @@ impl Zeroconf {
             if_selections,
             signal_sock,
             timers,
+            status,
         })
     }
 
@@ -1829,19 +1882,23 @@ enum Command {
     /// Read the current values of the counters
     GetMetrics(Sender<Metrics>),
 
+    /// Get the current status of the daemon.
+    GetStatus(Sender<DaemonStatus>),
+
     /// Monitor noticable events in the daemon.
     Monitor(Sender<DaemonEvent>),
 
     SetOption(DaemonOption),
 
-    Exit,
+    Exit(Sender<DaemonStatus>),
 }
 
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Command::Browse(_, _, _) => write!(f, "Command Browse"),
-            Command::Exit => write!(f, "Command Exit"),
+            Command::Exit(_) => write!(f, "Command Exit"),
+            Command::GetStatus(_) => write!(f, "Command GetStatus"),
             Command::GetMetrics(_) => write!(f, "Command GetMetrics"),
             Command::Monitor(_) => write!(f, "Command Monitor"),
             Command::Register(_) => write!(f, "Command Register"),
