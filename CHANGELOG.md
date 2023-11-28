@@ -1,3 +1,15 @@
+# Version 0.10.0 (2023-11-28)
+
+## Breaking changes
+
+* `ServiceDaemon::shutdown()` return type changed from `Result<()>` to `Result<Receiver<DaemonStatus>>` (#149)
+
+## Other changes
+
+* Related to the breaking change, a client can receive `DaemonStatus` to be sure the daemon is shutdown.
+* A new enum `DaemonStatus` and a new API `ServiceDaemon::status()` are introduced.
+* Updated CI in GitHub Actions: replace `actions-rs` with `dtolnay/rust-toolchain`.
+
 # Version 0.9.3
 
 This is a bugfix release.
