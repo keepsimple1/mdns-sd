@@ -18,14 +18,8 @@ jobs:
       matrix:
         os: [ubuntu-20.04, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v2
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: 1.60.0
-          override: true
-          components: rustfmt, clippy
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.60.0
       - name: Run rustfmt and fail if any warnings
         run: cargo fmt -- --check
       - name: Build
