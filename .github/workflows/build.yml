@@ -20,6 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.60.0
+        with:
+          components: rustfmt, clippy
       - name: Run rustfmt and fail if any warnings
         run: cargo fmt -- --check
       - name: Build
