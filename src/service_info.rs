@@ -23,7 +23,7 @@ pub struct ServiceInfo {
     ty_domain: String, // <service>.<domain>
 
     /// See RFC6763 section 7.1 about "Subtypes":
-    /// https://datatracker.ietf.org/doc/html/rfc6763#section-7.1
+    /// <https://datatracker.ietf.org/doc/html/rfc6763#section-7.1>
     sub_domain: Option<String>, // <subservice>._sub.<service>.<domain>
 
     fullname: String, // <instance>.<service>.<domain>
