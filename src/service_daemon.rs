@@ -378,7 +378,7 @@ impl ServiceDaemon {
     /// 5. process retransmissions if any.
     fn run(mut zc: Zeroconf, receiver: Receiver<Command>) -> Option<Command> {
         // Add the daemon's signal socket to the poller.
-        let signal_event_key = 7;
+        let signal_event_key = usize::MAX - 1; // avoid to overlap with zc.poll_ids
         if let Err(e) = zc
             .poller
             .add(&zc.signal_sock, polling::Event::readable(signal_event_key))
@@ -428,6 +428,7 @@ impl ServiceDaemon {
             match zc.poller.wait(&mut events, timeout) {
                 Ok(_) => {
                     for ev in events.iter() {
+                        debug!("event received with key {}", ev.key);
                         if ev.key == signal_event_key {
                             // Drain signals as we will drain commands as well.
                             zc.signal_sock_drain();
