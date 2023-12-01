@@ -429,6 +429,8 @@ impl ServiceDaemon {
                 Ok(_) => {
                     for ev in events.iter() {
                         if ev.key == signal_event_key {
+                            debug!("signal socket event received with key {}", ev.key);
+
                             // Drain signals as we will drain commands as well.
                             zc.signal_sock_drain();
 
