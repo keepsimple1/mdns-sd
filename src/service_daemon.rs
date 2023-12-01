@@ -428,9 +428,8 @@ impl ServiceDaemon {
             match zc.poller.wait(&mut events, timeout) {
                 Ok(_) => {
                     for ev in events.iter() {
+                        debug!("event received with key {}", ev.key);
                         if ev.key == signal_event_key {
-                            debug!("signal socket event received with key {}", ev.key);
-
                             // Drain signals as we will drain commands as well.
                             zc.signal_sock_drain();
 
