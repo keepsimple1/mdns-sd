@@ -1,3 +1,12 @@
+# Version 0.10.1 (2023-12-2)
+
+This is a bug fix release.
+
+## Changes
+
+* update flume to 0.11 (#152)
+* bugfix: signal event key is possible to overlap with socket poll ids (#153)
+
 # Version 0.10.0 (2023-11-28)
 
 ## Breaking changes
