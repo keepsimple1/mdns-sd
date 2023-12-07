@@ -2173,6 +2173,11 @@ fn broadcast_dns_on_intf(out: &DnsOutgoing, intf: &IntfSock) -> Vec<u8> {
 
 /// Sends an outgoing broadcast packet, and returns the packet bytes.
 fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock) -> &'a [u8] {
+    if packet.len() > MAX_MSG_ABSOLUTE {
+        error!("Drop over-sized packet ({})", packet.len());
+        return &[];
+    }
+
     let sock: SocketAddr = match intf.intf.addr {
         if_addrs::IfAddr::V4(_) => SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into(),
         if_addrs::IfAddr::V6(_) => {
@@ -2182,21 +2187,17 @@ fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock) -> &'a [u8] {
         }
     };
 
-    if packet.len() > MAX_MSG_ABSOLUTE {
-        error!("Drop over-sized packet ({})", packet.len());
-        return &[];
-    }
-
-    send_packet(packet, &SockAddr::from(sock), intf);
+    send_packet(packet, sock, intf);
     packet
 }
 
 /// Sends out `packet` to `addr` on the socket in `intf_sock`.
-fn send_packet(packet: &[u8], addr: &SockAddr, intf_sock: &IntfSock) {
-    match intf_sock.sock.send_to(packet, addr) {
+fn send_packet(packet: &[u8], addr: SocketAddr, intf_sock: &IntfSock) {
+    let sockaddr = SockAddr::from(addr);
+    match intf_sock.sock.send_to(packet, &sockaddr) {
         Ok(sz) => debug!("sent out {} bytes on interface {:?}", sz, &intf_sock.intf),
         Err(e) => error!(
-            "send to {:?} via interface {:?} failed: {}",
+            "Failed to send to {} via {:?}: {}",
             addr, &intf_sock.intf, e
         ),
     }
@@ -2213,12 +2214,19 @@ fn valid_instance_name(name: &str) -> bool {
 mod tests {
     use super::{
         broadcast_dns_on_intf, my_ip_interfaces, new_socket_bind, valid_instance_name, IntfSock,
-        ServiceDaemon, ServiceEvent, ServiceInfo,
+        ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4, MDNS_PORT,
     };
     use crate::dns_parser::{
         DnsOutgoing, DnsPointer, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE, TYPE_PTR,
     };
-    use std::time::Duration;
+    use std::{net::SocketAddr, net::SocketAddrV4, time::Duration};
+
+    #[test]
+    fn test_socketaddr_print() {
+        let addr: SocketAddr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
+        let print = format!("{}", addr);
+        assert_eq!(print, "224.0.0.251:5353");
+    }
 
     #[test]
     fn test_instance_name() {
