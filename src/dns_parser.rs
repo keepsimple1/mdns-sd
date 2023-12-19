@@ -103,10 +103,6 @@ impl DnsRecord {
         }
     }
 
-    pub(crate) fn get_created(&self) -> u64 {
-        self.created
-    }
-
     pub(crate) fn get_expire_time(&self) -> u64 {
         self.expires
     }

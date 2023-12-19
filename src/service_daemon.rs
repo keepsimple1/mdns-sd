@@ -73,6 +73,8 @@ const GROUP_ADDR_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const GROUP_ADDR_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
 const LOOPBACK_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
+const RESOLVE_WAIT_IN_MILLIS: u64 = 500;
+
 /// Response status code for the service `unregister` call.
 #[derive(Debug)]
 pub enum UnregisterStatus {
@@ -475,10 +477,6 @@ impl ServiceDaemon {
                 }
             }
 
-            // Send out additional queries for unresolved instances, where
-            // the early responses did not have SRV records.
-            zc.query_missing_srv();
-
             // process commands from the command channel
             while let Ok(command) = receiver.try_recv() {
                 if matches!(command, Command::Exit(_)) {
@@ -649,6 +647,19 @@ impl ServiceDaemon {
                 }
             },
 
+            Command::Resolve(instance, try_count) => {
+                zc.query_missing_srv(&instance);
+                if try_count < 1 {
+                    // Only repeat 1 time at most. Note that if the curret try already
+                    // succeeds, the next retransmission will be no-op as the cache has
+                    // been updated.
+                    zc.add_retransmission(
+                        RESOLVE_WAIT_IN_MILLIS,
+                        Command::Resolve(instance, try_count + 1),
+                    );
+                }
+            }
+
             Command::GetMetrics(resp_s) => match resp_s.send(zc.counters.clone()) {
                 Ok(()) => debug!("Sent metrics to the client"),
                 Err(e) => error!("Failed to send metrics: {}", e),
@@ -749,7 +760,9 @@ fn new_socket(addr: SocketAddr, non_block: bool) -> Result<Socket> {
     Ok(fd)
 }
 
+/// Specify a UNIX timestamp in millis to run `command` for the next time.
 struct ReRun {
+    /// UNIX timestamp in millis.
     next_time: u64,
     command: Command,
 }
@@ -895,6 +908,9 @@ struct Zeroconf {
     timers: Vec<u64>,
 
     status: DaemonStatus,
+
+    /// Service instances that are pending for resolving SRV and TXT.
+    pending_resolves: HashSet<String>,
 }
 
 impl Zeroconf {
@@ -943,6 +959,7 @@ impl Zeroconf {
             signal_sock,
             timers,
             status,
+            pending_resolves: HashSet::new(),
         })
     }
 
@@ -1415,28 +1432,19 @@ impl Zeroconf {
         true
     }
 
-    /// Sends TYPE_ANY query for instances that're missing SRV records.
-    fn query_missing_srv(&mut self) {
-        let now = current_time_millis();
-        let wait_in_millis = 800; // The threshold for deeming SRV missing.
-
-        for records in self.cache.ptr.values() {
-            for record in records.iter() {
-                if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
-                    if !self.cache.srv.contains_key(&ptr.alias)
-                        && valid_instance_name(&ptr.alias)
-                        && now > ptr.get_record().get_created() + wait_in_millis
-                    {
-                        self.send_query(&ptr.alias, TYPE_ANY);
-                    }
-                }
-            }
+    /// Sends TYPE_ANY query for instances who are missing SRV records.
+    fn query_missing_srv(&mut self, instance: &str) {
+        if !self.cache.srv.contains_key(instance) && valid_instance_name(instance) {
+            self.send_query(instance, TYPE_ANY);
         }
     }
 
     /// Checks if `ty_domain` has records in the cache. If yes, sends the
     /// cached records via `sender`.
     fn query_cache(&mut self, ty_domain: &str, sender: Sender<ServiceEvent>) {
+        let mut resolved: HashSet<String> = HashSet::new();
+        let mut unresolved: HashSet<String> = HashSet::new();
+
         if let Some(records) = self.cache.ptr.get(ty_domain) {
             for record in records.iter() {
                 if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
@@ -1460,13 +1468,32 @@ impl Zeroconf {
                     }
 
                     if info.is_ready() {
+                        resolved.insert(ptr.alias.clone());
                         match sender.send(ServiceEvent::ServiceResolved(info)) {
                             Ok(()) => debug!("sent service resolved"),
                             Err(e) => error!("failed to send service resolved: {}", e),
                         }
+                    } else {
+                        unresolved.insert(ptr.alias.clone());
                     }
                 }
             }
+        }
+
+        for instance in resolved.drain() {
+            self.pending_resolves.remove(&instance);
+        }
+
+        for instance in unresolved.drain() {
+            self.add_pending_resolve(instance);
+        }
+    }
+
+    fn add_pending_resolve(&mut self, instance: String) {
+        if !self.pending_resolves.contains(&instance) {
+            let wait_time_in_millis = 500;
+            self.add_retransmission(wait_time_in_millis, Command::Resolve(instance.clone(), 0));
+            self.pending_resolves.insert(instance);
         }
     }
 
@@ -1625,7 +1652,15 @@ impl Zeroconf {
         // instance. For example, a regular service type PTR and a sub-type
         // service type PTR can both point to the same service instance.
         // This loop automatically handles the sub-type PTRs.
+        let mut resolved: HashSet<String> = HashSet::new();
+        let mut unresolved: HashSet<String> = HashSet::new();
+
         for (ty_domain, records) in self.cache.ptr.iter() {
+            if !self.queriers.contains_key(ty_domain) {
+                // No need to resolve if in our queries.
+                continue;
+            }
+
             for record in records.iter() {
                 if let Some(dns_ptr) = record.any().downcast_ref::<DnsPointer>() {
                     if updated_instances.contains(&dns_ptr.alias) {
@@ -1633,21 +1668,27 @@ impl Zeroconf {
                             self.create_service_info_from_cache(ty_domain, &dns_ptr.alias)
                         {
                             if info.is_ready() {
+                                resolved.insert(dns_ptr.alias.clone());
                                 call_listener(
                                     &self.queriers,
                                     ty_domain,
                                     ServiceEvent::ServiceResolved(info),
                                 );
+                            } else {
+                                unresolved.insert(dns_ptr.alias.clone());
                             }
-                        }
-                    } else {
-                        // SRV record is missing, might need to send query again.
-                        if !self.cache.srv.contains_key(&dns_ptr.alias) {
-                            self.timers.push(now + 1_000);
                         }
                     }
                 }
             }
+        }
+
+        for instance in resolved.drain() {
+            self.pending_resolves.remove(&instance);
+        }
+
+        for instance in unresolved.drain() {
+            self.add_pending_resolve(instance);
         }
     }
 
@@ -1880,6 +1921,10 @@ enum Command {
     /// Stop browsing a service type
     StopBrowse(String), // (ty_domain)
 
+    /// Send query to resolve a service instance.
+    /// This is used when a PTR record exists but SRV & TXT records are missing.
+    Resolve(String, u16), // (service_instance_fullname, try_count)
+
     /// Read the current values of the counters
     GetMetrics(Sender<Metrics>),
 
@@ -1908,6 +1953,7 @@ impl fmt::Display for Command {
             Command::StopBrowse(_) => write!(f, "Command StopBrowse"),
             Command::Unregister(_, _) => write!(f, "Command Unregister"),
             Command::UnregisterResend(_, _) => write!(f, "Command UnregisterResend"),
+            Command::Resolve(_, _) => write!(f, "Command Resolve"),
         }
     }
 }
