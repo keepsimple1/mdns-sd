@@ -1659,7 +1659,7 @@ impl Zeroconf {
 
         for (ty_domain, records) in self.cache.ptr.iter() {
             if !self.queriers.contains_key(ty_domain) {
-                // No need to resolve if in our queries.
+                // No need to resolve if not in our queries.
                 continue;
             }
 
