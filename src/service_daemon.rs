@@ -1491,8 +1491,10 @@ impl Zeroconf {
 
     fn add_pending_resolve(&mut self, instance: String) {
         if !self.pending_resolves.contains(&instance) {
-            let wait_time_in_millis = 500;
-            self.add_retransmission(wait_time_in_millis, Command::Resolve(instance.clone(), 0));
+            self.add_retransmission(
+                RESOLVE_WAIT_IN_MILLIS,
+                Command::Resolve(instance.clone(), 0),
+            );
             self.pending_resolves.insert(instance);
         }
     }
