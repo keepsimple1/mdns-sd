@@ -651,9 +651,8 @@ impl ServiceDaemon {
                 let pending_query = zc.query_missing_srv(&instance);
                 let max_try = 3;
                 if pending_query && try_count < max_try {
-                    // Only repeat 1 time at most. Note that if the current try already
-                    // succeeds, the next retransmission will be no-op as the cache has
-                    // been updated.
+                    // Note that if the current try already succeeds, the next retransmission
+                    // will be no-op as the cache has been updated.
                     let next_time = current_time_millis() + RESOLVE_WAIT_IN_MILLIS;
                     zc.add_retransmission(next_time, Command::Resolve(instance, try_count + 1));
                 }
