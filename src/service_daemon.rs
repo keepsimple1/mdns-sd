@@ -650,7 +650,7 @@ impl ServiceDaemon {
             Command::Resolve(instance, try_count) => {
                 zc.query_missing_srv(&instance);
                 if try_count < 1 {
-                    // Only repeat 1 time at most. Note that if the curret try already
+                    // Only repeat 1 time at most. Note that if the current try already
                     // succeeds, the next retransmission will be no-op as the cache has
                     // been updated.
                     zc.add_retransmission(
