@@ -1,6 +1,6 @@
 //! Service daemon for mDNS Service Discovery.
 
-// What DNS-based Service Discovery works in a nutshell:
+// How DNS-based Service Discovery works in a nutshell:
 //
 // (excerpt from RFC 6763)
 // .... that a particular service instance can be
