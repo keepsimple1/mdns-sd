@@ -648,15 +648,14 @@ impl ServiceDaemon {
             },
 
             Command::Resolve(instance, try_count) => {
-                zc.query_missing_srv(&instance);
-                if try_count < 1 {
+                let pending_query = zc.query_missing_srv(&instance);
+                let max_try = 3;
+                if pending_query && try_count < max_try {
                     // Only repeat 1 time at most. Note that if the current try already
                     // succeeds, the next retransmission will be no-op as the cache has
                     // been updated.
-                    zc.add_retransmission(
-                        RESOLVE_WAIT_IN_MILLIS,
-                        Command::Resolve(instance, try_count + 1),
-                    );
+                    let next_time = current_time_millis() + RESOLVE_WAIT_IN_MILLIS;
+                    zc.add_retransmission(next_time, Command::Resolve(instance, try_count + 1));
                 }
             }
 
@@ -1433,10 +1432,19 @@ impl Zeroconf {
     }
 
     /// Sends TYPE_ANY query for instances who are missing SRV records.
-    fn query_missing_srv(&mut self, instance: &str) {
-        if !self.cache.srv.contains_key(instance) && valid_instance_name(instance) {
-            self.send_query(instance, TYPE_ANY);
+    /// Returns true, if sent query. Returns false if SRV already exists.
+    fn query_missing_srv(&mut self, instance: &str) -> bool {
+        if self.cache.srv.contains_key(instance) {
+            return false;
         }
+
+        if !valid_instance_name(instance) {
+            debug!("instance name {} not valid", instance);
+            return false;
+        }
+
+        self.send_query(instance, TYPE_ANY);
+        true
     }
 
     /// Checks if `ty_domain` has records in the cache. If yes, sends the
@@ -1491,10 +1499,8 @@ impl Zeroconf {
 
     fn add_pending_resolve(&mut self, instance: String) {
         if !self.pending_resolves.contains(&instance) {
-            self.add_retransmission(
-                RESOLVE_WAIT_IN_MILLIS,
-                Command::Resolve(instance.clone(), 0),
-            );
+            let next_time = current_time_millis() + RESOLVE_WAIT_IN_MILLIS;
+            self.add_retransmission(next_time, Command::Resolve(instance.clone(), 1));
             self.pending_resolves.insert(instance);
         }
     }
