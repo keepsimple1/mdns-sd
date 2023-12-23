@@ -642,7 +642,11 @@ fn decode_txt(txt: &[u8]) -> Vec<TxtProperty> {
         }
         offset += 1; // move over the length byte
 
-        let kv_bytes = &txt[offset..offset + length];
+        let offset_end = offset + length;
+        if offset_end > txt.len() {
+            break; // Would be out of range, skipping this property.
+        }
+        let kv_bytes = &txt[offset..offset_end];
 
         // split key and val using the first `=`
         let (k, v) = match kv_bytes.iter().position(|&x| x == b'=') {
