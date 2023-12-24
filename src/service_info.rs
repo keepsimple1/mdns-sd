@@ -866,9 +866,9 @@ mod tests {
         // Decode the record content
         let decoded = decode_txt(&encoded);
         // We expect the out of bounds length for the second property to have caused the rest of the record content to be skipped.
-        // Test that we only parsed the first record
+        // Test that we only parsed the first property.
         assert_eq!(decoded.len(), 1);
-        // Test that the record we parsed is key1
+        // Test that the key of the property we parsed is "key1"
         assert_eq!(decoded[0].key, "key1");
     }
 }
