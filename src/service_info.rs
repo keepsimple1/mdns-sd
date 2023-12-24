@@ -642,7 +642,12 @@ fn decode_txt(txt: &[u8]) -> Vec<TxtProperty> {
         }
         offset += 1; // move over the length byte
 
-        let kv_bytes = &txt[offset..offset + length];
+        let offset_end = offset + length;
+        if offset_end > txt.len() {
+            error!("DNS TXT record contains invalid data: Size given for property would be out of range. (offset={}, length={}, offset_end={}, record length={})", offset, length, offset_end, txt.len());
+            break; // Skipping the rest of the record content, as the size for this property would already be out of range.
+        }
+        let kv_bytes = &txt[offset..offset_end];
 
         // split key and val using the first `=`
         let (k, v) = match kv_bytes.iter().position(|&x| x == b'=') {
@@ -845,5 +850,25 @@ mod tests {
             prop_2_debug,
             "TxtProperty {key: \"key2\", val: Some(0x969798)}"
         );
+    }
+
+    #[test]
+    fn test_txt_decode_property_size_out_of_bounds() {
+        // Construct a TXT record with an invalid property length that would be out of bounds.
+        let encoded: Vec<u8> = vec![
+            0x0b, // Length 11
+            b'k', b'e', b'y', b'1', b'=', b'v', b'a', b'l', b'u', b'e',
+            b'1', // key1=value1 (Length 11)
+            0x10, // Length 16 (Would be out of bounds)
+            b'k', b'e', b'y', b'2', b'=', b'v', b'a', b'l', b'u', b'e',
+            b'2', // key2=value2 (Length 11)
+        ];
+        // Decode the record content
+        let decoded = decode_txt(&encoded);
+        // We expect the out of bounds length for the second property to have caused the rest of the record content to be skipped.
+        // Test that we only parsed the first property.
+        assert_eq!(decoded.len(), 1);
+        // Test that the key of the property we parsed is "key1"
+        assert_eq!(decoded[0].key, "key1");
     }
 }
