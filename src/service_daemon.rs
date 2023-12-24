@@ -2136,6 +2136,11 @@ const DOMAIN_LEN: usize = "._tcp.local.".len();
 
 /// Validate the length of "service_name" in a "_<service_name>.<domain_name>." string.
 fn check_service_name_length(ty_domain: &str, limit: u8) -> Result<()> {
+    if ty_domain.len() <= DOMAIN_LEN + 1 {
+        // service name cannot be empty or only '_'.
+        return Err(e_fmt!("Service type name cannot be empty: {}", ty_domain));
+    }
+
     let service_name_len = ty_domain.len() - DOMAIN_LEN - 1; // exclude the leading `_`
     if service_name_len > limit as usize {
         return Err(e_fmt!("Service name length must be <= {} bytes", limit));
@@ -2266,8 +2271,9 @@ fn valid_instance_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        broadcast_dns_on_intf, my_ip_interfaces, new_socket_bind, valid_instance_name, IntfSock,
-        ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4, MDNS_PORT,
+        broadcast_dns_on_intf, check_service_name_length, my_ip_interfaces, new_socket_bind,
+        valid_instance_name, IntfSock, ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4,
+        MDNS_PORT,
     };
     use crate::dns_parser::{
         DnsOutgoing, DnsPointer, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE, TYPE_PTR,
@@ -2286,6 +2292,15 @@ mod tests {
         assert_eq!(valid_instance_name("my-laser._printer._tcp.local."), true);
         assert_eq!(valid_instance_name("my-laser.._printer._tcp.local."), true);
         assert_eq!(valid_instance_name("_printer._tcp.local."), false);
+    }
+
+    #[test]
+    fn test_check_service_name_length() {
+        let result = check_service_name_length("_tcp", 100);
+        assert!(result.is_err());
+        if let Err(e) = result {
+            println!("{}", e);
+        }
     }
 
     #[test]
