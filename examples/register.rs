@@ -11,7 +11,7 @@
 //! Options:
 //! "--unregister": automatically unregister after 2 seconds.
 
-use mdns_sd::{ServiceDaemon, ServiceInfo};
+use mdns_sd::{DaemonEvent, ServiceDaemon, ServiceInfo};
 use std::{env, thread, time::Duration};
 
 fn main() {
@@ -85,6 +85,13 @@ fn main() {
         // Monitor the daemon events.
         while let Ok(event) = monitor.recv() {
             println!("Daemon event: {:?}", &event);
+            match event {
+                DaemonEvent::Error(e) => {
+                    println!("Failed: {}", e);
+                    break;
+                }
+                _ => {}
+            }
         }
     }
 }
