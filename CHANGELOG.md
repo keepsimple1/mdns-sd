@@ -10,6 +10,8 @@ This is a bug fix release.
 * Sanity check for empty service type name (#160)
 * Added comment for updating service info by re-registering.
 
+Happy new year 2024!
+
 # Version 0.10.1 (2023-12-2)
 
 This is a bug fix release.
