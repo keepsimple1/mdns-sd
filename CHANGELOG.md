@@ -1,3 +1,17 @@
+# Version 0.10.2 (2023-12-28)
+
+This is a bug fix release.
+
+## Changes
+
+* use human-readable address in error log of send_packet (#155)
+* query for unresolved instances only when needed (#157)
+* Fix panic due to range out of bounds in txt record parsing (#159)
+* Sanity check for empty service type name (#160)
+* Added comment for updating service info by re-registering.
+
+Happy new year 2024!
+
 # Version 0.10.1 (2023-12-2)
 
 This is a bug fix release.
