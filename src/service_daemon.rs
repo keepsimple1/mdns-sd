@@ -235,6 +235,9 @@ impl ServiceDaemon {
     ///
     /// If `service_info` has no addresses yet and its `addr_auto` is enabled,
     /// this method will automatically fill in addresses from the host.
+    ///
+    /// To re-announce a service with an updated `service_info`, just call
+    /// this `register` function again. No need to call `unregister` first.
     pub fn register(&self, mut service_info: ServiceInfo) -> Result<()> {
         check_service_name(service_info.get_fullname())?;
 
