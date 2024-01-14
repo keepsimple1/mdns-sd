@@ -1,3 +1,13 @@
+# Version 0.10.3 (2024-01-14)
+
+This is a bug fix release.
+
+## Changes
+
+* netmask -> subnet (#164)
+
+Welcome our new contributor @amfaber ! Thanks!
+
 # Version 0.10.2 (2023-12-28)
 
 This is a bug fix release.
@@ -9,6 +19,8 @@ This is a bug fix release.
 * Fix panic due to range out of bounds in txt record parsing (#159)
 * Sanity check for empty service type name (#160)
 * Added comment for updating service info by re-registering.
+
+Welcome our new contributor @Raphiiko ! Thanks!
 
 Happy new year 2024!
 
