@@ -1127,7 +1127,7 @@ impl DnsIncoming {
 
                     if ending > data.len() {
                         return Err(Error::Msg(format!(
-                            "read_name: ending {} exceed data length {}",
+                            "read_name: ending {} exceeds data length {}",
                             ending,
                             data.len()
                         )));
