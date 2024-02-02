@@ -1417,6 +1417,8 @@ impl Zeroconf {
             return false;
         }
 
+        buf.truncate(sz); // reduce potential processing errors
+
         match DnsIncoming::new(buf) {
             Ok(msg) => {
                 if msg.is_query() {
@@ -1532,7 +1534,7 @@ impl Zeroconf {
 
         // resolve SRV record
         if let Some(records) = self.cache.srv.get(fullname) {
-            if let Some(answer) = records.get(0) {
+            if let Some(answer) = records.first() {
                 if let Some(dns_srv) = answer.any().downcast_ref::<DnsSrv>() {
                     info.set_hostname(dns_srv.host.clone());
                     info.set_port(dns_srv.port);
@@ -1542,7 +1544,7 @@ impl Zeroconf {
 
         // resolve TXT record
         if let Some(records) = self.cache.txt.get(fullname) {
-            if let Some(record) = records.get(0) {
+            if let Some(record) = records.first() {
                 if let Some(dns_txt) = record.any().downcast_ref::<DnsTxt>() {
                     info.set_properties_from_txt(&dns_txt.text);
                 }
@@ -2001,7 +2003,7 @@ impl DnsCache {
         self.srv
             .iter()
             .filter_map(|(instance, srv_list)| {
-                if let Some(item) = srv_list.get(0) {
+                if let Some(item) = srv_list.first() {
                     if let Some(dns_srv) = item.any().downcast_ref::<DnsSrv>() {
                         if dns_srv.host == host {
                             return Some(instance.clone());

@@ -954,6 +954,16 @@ impl DnsIncoming {
         for _ in 0..n {
             let name = self.read_name()?;
             let slice = &self.data[self.offset..];
+
+            // Muse have at least TYPE, CLASS, TTL, RDLENGTH fields: 10 bytes.
+            if slice.len() < 10 {
+                return Err(Error::Msg(format!(
+                    "read_others: {} RR is too short after name: {}",
+                    &name,
+                    slice.len()
+                )));
+            }
+
             let ty = u16_from_be_slice(&slice[..2]);
             let class = u16_from_be_slice(&slice[2..4]);
             let ttl = u32_from_be_slice(&slice[4..8]);
@@ -1113,7 +1123,17 @@ impl DnsIncoming {
                 0x00 => {
                     // regular utf8 string with length
                     offset += 1;
-                    name += str::from_utf8(&data[offset..(offset + length as usize)])
+                    let ending = offset + length as usize;
+
+                    if ending > data.len() {
+                        return Err(Error::Msg(format!(
+                            "read_name: ending {} exceed data length {}",
+                            ending,
+                            data.len()
+                        )));
+                    }
+
+                    name += str::from_utf8(&data[offset..ending])
                         .map_err(|e| Error::Msg(format!("read_name: from_utf8: {}", e)))?;
                     name += ".";
                     offset += length as usize;
