@@ -1127,6 +1127,7 @@ impl DnsIncoming {
                     offset += 1;
                     let ending = offset + length as usize;
 
+                    // Never read beyond the whole data length.
                     if ending > data.len() {
                         return Err(Error::Msg(format!(
                             "read_name: ending {} exceeds data length {}",
@@ -1211,7 +1212,9 @@ mod tests {
         let data = out.to_packet_data();
 
         // construct invalid data.
+        let max_len = data.len() as u8;
         let mut data_with_invalid_name_length = data.clone();
+        let mut data_with_larger_name_length = data.clone();
         let name_length_offset = 12;
 
         // 0x9 is the length of `name`
@@ -1224,6 +1227,14 @@ mod tests {
 
         // The data with invalid name length is not fine.
         let invalid = DnsIncoming::new(data_with_invalid_name_length);
+        assert!(invalid.is_err());
+        if let Err(e) = invalid {
+            println!("error: {}", e);
+        }
+
+        // Another error case: `length`` is larger than the actual string length.
+        data_with_larger_name_length[name_length_offset] = max_len + 1;
+        let invalid = DnsIncoming::new(data_with_larger_name_length);
         assert!(invalid.is_err());
         if let Err(e) = invalid {
             println!("error: {}", e);
