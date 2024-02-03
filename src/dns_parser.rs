@@ -841,6 +841,8 @@ pub(crate) struct DnsIncoming {
 }
 
 impl DnsIncoming {
+    const HEADER_LEN: usize = 12;
+
     pub(crate) fn new(data: Vec<u8>) -> Result<Self> {
         let mut incoming = Self {
             offset: 0,
@@ -870,7 +872,7 @@ impl DnsIncoming {
     }
 
     fn read_header(&mut self) -> Result<()> {
-        if self.data.len() < 12 {
+        if self.data.len() < Self::HEADER_LEN {
             return Err(Error::Msg(format!(
                 "DNS incoming: header is too short: {} bytes",
                 self.data.len()
@@ -885,7 +887,7 @@ impl DnsIncoming {
         self.num_authorities = u16_from_be_slice(&data[8..10]);
         self.num_additionals = u16_from_be_slice(&data[10..12]);
 
-        self.offset = 12;
+        self.offset = Self::HEADER_LEN;
 
         debug!(
             "read_header: id {}, {} questions {} answers {} authorities {} additionals",
@@ -958,7 +960,7 @@ impl DnsIncoming {
             // Muse have at least TYPE, CLASS, TTL, RDLENGTH fields: 10 bytes.
             if slice.len() < 10 {
                 return Err(Error::Msg(format!(
-                    "read_others: {} RR is too short after name: {}",
+                    "read_others: RR '{}' is too short after name: {} bytes",
                     &name,
                     slice.len()
                 )));
@@ -1196,7 +1198,10 @@ fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DnsIncoming, DnsOutgoing, FLAGS_QR_QUERY, TYPE_PTR};
+    use super::{
+        DnsIncoming, DnsOutgoing, DnsSrv, CLASS_IN, CLASS_UNIQUE, FLAGS_QR_QUERY,
+        FLAGS_QR_RESPONSE, TYPE_PTR,
+    };
 
     #[test]
     fn test_read_name_invalid_length() {
@@ -1219,6 +1224,36 @@ mod tests {
 
         // The data with invalid name length is not fine.
         let invalid = DnsIncoming::new(data_with_invalid_name_length);
+        assert!(invalid.is_err());
+        if let Err(e) = invalid {
+            println!("error: {}", e);
+        }
+    }
+
+    /// Tests DnsIncoming::read_others()
+    #[test]
+    fn test_rr_too_short_after_name() {
+        let name = "test_rr_too_short._udp.local.";
+        let mut response = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+        response.add_additional_answer(Box::new(DnsSrv::new(
+            name,
+            CLASS_IN | CLASS_UNIQUE,
+            1,
+            1,
+            1,
+            9000,
+            "instance1".to_string(),
+        )));
+        let data = response.to_packet_data();
+        let mut data_too_short = data.clone();
+
+        // verify the original data is good.
+        let incoming = DnsIncoming::new(data);
+        assert!(incoming.is_ok());
+
+        // verify that truncated data will cause an error.
+        data_too_short.truncate(DnsIncoming::HEADER_LEN + name.len() + 2);
+        let invalid = DnsIncoming::new(data_too_short);
         assert!(invalid.is_err());
         if let Err(e) = invalid {
             println!("error: {}", e);
