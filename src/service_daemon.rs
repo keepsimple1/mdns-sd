@@ -1386,6 +1386,13 @@ impl Zeroconf {
             None => return false,
         };
         let mut buf = vec![0u8; MAX_MSG_ABSOLUTE];
+
+        // Read the next mDNS UDP datagram.
+        //
+        // If the datagram is larger than `buf`, excess bytes may or may not
+        // be truncated by the socket layer depending on the platform's libc.
+        // In any case, such large datagram will not be decoded properly and
+        // this function should return false but should not crash.
         let sz = match intf_sock.sock.read(&mut buf) {
             Ok(sz) => sz,
             Err(e) => {
