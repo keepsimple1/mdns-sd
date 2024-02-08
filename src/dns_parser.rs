@@ -32,7 +32,9 @@ pub(crate) const CLASS_IN: u16 = 1;
 pub(crate) const CLASS_MASK: u16 = 0x7FFF;
 pub(crate) const CLASS_UNIQUE: u16 = 0x8000;
 
-pub(crate) const MAX_MSG_ABSOLUTE: usize = 8966;
+/// Max size of UDP datagram payload: 9000 bytes - IP header 20 bytes - UDP header 8 bytes.
+/// Reference: RFC6762: https://datatracker.ietf.org/doc/html/rfc6762#section-17
+pub(crate) const MAX_MSG_ABSOLUTE: usize = 8972;
 
 // Definitions for DNS message header "flags" field
 //
