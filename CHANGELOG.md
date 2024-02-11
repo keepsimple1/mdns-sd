@@ -1,3 +1,12 @@
+# Version 0.10.4 (2024-02-10)
+
+This is a bug fix release.
+
+## Changes
+
+* Add sanity checks in DNS message decoding (#169)
+* fine-tune MAX_MSG_ABSOLUTE (#170)
+
 # Version 0.10.3 (2024-01-14)
 
 This is a bug fix release.
