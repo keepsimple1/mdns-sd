@@ -126,6 +126,8 @@ impl fmt::Display for Counter {
 /// The main purpose is to help monitoring the mDNS packet traffic.
 pub type Metrics = HashMap<String, i64>;
 
+const SIGNAL_SOCK_EVENT_KEY: usize = usize::MAX - 1; // avoid to overlap with zc.poll_ids
+
 /// A daemon thread for mDNS
 ///
 /// This struct provides a handle and an API to the daemon. It is cloneable.
@@ -373,6 +375,45 @@ impl ServiceDaemon {
         }
     }
 
+    fn handle_poller_events(zc: &mut Zeroconf, events: &[polling::Event]) {
+        for ev in events.iter() {
+            debug!("event received with key {}", ev.key);
+            if ev.key == SIGNAL_SOCK_EVENT_KEY {
+                // Drain signals as we will drain commands as well.
+                zc.signal_sock_drain();
+
+                if let Err(e) = zc
+                    .poller
+                    .modify(&zc.signal_sock, polling::Event::readable(ev.key))
+                {
+                    error!("failed to modify poller for signal socket: {}", e);
+                }
+                continue; // Next event.
+            }
+
+            // Read until no more packets available.
+            let ip = match zc.poll_ids.get(&ev.key) {
+                Some(ip) => *ip,
+                None => {
+                    error!("Ip for event key {} not found", ev.key);
+                    break;
+                }
+            };
+            while zc.handle_read(&ip) {}
+
+            // we continue to monitor this socket.
+            if let Some(intf_sock) = zc.intf_socks.get(&ip) {
+                if let Err(e) = zc
+                    .poller
+                    .modify(&intf_sock.sock, polling::Event::readable(ev.key))
+                {
+                    error!("modify poller for IP {}: {}", &ip, e);
+                    break;
+                }
+            }
+        }
+    }
+
     /// The main event loop of the daemon thread
     ///
     /// In each round, it will:
@@ -383,11 +424,10 @@ impl ServiceDaemon {
     /// 5. process retransmissions if any.
     fn run(mut zc: Zeroconf, receiver: Receiver<Command>) -> Option<Command> {
         // Add the daemon's signal socket to the poller.
-        let signal_event_key = usize::MAX - 1; // avoid to overlap with zc.poll_ids
-        if let Err(e) = zc
-            .poller
-            .add(&zc.signal_sock, polling::Event::readable(signal_event_key))
-        {
+        if let Err(e) = zc.poller.add(
+            &zc.signal_sock,
+            polling::Event::readable(SIGNAL_SOCK_EVENT_KEY),
+        ) {
             error!("failed to add signal socket to the poller: {}", e);
             return None;
         }
@@ -431,43 +471,7 @@ impl ServiceDaemon {
             // Process incoming packets, command events and optional timeout.
             events.clear();
             match zc.poller.wait(&mut events, timeout) {
-                Ok(_) => {
-                    for ev in events.iter() {
-                        debug!("event received with key {}", ev.key);
-                        if ev.key == signal_event_key {
-                            // Drain signals as we will drain commands as well.
-                            zc.signal_sock_drain();
-
-                            if let Err(e) = zc
-                                .poller
-                                .modify(&zc.signal_sock, polling::Event::readable(ev.key))
-                            {
-                                error!("failed to modify poller for signal socket: {}", e);
-                            }
-                            continue; // Next event.
-                        }
-
-                        // Read until no more packets available.
-                        let ip = match zc.poll_ids.get(&ev.key) {
-                            Some(ip) => *ip,
-                            None => {
-                                error!("Ip for event key {} not found", ev.key);
-                                break;
-                            }
-                        };
-                        while zc.handle_read(&ip) {}
-
-                        if let Some(intf_sock) = zc.intf_socks.get(&ip) {
-                            if let Err(e) = zc
-                                .poller
-                                .modify(&intf_sock.sock, polling::Event::readable(ev.key))
-                            {
-                                error!("modify poller for IP {}: {}", &ip, e);
-                                break;
-                            }
-                        }
-                    }
-                }
+                Ok(_) => Self::handle_poller_events(&mut zc, &events),
                 Err(e) => error!("failed to select from sockets: {}", e),
             }
 
