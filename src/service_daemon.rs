@@ -513,16 +513,31 @@ impl ServiceDaemon {
             // check and evict expired records in our cache
             let now = current_time_millis();
             let map = zc.queriers.clone();
-            zc.cache.evict_expired(now, |expired| {
-                if let Some(dns_ptr) = expired.any().downcast_ref::<DnsPointer>() {
-                    let ty_domain = dns_ptr.get_name();
-                    call_listener(
-                        &map,
-                        ty_domain,
-                        ServiceEvent::ServiceRemoved(ty_domain.to_string(), dns_ptr.alias.clone()),
-                    );
-                }
-            });
+            for (ty_domain, _sender) in zc.queriers.iter() {
+                zc.cache.evict_expired(ty_domain, now, |expired| {
+                    if let Some(dns_ptr) = expired.any().downcast_ref::<DnsPointer>() {
+                        // let ty_domain = dns_ptr.get_name();
+                        call_listener(
+                            &map,
+                            ty_domain,
+                            ServiceEvent::ServiceRemoved(
+                                ty_domain.to_string(),
+                                dns_ptr.alias.clone(),
+                            ),
+                        );
+                    } else if let Some(dns_srv) = expired.any().downcast_ref::<DnsSrv>() {
+                        let fullname = dns_srv.get_name();
+                        call_listener(
+                            &map,
+                            ty_domain,
+                            ServiceEvent::ServiceInactive(
+                                ty_domain.to_string(),
+                                fullname.to_string(),
+                            ),
+                        );
+                    }
+                });
+            }
 
             // check IP changes.
             if now > next_ip_check {
@@ -1897,6 +1912,8 @@ pub enum ServiceEvent {
     ServiceResolved(ServiceInfo),
     /// A service instance (service_type, fullname) was removed.
     ServiceRemoved(String, String),
+    /// A service instance (service_type, fullname) was offline.
+    ServiceInactive(String, String),
     /// Stopped searching for a service type.
     SearchStopped(String),
 }
@@ -2094,13 +2111,14 @@ impl DnsCache {
 
     /// Iterate all records and remove ones that expired, allowing
     /// a function `f` to react with the expired ones.
-    fn evict_expired<F>(&mut self, now: u64, f: F)
+    fn evict_expired<F>(&mut self, ty_domain: &str, now: u64, f: F)
     where
         F: Fn(&DnsRecordBox), // Caller has a chance to do something with expired
     {
         let all_records = self
             .ptr
-            .values_mut()
+            .get_mut(ty_domain)
+            .into_iter()
             .chain(self.srv.values_mut())
             .chain(self.txt.values_mut())
             .chain(self.addr.values_mut());
