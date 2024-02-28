@@ -29,7 +29,7 @@
 // in Service Discovery, the basic data structure is "Service Info". One Service Info
 // corresponds to a set of DNS Resource Records.
 #[cfg(feature = "logging")]
-use crate::log::{debug, error};
+use crate::log::{debug, error, warn};
 use crate::{
     dns_parser::{
         current_time_millis, DnsAddress, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
@@ -645,7 +645,7 @@ impl ServiceDaemon {
                     // Notify the client.
                     match sender.send(ServiceEvent::SearchStopped(ty_domain)) {
                         Ok(()) => debug!("Sent SearchStopped to the listener"),
-                        Err(e) => error!("Failed to send SearchStopped: {}", e),
+                        Err(e) => warn!("Failed to send SearchStopped: {}", e),
                     }
                 }
             },
