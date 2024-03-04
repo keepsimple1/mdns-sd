@@ -127,6 +127,15 @@ impl DnsRecord {
         self.refresh = get_expiration_time(self.created, self.ttl, 100);
     }
 
+    /// Checks if this record is due for refresh. If yes, update `refresh`.
+    pub(crate) fn refresh_maybe(&mut self, now: u64) -> bool {
+        if self.is_expired(now) || !self.refresh_due(now) {
+            return false;
+        }
+        self.refresh_no_more();
+        true
+    }
+
     /// Returns the remaining TTL in seconds
     fn get_remaining_ttl(&self, now: u64) -> u32 {
         let remaining_millis = get_expiration_time(self.created, self.ttl, 100) - now;

@@ -2127,23 +2127,73 @@ impl DnsCache {
     fn refresh_due(&mut self, ty_domain: &str) -> Vec<String> {
         let now = current_time_millis();
 
-        self.ptr
-            .get_mut(ty_domain)
-            .into_iter()
-            .flatten()
-            .filter_map(|record| {
-                let rec = record.get_record_mut();
-                if rec.is_expired(now) || !rec.refresh_due(now) {
-                    return None;
-                }
-                rec.refresh_no_more();
+        let mut due_list = vec![];
+        let mut not_due = vec![];
 
-                record
-                    .any()
-                    .downcast_ref::<DnsPointer>()
-                    .map(|dns_ptr| dns_ptr.alias.clone())
-            })
-            .collect()
+        // find PTR records that are due for refresh.
+        for record in self.ptr.get_mut(ty_domain).into_iter().flatten() {
+            let is_due = record.get_record_mut().refresh_maybe(now);
+
+            if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
+                let instance = ptr.alias.clone();
+                if is_due {
+                    due_list.push(instance);
+                } else {
+                    not_due.push(instance);
+                }
+            }
+        }
+
+        // find other records that are due for refresh.
+        for instance in not_due {
+            if self.refresh_due_srv(&instance, now) || self.refresh_due_txt(&instance, now) {
+                due_list.push(instance);
+            }
+        }
+
+        due_list
+    }
+
+    /// Checks if any SRV records of `instance` are due to refresh.
+    /// If no, then check if any A or AAAA records are due to refresh.
+    fn refresh_due_srv(&mut self, instance: &str, now: u64) -> bool {
+        let mut not_due = vec![];
+        for record in self.srv.get_mut(instance).into_iter().flatten() {
+            if record.get_record_mut().refresh_maybe(now) {
+                return true;
+            }
+            if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
+                not_due.push(srv.host.clone());
+            }
+        }
+
+        for record in not_due {
+            if self.refresh_due_address(&record, now) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Returns true if any A or AAAA records of `srv_name` are due to refresh.
+    fn refresh_due_address(&mut self, srv_name: &str, now: u64) -> bool {
+        for record in self.addr.get_mut(srv_name).into_iter().flatten() {
+            if record.get_record_mut().refresh_maybe(now) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Returns true if any TXT records of `instance` are due to refresh.
+    fn refresh_due_txt(&mut self, instance: &str, now: u64) -> bool {
+        for record in self.txt.get_mut(instance).into_iter().flatten() {
+            if record.get_record_mut().refresh_maybe(now) {
+                return true;
+            }
+        }
+        false
     }
 }
 
