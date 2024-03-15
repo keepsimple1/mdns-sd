@@ -19,7 +19,7 @@ jobs:
         os: [ubuntu-20.04, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.61.0
+      - uses: dtolnay/rust-toolchain@1.63.0
         with:
           components: rustfmt, clippy
       - name: Run rustfmt and fail if any warnings
