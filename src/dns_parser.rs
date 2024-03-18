@@ -1129,9 +1129,6 @@ impl DnsIncoming {
     fn read_type_bitmap(&mut self) -> Result<Vec<u8>> {
         // From RFC 6762: 6.1.  Negative Responses
         // https://datatracker.ietf.org/doc/html/rfc6762#section-6.1
-        //     When used with name compression, this means that the 'Next
-        //     Domain Name' field always takes exactly two bytes in the
-        //     message.
         //   o The Type Bit Map block number is 0.
         //   o The Type Bit Map block length byte is a value in the range 1-32.
         //   o The Type Bit Map data is 1-32 bytes, as indicated by length
@@ -1146,7 +1143,14 @@ impl DnsIncoming {
         }
 
         let block_len = self.data[self.offset] as usize;
+        if block_len < 1 || block_len > 32 {
+            return Err(Error::Msg(format!(
+                "NSEC block length must be in the range 1-32: {}",
+                block_len
+            )));
+        }
         self.offset += 1;
+
         let bitmap = self.data[self.offset..self.offset + block_len].to_vec();
         self.offset += block_len;
 
