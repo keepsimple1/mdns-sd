@@ -425,6 +425,10 @@ impl DnsRecordExt for DnsHostInfo {
     }
 }
 
+/// Record for negative responses
+/// See RFC4034 section 4.1 and RFC6762 section 6.1
+/// https://datatracker.ietf.org/doc/html/rfc4034#section-4.1
+/// https://datatracker.ietf.org/doc/html/rfc6762#section-6.1
 #[derive(Debug)]
 pub(crate) struct DnsNSec {
     record: DnsRecord,

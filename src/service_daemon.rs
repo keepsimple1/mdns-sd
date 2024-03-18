@@ -1587,7 +1587,7 @@ impl Zeroconf {
                         let host_port = (info.get_hostname(), info.get_port());
                         if let Ok(addrs) = host_port.to_socket_addrs() {
                             debug!("Found socket addrs: {:?}", &addrs);
-                            for addr in addrs.into_iter() {
+                            for addr in addrs {
                                 info.insert_ipaddr(addr.ip());
                             }
                         } else {
