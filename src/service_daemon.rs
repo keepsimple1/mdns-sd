@@ -1579,19 +1579,19 @@ impl Zeroconf {
             if let Some(record) = records.first() {
                 if let Some(dns_nsec) = record.any().downcast_ref::<DnsNSec>() {
                     debug!("Found NSEC types: {:?}", dns_nsec.types());
-                    for ty in dns_nsec.types() {
-                        if ty == TYPE_A {
-                            if info.get_addresses().is_empty() {
-                                let host_port = (info.get_hostname(), info.get_port());
-                                if let Ok(addrs) = host_port.to_socket_addrs() {
-                                    debug!("Found socket addrs: {:?}", &addrs);
-                                    for addr in addrs.into_iter() {
-                                        info.insert_ipaddr(addr.ip());
-                                    }
-                                } else {
-                                    debug!("CANNOT resolve socket addr for: {:?}", &host_port);
-                                }
+                    let missing_types = dns_nsec.types();
+                    if info.get_addresses().is_empty()
+                        && missing_types.contains(&TYPE_A)
+                        && missing_types.contains(&TYPE_AAAA)
+                    {
+                        let host_port = (info.get_hostname(), info.get_port());
+                        if let Ok(addrs) = host_port.to_socket_addrs() {
+                            debug!("Found socket addrs: {:?}", &addrs);
+                            for addr in addrs.into_iter() {
+                                info.insert_ipaddr(addr.ip());
                             }
+                        } else {
+                            debug!("CANNOT resolve socket addr for: {:?}", &host_port);
                         }
                     }
                 }
