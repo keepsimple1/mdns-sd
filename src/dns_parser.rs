@@ -1125,7 +1125,17 @@ impl DnsIncoming {
         num
     }
 
+    /// Reads the "Type Bit Map" block for a DNS NSEC record.
     fn read_type_bitmap(&mut self) -> Result<Vec<u8>> {
+        // From RFC 6762: 6.1.  Negative Responses
+        // https://datatracker.ietf.org/doc/html/rfc6762#section-6.1
+        //     When used with name compression, this means that the 'Next
+        //     Domain Name' field always takes exactly two bytes in the
+        //     message.
+        //   o The Type Bit Map block number is 0.
+        //   o The Type Bit Map block length byte is a value in the range 1-32.
+        //   o The Type Bit Map data is 1-32 bytes, as indicated by length
+        //     byte.
         let block_num = self.data[self.offset];
         self.offset += 1;
         if block_num != 0 {
