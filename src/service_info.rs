@@ -83,7 +83,7 @@ impl ServiceInfo {
         let fullname = format!("{}.{}", my_name, ty_domain);
         let ty_domain = ty_domain.to_string();
         let sub_domain = sub_domain.map(str::to_string);
-        let server = host_name.to_string();
+        let server = normalize_hostname(host_name.to_string());
         let addresses = ip.as_ip_addrs()?;
         let txt_properties = properties.into_txt_properties();
 
@@ -285,7 +285,7 @@ impl ServiceInfo {
     }
 
     pub(crate) fn set_hostname(&mut self, hostname: String) {
-        self.server = hostname;
+        self.server = normalize_hostname(hostname);
     }
 
     /// Returns true if properties are updated.
@@ -302,6 +302,17 @@ impl ServiceInfo {
     pub(crate) fn set_subtype(&mut self, subtype: String) {
         self.sub_domain = Some(subtype);
     }
+}
+
+/// Removes potential duplicated ".local." at the end of "hostname".
+fn normalize_hostname(mut hostname: String) -> String {
+    // on macOS, hostname includes ".local" by default,
+    // so we want to remove duplicated ".local." if needed.
+    if hostname.ends_with(".local.local.") {
+        let new_len = hostname.len() - "local.".len();
+        hostname.truncate(new_len);
+    }
+    hostname
 }
 
 /// This trait allows for parsing an input into a set of one or multiple [`Ipv4Addr`].
