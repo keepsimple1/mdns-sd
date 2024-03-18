@@ -26,7 +26,7 @@ pub(crate) const TYPE_HINFO: u16 = 13;
 pub(crate) const TYPE_TXT: u16 = 16;
 pub(crate) const TYPE_AAAA: u16 = 28; // IPv6 address
 pub(crate) const TYPE_SRV: u16 = 33;
-pub(crate) const TYPE_NSEC: u16 = 47;
+pub(crate) const TYPE_NSEC: u16 = 47; // Negative responses
 pub(crate) const TYPE_ANY: u16 = 255;
 
 pub(crate) const CLASS_IN: u16 = 1;
@@ -1151,7 +1151,15 @@ impl DnsIncoming {
         }
         self.offset += 1;
 
-        let bitmap = self.data[self.offset..self.offset + block_len].to_vec();
+        let end = self.offset + block_len;
+        if end > self.data.len() {
+            return Err(Error::Msg(format!(
+                "NSEC block overflow: {} over RData len {}",
+                end,
+                self.data.len()
+            )));
+        }
+        let bitmap = self.data[self.offset..end].to_vec();
         self.offset += block_len;
 
         Ok(bitmap)
