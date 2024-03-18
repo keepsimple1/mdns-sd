@@ -426,10 +426,10 @@ impl DnsRecordExt for DnsHostInfo {
 }
 
 #[derive(Debug)]
-struct DnsNSec {
+pub(crate) struct DnsNSec {
     record: DnsRecord,
     next_domain: String,
-    bitmap: Vec<u8>,
+    type_bitmap: Vec<u8>,
 }
 
 impl DnsNSec {
@@ -439,14 +439,42 @@ impl DnsNSec {
         class: u16,
         ttl: u32,
         next_domain: String,
-        bitmap: Vec<u8>,
+        type_bitmap: Vec<u8>,
     ) -> Self {
         let record = DnsRecord::new(name, ty, class, ttl);
         Self {
             record,
             next_domain,
-            bitmap,
+            type_bitmap,
         }
+    }
+
+    /// Returns the types marked by `type_bitmap`
+    pub(crate) fn types(&self) -> Vec<u16> {
+        // From RFC 4034: 4.1.2 The Type Bit Maps Field
+        // https://datatracker.ietf.org/doc/html/rfc4034#section-4.1.2
+        //
+        // Each bitmap encodes the low-order 8 bits of RR types within the
+        // window block, in network bit order.  The first bit is bit 0.  For
+        // window block 0, bit 1 corresponds to RR type 1 (A), bit 2 corresponds
+        // to RR type 2 (NS), and so forth.
+
+        let mut bit_num = 0;
+        let mut results = Vec::new();
+
+        for byte in self.type_bitmap.iter() {
+            let mut bit_mask: u8 = 0x80; // for bit 0 in network bit order
+
+            // check every bit in this byte, one by one.
+            for _ in 0..8 {
+                if (byte & bit_mask) != 0 {
+                    results.push(bit_num);
+                }
+                bit_num += 1;
+                bit_mask >>= 1; // mask for the next bit
+            }
+        }
+        results
     }
 }
 
@@ -460,12 +488,8 @@ impl DnsRecordExt for DnsNSec {
     }
 
     fn write(&self, packet: &mut DnsOutPacket) {
-        println!(
-            "writing NSec: next_domain {} bitmap {:?}",
-            &self.next_domain, &self.bitmap
-        );
         packet.write_bytes(self.next_domain.as_bytes());
-        packet.write_bytes(&self.bitmap);
+        packet.write_bytes(&self.type_bitmap);
     }
 
     fn any(&self) -> &dyn Any {
@@ -475,7 +499,7 @@ impl DnsRecordExt for DnsNSec {
     fn matches(&self, other: &dyn DnsRecordExt) -> bool {
         if let Some(other_record) = other.any().downcast_ref::<DnsNSec>() {
             return self.next_domain == other_record.next_domain
-                && self.bitmap == other_record.bitmap
+                && self.type_bitmap == other_record.type_bitmap
                 && self.record.entry == other_record.record.entry;
         }
         false

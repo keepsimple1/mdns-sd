@@ -32,10 +32,10 @@
 use crate::log::{debug, error, warn};
 use crate::{
     dns_parser::{
-        current_time_millis, DnsAddress, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
-        DnsRecordExt, DnsSrv, DnsTxt, CLASS_IN, CLASS_UNIQUE, FLAGS_AA, FLAGS_QR_QUERY,
-        FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_AAAA, TYPE_ANY, TYPE_PTR, TYPE_SRV,
-        TYPE_TXT,
+        current_time_millis, DnsAddress, DnsIncoming, DnsNSec, DnsOutgoing, DnsPointer,
+        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, CLASS_IN, CLASS_UNIQUE, FLAGS_AA,
+        FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_AAAA, TYPE_ANY,
+        TYPE_NSEC, TYPE_PTR, TYPE_SRV, TYPE_TXT,
     },
     error::{Error, Result},
     service_info::{ifaddr_subnet, split_sub_domain, ServiceInfo},
@@ -50,7 +50,10 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     io::Read,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, UdpSocket},
+    net::{
+        IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs,
+        UdpSocket,
+    },
     str, thread,
     time::Duration,
     vec,
@@ -1571,6 +1574,29 @@ impl Zeroconf {
             }
         }
 
+        // check for NSEC records
+        if let Some(records) = self.cache.nsec.get(fullname) {
+            if let Some(record) = records.first() {
+                if let Some(dns_nsec) = record.any().downcast_ref::<DnsNSec>() {
+                    debug!("Found NSEC types: {:?}", dns_nsec.types());
+                    for ty in dns_nsec.types() {
+                        if ty == TYPE_A {
+                            if info.get_addresses().is_empty() {
+                                let host_port = (info.get_hostname(), info.get_port());
+                                if let Ok(addrs) = host_port.to_socket_addrs() {
+                                    debug!("Found socket addrs: {:?}", &addrs);
+                                    for addr in addrs.into_iter() {
+                                        info.insert_ipaddr(addr.ip());
+                                    }
+                                } else {
+                                    debug!("CANNOT resolve socket addr for: {:?}", &host_port);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Ok(info)
     }
 
@@ -1658,7 +1684,7 @@ impl Zeroconf {
         let mut updated_instances = HashSet::new();
         for update in changes {
             match update.ty {
-                TYPE_PTR | TYPE_SRV | TYPE_TXT => {
+                TYPE_PTR | TYPE_SRV | TYPE_TXT | TYPE_NSEC => {
                     updated_instances.insert(update.name);
                 }
                 TYPE_A | TYPE_AAAA => {
@@ -1996,6 +2022,10 @@ struct DnsCache {
 
     /// A reverse lookup table from "instance fullname" to "subtype PTR name"
     subtype: HashMap<String, String>,
+
+    /// Negative responses:
+    /// A map from "instance fullname" to "types of missing RR".
+    nsec: HashMap<String, Vec<DnsRecordBox>>,
 }
 
 impl DnsCache {
@@ -2006,6 +2036,7 @@ impl DnsCache {
             txt: HashMap::new(),
             addr: HashMap::new(),
             subtype: HashMap::new(),
+            nsec: HashMap::new(),
         }
     }
 
@@ -2046,15 +2077,18 @@ impl DnsCache {
             }
         }
 
+        // get the existing records for the type.
         let record_vec = match incoming.get_type() {
             TYPE_PTR => self.ptr.entry(entry_name).or_default(),
             TYPE_SRV => self.srv.entry(entry_name).or_default(),
             TYPE_TXT => self.txt.entry(entry_name).or_default(),
             TYPE_A => self.addr.entry(entry_name).or_default(),
             TYPE_AAAA => self.addr.entry(entry_name).or_default(),
+            TYPE_NSEC => self.nsec.entry(entry_name).or_default(),
             _ => return None,
         };
 
+        // update TTL for existing record or create a new record.
         let (idx, updated) = match record_vec
             .iter_mut()
             .enumerate()
