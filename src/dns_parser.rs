@@ -26,6 +26,7 @@ pub(crate) const TYPE_HINFO: u16 = 13;
 pub(crate) const TYPE_TXT: u16 = 16;
 pub(crate) const TYPE_AAAA: u16 = 28; // IPv6 address
 pub(crate) const TYPE_SRV: u16 = 33;
+pub(crate) const TYPE_NSEC: u16 = 47;
 pub(crate) const TYPE_ANY: u16 = 255;
 
 pub(crate) const CLASS_IN: u16 = 1;
@@ -419,6 +420,63 @@ impl DnsRecordExt for DnsHostInfo {
             return self.cpu == other_hinfo.cpu
                 && self.os == other_hinfo.os
                 && self.record.entry == other_hinfo.record.entry;
+        }
+        false
+    }
+}
+
+#[derive(Debug)]
+struct DnsNSec {
+    record: DnsRecord,
+    next_domain: String,
+    bitmap: Vec<u8>,
+}
+
+impl DnsNSec {
+    fn new(
+        name: &str,
+        ty: u16,
+        class: u16,
+        ttl: u32,
+        next_domain: String,
+        bitmap: Vec<u8>,
+    ) -> Self {
+        let record = DnsRecord::new(name, ty, class, ttl);
+        Self {
+            record,
+            next_domain,
+            bitmap,
+        }
+    }
+}
+
+impl DnsRecordExt for DnsNSec {
+    fn get_record(&self) -> &DnsRecord {
+        &self.record
+    }
+
+    fn get_record_mut(&mut self) -> &mut DnsRecord {
+        &mut self.record
+    }
+
+    fn write(&self, packet: &mut DnsOutPacket) {
+        println!(
+            "writing NSec: next_domain {} bitmap {:?}",
+            &self.next_domain, &self.bitmap
+        );
+        packet.write_bytes(self.next_domain.as_bytes());
+        packet.write_bytes(&self.bitmap);
+    }
+
+    fn any(&self) -> &dyn Any {
+        self
+    }
+
+    fn matches(&self, other: &dyn DnsRecordExt) -> bool {
+        if let Some(other_record) = other.any().downcast_ref::<DnsNSec>() {
+            return self.next_domain == other_record.next_domain
+                && self.bitmap == other_record.bitmap
+                && self.record.entry == other_record.record.entry;
         }
         false
     }
@@ -1022,8 +1080,16 @@ impl DnsIncoming {
                     ttl,
                     self.read_ipv6().into(),
                 ))),
-                _ => {
-                    debug!("Unknown DNS record type");
+                TYPE_NSEC => Some(Box::new(DnsNSec::new(
+                    &name,
+                    ty,
+                    class,
+                    ttl,
+                    self.read_name()?,
+                    self.read_type_bitmap()?,
+                ))),
+                x => {
+                    debug!("Unknown DNS record type: {} name: {}", x, &name);
                     self.offset += length;
                     None
                 }
@@ -1057,6 +1123,24 @@ impl DnsIncoming {
         let num = u16_from_be_slice(&slice[..2]);
         self.offset += 2;
         num
+    }
+
+    fn read_type_bitmap(&mut self) -> Result<Vec<u8>> {
+        let block_num = self.data[self.offset];
+        self.offset += 1;
+        if block_num != 0 {
+            return Err(Error::Msg(format!(
+                "NSEC block number is not 0: {}",
+                block_num
+            )));
+        }
+
+        let block_len = self.data[self.offset] as usize;
+        self.offset += 1;
+        let bitmap = self.data[self.offset..self.offset + block_len].to_vec();
+        self.offset += block_len;
+
+        Ok(bitmap)
     }
 
     fn read_vec(&mut self, length: usize) -> Vec<u8> {
