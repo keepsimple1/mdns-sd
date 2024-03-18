@@ -1143,7 +1143,7 @@ impl DnsIncoming {
         }
 
         let block_len = self.data[self.offset] as usize;
-        if block_len < 1 || block_len > 32 {
+        if !(1..=32).contains(&block_len) {
             return Err(Error::Msg(format!(
                 "NSEC block length must be in the range 1-32: {}",
                 block_len
