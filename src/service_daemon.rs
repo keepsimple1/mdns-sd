@@ -1365,7 +1365,7 @@ impl Zeroconf {
     }
 
     fn send_query(&self, name: &str, qtype: u16) {
-        warn!("Sending multicast query for {} qtype {}", name, qtype);
+        debug!("Sending multicast query for {} qtype {}", name, qtype);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         out.add_question(name, qtype);
 
