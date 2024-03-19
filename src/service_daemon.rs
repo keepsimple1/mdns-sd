@@ -1584,15 +1584,8 @@ impl Zeroconf {
                         && nsec_types.contains(&TYPE_A)
                         && nsec_types.contains(&TYPE_AAAA)
                     {
-                        let host_port = (info.get_hostname(), info.get_port());
-                        if let Ok(addrs) = host_port.to_socket_addrs() {
-                            debug!("Found socket addrs: {:?}", &addrs);
-                            for addr in addrs {
-                                info.insert_ipaddr(addr.ip());
-                            }
-                        } else {
-                            debug!("CANNOT resolve socket addr for: {:?}", &host_port);
-                        }
+                        self.send_query(info.get_hostname(), TYPE_A);
+                        self.send_query(info.get_hostname(), TYPE_AAAA);
                     }
                 }
             }
