@@ -1571,6 +1571,12 @@ impl Zeroconf {
             }
         }
 
+        // if we have no A or AAAA records yet, try to query them if we have a hostname
+        if !info.get_hostname().is_empty() && info.get_addresses().is_empty() {
+            self.send_query(info.get_hostname(), TYPE_A);
+            self.send_query(info.get_hostname(), TYPE_AAAA);
+        }
+
         Ok(info)
     }
 
