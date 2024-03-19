@@ -263,7 +263,6 @@ impl ServiceInfo {
         let some_missing = self.ty_domain.is_empty()
             || self.fullname.is_empty()
             || self.server.is_empty()
-            || self.port == 0
             || self.addresses.is_empty();
         !some_missing
     }
