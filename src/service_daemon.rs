@@ -526,6 +526,7 @@ impl ServiceDaemon {
                     }
                 }
             }
+            zc.cache.evict_expired_addr(now);
 
             // check IP changes.
             if now > next_ip_check {
@@ -2095,15 +2096,47 @@ impl DnsCache {
         found
     }
 
-    /// Evicts expired PTR and SRV records for given `ty_domain`, and
-    /// returns the set of expired instance names.
+    /// Evicts any address records that expired.
+    /// We don't send any event notifications for expired address yet.
+    /// It is possible that we need to do something extra in future.
+    fn evict_expired_addr(&mut self, now: u64) {
+        for records in self.addr.values_mut() {
+            records.retain(|addr| !addr.get_record().is_expired(now))
+        }
+    }
+
+    /// Evicts expired PTR and SRV, TXT records for given `ty_domain`, and
+    /// returns the set of expired instance names according to PTR and SRV.
     ///
     /// The expired instances could due to PTR records and/or SRV records.
     fn evict_expired_ty_domain(&mut self, ty_domain: &str, now: u64) -> HashSet<String> {
         let mut expired_instances = HashSet::new();
 
         if let Some(ptr_records) = self.ptr.get_mut(ty_domain) {
-            // check PTR records first
+            // check records using instance names from PTR
+            for ptr in ptr_records.iter() {
+                if let Some(dns_ptr) = ptr.any().downcast_ref::<DnsPointer>() {
+                    let instance_name = &dns_ptr.alias;
+
+                    // check SRV records
+                    if let Some(srv_records) = self.srv.get_mut(instance_name) {
+                        srv_records.retain(|srv| {
+                            let expired = srv.get_record().is_expired(now);
+                            if expired {
+                                expired_instances.insert(srv.get_name().to_string());
+                            }
+                            !expired
+                        });
+                    }
+
+                    // check TXT records
+                    if let Some(txt_records) = self.txt.get_mut(instance_name) {
+                        txt_records.retain(|txt| !txt.get_record().is_expired(now))
+                    }
+                }
+            }
+
+            // check PTR records
             ptr_records.retain(|x| {
                 let expired = x.get_record().is_expired(now);
                 if expired {
@@ -2113,21 +2146,6 @@ impl DnsCache {
                 }
                 !expired
             });
-
-            // check SRV records of remaining PTR records
-            for ptr in ptr_records.iter() {
-                if let Some(dns_ptr) = ptr.any().downcast_ref::<DnsPointer>() {
-                    if let Some(srv_records) = self.srv.get_mut(&dns_ptr.alias) {
-                        srv_records.retain(|srv| {
-                            let expired = srv.get_record().is_expired(now);
-                            if expired {
-                                expired_instances.insert(srv.get_name().to_string());
-                            }
-                            !expired
-                        });
-                    }
-                }
-            }
         }
 
         expired_instances
