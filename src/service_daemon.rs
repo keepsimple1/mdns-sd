@@ -507,8 +507,8 @@ impl ServiceDaemon {
             // Refresh cache records with active queriers
             let mut query_count = 0;
             for (ty_domain, _sender) in zc.queriers.iter() {
-                for (instance, qtype) in zc.cache.refresh_due(ty_domain) {
-                    zc.send_query(&instance, qtype);
+                for instance in zc.cache.refresh_due(ty_domain) {
+                    zc.send_query(&instance, TYPE_ANY);
                     query_count += 1;
                 }
             }
@@ -1365,7 +1365,7 @@ impl Zeroconf {
     }
 
     fn send_query(&self, name: &str, qtype: u16) {
-        debug!("Sending multicast query for {}", name);
+        warn!("Sending multicast query for {} qtype {}", name, qtype);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         out.add_question(name, qtype);
 
@@ -2062,6 +2062,7 @@ impl DnsCache {
         {
             Some((i, r)) => {
                 r.reset_ttl(incoming.as_ref());
+                warn!("reset TTL for {}", r.get_name());
                 (i, false)
             }
             None => {
@@ -2156,10 +2157,10 @@ impl DnsCache {
     ///
     /// For these instances, their refresh time will be updated so that
     /// they will not refresh again.
-    fn refresh_due(&mut self, ty_domain: &str) -> Vec<(String, u16)> {
+    fn refresh_due(&mut self, ty_domain: &str) -> HashSet<String> {
         let now = current_time_millis();
 
-        let mut due_list = vec![];
+        let mut due_set = HashSet::new();
         let mut not_due = vec![];
 
         // find PTR records that are due for refresh.
@@ -2169,7 +2170,7 @@ impl DnsCache {
             if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
                 let instance = ptr.alias.clone();
                 if is_due {
-                    due_list.push((instance, TYPE_ANY));
+                    due_set.insert(instance);
                 } else {
                     not_due.push(instance);
                 }
@@ -2178,18 +2179,12 @@ impl DnsCache {
 
         // find other records that are due for refresh.
         for instance in not_due {
-            let srv_due = self.refresh_due_srv(&instance, now);
-            let txt_due = self.refresh_due_txt(&instance, now);
-            if srv_due && txt_due {
-                due_list.push((instance, TYPE_ANY));
-            } else if srv_due {
-                due_list.push((instance, TYPE_SRV));
-            } else if txt_due {
-                due_list.push((instance, TYPE_TXT));
+            if self.refresh_due_srv(&instance, now) || self.refresh_due_txt(&instance, now) {
+                due_set.insert(instance);
             }
         }
 
-        due_list
+        due_set
     }
 
     /// Checks if any SRV records of `instance` are due to refresh.
