@@ -507,8 +507,8 @@ impl ServiceDaemon {
             // Refresh cache records with active queriers
             let mut query_count = 0;
             for (ty_domain, _sender) in zc.queriers.iter() {
-                for instance in zc.cache.refresh_due(ty_domain).iter() {
-                    zc.send_query(instance, TYPE_ANY);
+                for (instance, qtype) in zc.cache.refresh_due(ty_domain) {
+                    zc.send_query(&instance, qtype);
                     query_count += 1;
                 }
             }
@@ -2156,7 +2156,7 @@ impl DnsCache {
     ///
     /// For these instances, their refresh time will be updated so that
     /// they will not refresh again.
-    fn refresh_due(&mut self, ty_domain: &str) -> Vec<String> {
+    fn refresh_due(&mut self, ty_domain: &str) -> Vec<(String, u16)> {
         let now = current_time_millis();
 
         let mut due_list = vec![];
@@ -2169,7 +2169,7 @@ impl DnsCache {
             if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
                 let instance = ptr.alias.clone();
                 if is_due {
-                    due_list.push(instance);
+                    due_list.push((instance, TYPE_ANY));
                 } else {
                     not_due.push(instance);
                 }
@@ -2178,8 +2178,14 @@ impl DnsCache {
 
         // find other records that are due for refresh.
         for instance in not_due {
-            if self.refresh_due_srv(&instance, now) || self.refresh_due_txt(&instance, now) {
-                due_list.push(instance);
+            let srv_due = self.refresh_due_srv(&instance, now);
+            let txt_due = self.refresh_due_txt(&instance, now);
+            if srv_due && txt_due {
+                due_list.push((instance, TYPE_ANY));
+            } else if srv_due {
+                due_list.push((instance, TYPE_SRV));
+            } else if txt_due {
+                due_list.push((instance, TYPE_TXT));
             }
         }
 
