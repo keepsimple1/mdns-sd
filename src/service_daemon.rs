@@ -1574,21 +1574,12 @@ impl Zeroconf {
             }
         }
 
-        // check for NSEC records
-        if let Some(records) = self.cache.nsec.get(fullname) {
-            if let Some(record) = records.first() {
-                if let Some(dns_nsec) = record.any().downcast_ref::<DnsNSec>() {
-                    debug!("Found NSEC types: {:?}", dns_nsec.types());
-                    let nsec_types = dns_nsec.types();
-                    if info.get_addresses().is_empty()
-                        && nsec_types.contains(&TYPE_A)
-                        && nsec_types.contains(&TYPE_AAAA)
-                    {
-                        self.send_query(info.get_hostname(), TYPE_A);
-                        self.send_query(info.get_hostname(), TYPE_AAAA);
-                    }
-                }
-            }
+        log::info!("Got info so far {:#?}", info);
+
+        if !info.get_hostname().is_empty() && info.get_addresses().is_empty() {
+            log::info!("Got hostname and no addreses, sending queries");
+            self.send_query(info.get_hostname(), TYPE_A);
+            self.send_query(info.get_hostname(), TYPE_AAAA);
         }
         Ok(info)
     }
@@ -1709,6 +1700,7 @@ impl Zeroconf {
                         if let Ok(info) =
                             self.create_service_info_from_cache(ty_domain, &dns_ptr.alias)
                         {
+                            log::info!("handle response: Got info {:#?}", info);
                             if info.is_ready() {
                                 resolved.insert(dns_ptr.alias.clone());
                                 call_listener(
