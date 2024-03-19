@@ -655,7 +655,7 @@ impl ServiceDaemon {
             },
 
             Command::Resolve(instance, try_count) => {
-                let pending_query = zc.query_missing_srv(&instance);
+                let pending_query = zc.query_unresolved(&instance);
                 let max_try = 3;
                 if pending_query && try_count < max_try {
                     // Note that if the current try already succeeds, the next retransmission
@@ -1446,20 +1446,29 @@ impl Zeroconf {
         true
     }
 
-    /// Sends TYPE_ANY query for instances who are missing SRV records.
     /// Returns true, if sent query. Returns false if SRV already exists.
-    fn query_missing_srv(&mut self, instance: &str) -> bool {
-        if self.cache.srv.contains_key(instance) {
-            return false;
-        }
-
+    fn query_unresolved(&mut self, instance: &str) -> bool {
         if !valid_instance_name(instance) {
             debug!("instance name {} not valid", instance);
             return false;
         }
 
-        self.send_query(instance, TYPE_ANY);
-        true
+        if let Some(records) = self.cache.srv.get(instance) {
+            for record in records {
+                if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
+                    if self.cache.addr.get(&srv.host).is_none() {
+                        self.send_query(&srv.host, TYPE_A);
+                        self.send_query(&srv.host, TYPE_AAAA);
+                        return true;
+                    }
+                }
+            }
+        } else {
+            self.send_query(instance, TYPE_ANY);
+            return true;
+        }
+
+        false
     }
 
     /// Checks if `ty_domain` has records in the cache. If yes, sends the
