@@ -516,17 +516,16 @@ impl ServiceDaemon {
 
             // check and evict expired records in our cache
             let now = current_time_millis();
-            let map = zc.queriers.clone();
-            zc.cache.evict_expired(now, |expired| {
-                if let Some(dns_ptr) = expired.any().downcast_ref::<DnsPointer>() {
-                    let ty_domain = dns_ptr.get_name();
-                    call_listener(
-                        &map,
-                        ty_domain,
-                        ServiceEvent::ServiceRemoved(ty_domain.to_string(), dns_ptr.alias.clone()),
-                    );
+            for (ty_domain, sender) in zc.queriers.iter() {
+                let expired_instances = zc.cache.evict_expired_ty_domain(ty_domain, now);
+                for instance in expired_instances {
+                    let event = ServiceEvent::ServiceRemoved(ty_domain.to_string(), instance);
+                    match sender.send(event) {
+                        Ok(()) => debug!("Sent ServiceRemoved to listener successfully"),
+                        Err(e) => error!("Failed to send event: {}", e),
+                    }
                 }
-            });
+            }
 
             // check IP changes.
             if now > next_ip_check {
@@ -2096,27 +2095,42 @@ impl DnsCache {
         found
     }
 
-    /// Iterate all records and remove ones that expired, allowing
-    /// a function `f` to react with the expired ones.
-    fn evict_expired<F>(&mut self, now: u64, f: F)
-    where
-        F: Fn(&DnsRecordBox), // Caller has a chance to do something with expired
-    {
-        let all_records = self
-            .ptr
-            .values_mut()
-            .chain(self.srv.values_mut())
-            .chain(self.txt.values_mut())
-            .chain(self.addr.values_mut());
-        for records in all_records {
-            records.retain(|x| {
+    /// Evicts expired PTR and SRV records for given `ty_domain`, and
+    /// returns the set of expired instance names.
+    ///
+    /// The expired instances could due to PTR records and/or SRV records.
+    fn evict_expired_ty_domain(&mut self, ty_domain: &str, now: u64) -> HashSet<String> {
+        let mut expired_instances = HashSet::new();
+
+        if let Some(ptr_records) = self.ptr.get_mut(ty_domain) {
+            // check PTR records first
+            ptr_records.retain(|x| {
                 let expired = x.get_record().is_expired(now);
                 if expired {
-                    f(x);
+                    if let Some(dns_ptr) = x.any().downcast_ref::<DnsPointer>() {
+                        expired_instances.insert(dns_ptr.alias.clone());
+                    }
                 }
-                !expired // only retain non-expired ones
+                !expired
             });
+
+            // check SRV records of remaining PTR records
+            for ptr in ptr_records.iter() {
+                if let Some(dns_ptr) = ptr.any().downcast_ref::<DnsPointer>() {
+                    if let Some(srv_records) = self.srv.get_mut(&dns_ptr.alias) {
+                        srv_records.retain(|srv| {
+                            let expired = srv.get_record().is_expired(now);
+                            if expired {
+                                expired_instances.insert(srv.get_name().to_string());
+                            }
+                            !expired
+                        });
+                    }
+                }
+            }
         }
+
+        expired_instances
     }
 
     /// Returns the list of instance names that are due for refresh
