@@ -2062,7 +2062,7 @@ impl DnsCache {
         {
             Some((i, r)) => {
                 r.reset_ttl(incoming.as_ref());
-                warn!("reset TTL for {}", r.get_name());
+                debug!("reset TTL for {} qtype {}", r.get_name(), r.get_type());
                 (i, false)
             }
             None => {
@@ -2179,7 +2179,9 @@ impl DnsCache {
 
         // find other records that are due for refresh.
         for instance in not_due {
-            if self.refresh_due_srv(&instance, now) || self.refresh_due_txt(&instance, now) {
+            let srv_due = self.refresh_due_srv(&instance, now);
+            let txt_due = self.refresh_due_txt(&instance, now);
+            if srv_due || txt_due {
                 due_set.insert(instance);
             }
         }

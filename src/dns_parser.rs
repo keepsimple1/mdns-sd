@@ -138,6 +138,12 @@ impl DnsRecord {
         if self.is_expired(now) || !self.refresh_due(now) {
             return false;
         }
+
+        debug!(
+            "{} qtype {} is due to refresh",
+            &self.entry.name, self.entry.ty
+        );
+
         self.refresh_no_more();
         true
     }
