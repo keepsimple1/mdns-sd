@@ -94,8 +94,14 @@ pub(crate) struct DnsRecord {
 impl DnsRecord {
     fn new(name: &str, ty: u16, class: u16, ttl: u32) -> Self {
         let created = current_time_millis();
+
+        // From RFC 6762 section 5.2:
+        // "... The querier should plan to issue a query at 80% of the record
+        // lifetime, and then if no answer is received, at 85%, 90%, and 95%."
         let refresh = get_expiration_time(created, ttl, 80);
+
         let expires = get_expiration_time(created, ttl, 100);
+
         Self {
             entry: DnsEntry::new(name.to_string(), ty, class),
             ttl,
@@ -172,6 +178,8 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
         self.get_record().entry.ty
     }
 
+    /// Resets TTL using `other` record.
+    /// `self.refresh` and `self.expires` are also reset.
     fn reset_ttl(&mut self, other: &dyn DnsRecordExt) {
         self.get_record_mut().reset_ttl(other.get_record());
     }
@@ -1202,9 +1210,11 @@ fn u32_from_be_slice(s: &[u8]) -> u32 {
     u32::from_be_bytes(u8_array)
 }
 
-/// Returns the time in millis at which this record will have expired
+/// Returns the UNIX time in millis at which this record will have expired
 /// by a certain percentage.
 fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
+    // 'created' is in millis, 'ttl' is in seconds, hence:
+    // ttl * 1000 * (percent / 100) => ttl * percent * 10
     created + (ttl * percent * 10) as u64
 }
 
