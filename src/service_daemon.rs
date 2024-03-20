@@ -724,7 +724,11 @@ fn new_socket_bind(intf: &Interface) -> Result<(Socket, Socket)> {
             sock.set_multicast_if_v6(intf.index.unwrap_or(0))
                 .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
 
-            let uni_addr = SocketAddrV6::new(*ip, MDNS_PORT, 0, 0);
+            let scope_id = match intf.index {
+                Some(idx) => idx,
+                None => 0,
+            };
+            let uni_addr = SocketAddrV6::new(*ip, MDNS_PORT, 0, scope_id);
             let uni_sock = new_socket(uni_addr.into(), true)?;
             Ok((sock, uni_sock))
         }
@@ -933,7 +937,14 @@ impl Zeroconf {
                 }
             };
 
-            intf_socks.insert(intf.ip(), IntfSock { intf, sock, uni_sock });
+            intf_socks.insert(
+                intf.ip(),
+                IntfSock {
+                    intf,
+                    sock,
+                    uni_sock,
+                },
+            );
         }
 
         let monitors = Vec::new();
@@ -1140,7 +1151,14 @@ impl Zeroconf {
             return;
         }
 
-        self.intf_socks.insert(new_ip, IntfSock { intf, sock, uni_sock });
+        self.intf_socks.insert(
+            new_ip,
+            IntfSock {
+                intf,
+                sock,
+                uni_sock,
+            },
+        );
 
         self.add_addr_in_my_services(new_ip);
 
@@ -1413,14 +1431,24 @@ impl Zeroconf {
             }
 
             if let Err(e) = self.poller.delete(&intf_sock.uni_sock) {
-                error!("failed to remove uni_sock {:?} from poller: {}", intf_sock, &e);
+                error!(
+                    "failed to remove uni_sock {:?} from poller: {}",
+                    intf_sock, &e
+                );
             }
 
             // Replace the closed socket with a new one.
             match new_socket_bind(&intf_sock.intf) {
                 Ok((sock, uni_sock)) => {
                     let intf = intf_sock.intf.clone();
-                    self.intf_socks.insert(*ip, IntfSock { intf, sock, uni_sock });
+                    self.intf_socks.insert(
+                        *ip,
+                        IntfSock {
+                            intf,
+                            sock,
+                            uni_sock,
+                        },
+                    );
                     debug!("reset socket for IP {}", ip);
                 }
                 Err(e) => error!("re-bind a socket to {}: {}", ip, e),
