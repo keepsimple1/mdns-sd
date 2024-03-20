@@ -19,9 +19,8 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let mut should_unreg = false;
     for arg in args.iter() {
-        match arg.as_str() {
-            "--unregister" => should_unreg = true,
-            _ => {}
+        if arg.as_str() == "--unregister" {
+            should_unreg = true
         }
     }
 
@@ -85,12 +84,9 @@ fn main() {
         // Monitor the daemon events.
         while let Ok(event) = monitor.recv() {
             println!("Daemon event: {:?}", &event);
-            match event {
-                DaemonEvent::Error(e) => {
-                    println!("Failed: {}", e);
-                    break;
-                }
-                _ => {}
+            if let DaemonEvent::Error(e) = event {
+                println!("Failed: {}", e);
+                break;
             }
         }
     }

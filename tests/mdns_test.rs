@@ -211,8 +211,7 @@ fn integration_success() {
                 }
             },
             Err(e) => {
-                println!("browse error: {}", e);
-                assert!(false);
+                panic!("browse error: {}", e);
             }
         }
     }
@@ -282,8 +281,7 @@ fn service_without_properties_with_alter_net_v4() {
                 }
             },
             Err(e) => {
-                println!("browse error: {}", e);
-                assert!(false);
+                panic!("browse error: {}", e);
             }
         }
     }
@@ -357,8 +355,7 @@ fn service_without_properties_with_alter_net_v6() {
                 }
             },
             Err(e) => {
-                println!("browse error: {}", e);
-                assert!(false);
+                panic!("browse error: {}", e);
             }
         }
     }
@@ -479,25 +476,20 @@ fn service_with_named_interface_only() {
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
 
-    loop {
-        match browse_chan.recv_timeout(timeout) {
-            Ok(event) => match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    let addrs = info.get_addresses();
-                    resolved = true;
-                    println!(
-                        "Resolved a service of {} addr(s): {:?}",
-                        &info.get_fullname(),
-                        addrs
-                    );
-                    break;
-                }
-                e => {
-                    println!("Received event {:?}", e);
-                }
-            },
-            Err(_) => {
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                let addrs = info.get_addresses();
+                resolved = true;
+                println!(
+                    "Resolved a service of {} addr(s): {:?}",
+                    &info.get_fullname(),
+                    addrs
+                );
                 break;
+            }
+            e => {
+                println!("Received event {:?}", e);
             }
         }
     }
@@ -520,25 +512,20 @@ fn service_with_named_interface_only() {
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
 
-    loop {
-        match browse_chan.recv_timeout(timeout) {
-            Ok(event) => match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    let addrs = info.get_addresses();
-                    resolved = true;
-                    println!(
-                        "Resolved a service of {} addr(s): {:?}",
-                        &info.get_fullname(),
-                        addrs
-                    );
-                    break;
-                }
-                e => {
-                    println!("Received event {:?}", e);
-                }
-            },
-            Err(_) => {
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                let addrs = info.get_addresses();
+                resolved = true;
+                println!(
+                    "Resolved a service of {} addr(s): {:?}",
+                    &info.get_fullname(),
+                    addrs
+                );
                 break;
+            }
+            e => {
+                println!("Received event {:?}", e);
             }
         }
     }
@@ -579,29 +566,24 @@ fn service_with_ipv4_only() {
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
 
-    loop {
-        match browse_chan.recv_timeout(timeout) {
-            Ok(event) => match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    let addrs = info.get_addresses();
-                    resolved = true;
-                    println!(
-                        "Resolved a service of {} addr(s): {:?}",
-                        &info.get_fullname(),
-                        addrs
-                    );
-                    assert!(!info.get_addresses().is_empty());
-                    for addr in info.get_addresses().iter() {
-                        assert!(addr.is_ipv4());
-                    }
-                    break;
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                let addrs = info.get_addresses();
+                resolved = true;
+                println!(
+                    "Resolved a service of {} addr(s): {:?}",
+                    &info.get_fullname(),
+                    addrs
+                );
+                assert!(!info.get_addresses().is_empty());
+                for addr in info.get_addresses().iter() {
+                    assert!(addr.is_ipv4());
                 }
-                e => {
-                    println!("Received event {:?}", e);
-                }
-            },
-            Err(_) => {
                 break;
+            }
+            e => {
+                println!("Received event {:?}", e);
             }
         }
     }
@@ -774,8 +756,7 @@ fn subtype() {
                     }
                 },
                 Err(e) => {
-                    println!("browse error: {}", e);
-                    assert!(false);
+                    panic!("browse error: {}", e);
                 }
             }
         }
@@ -811,9 +792,8 @@ fn service_name_check() {
     // Verify that the daemon reported error.
     let event = monitor.recv_timeout(Duration::from_millis(500)).unwrap();
     assert!(matches!(event, DaemonEvent::Error(_)));
-    match event {
-        DaemonEvent::Error(e) => println!("Daemon error: {}", e),
-        _ => {}
+    if let DaemonEvent::Error(e) = event {
+        println!("Daemon error: {}", e)
     }
 
     // Verify that we can increase the service name length max.

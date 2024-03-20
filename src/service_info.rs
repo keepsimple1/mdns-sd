@@ -743,7 +743,7 @@ mod tests {
 
         // test decode
         let decoded = decode_txt(&encoded);
-        assert!(&properties[..] == &decoded[..]);
+        assert!(properties[..] == decoded[..]);
 
         // test empty value
         let properties = vec![TxtProperty::from(&("key3", ""))];
