@@ -2305,7 +2305,7 @@ fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock) -> &'a [u8] {
 /// Sends out `packet` to `addr` on the socket in `intf_sock`.
 fn send_packet(packet: &[u8], addr: SocketAddr, intf_sock: &IntfSock) {
     let sockaddr = SockAddr::from(addr);
-    match intf_sock.sock.send_to(packet, &sockaddr) {
+    match intf_sock.uni_sock.send_to(packet, &sockaddr) {
         Ok(sz) => debug!("sent out {} bytes on interface {:?}", sz, &intf_sock.intf),
         Err(e) => error!(
             "Failed to send to {} via {:?}: {}",
