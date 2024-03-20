@@ -85,7 +85,7 @@ pub enum UnregisterStatus {
 }
 
 /// Status code for the service daemon.
-#[derive(Debug, PartialEq, Clone, Eq)]
+#[derive(Debug, PartialEq, Clone)]
 #[non_exhaustive]
 pub enum DaemonStatus {
     /// The daemon is running as normal.
@@ -2305,9 +2305,9 @@ mod tests {
 
     #[test]
     fn test_instance_name() {
-        assert!(valid_instance_name("my-laser._printer._tcp.local."));
-        assert!(valid_instance_name("my-laser.._printer._tcp.local."));
-        assert!(!valid_instance_name("_printer._tcp.local."));
+        assert_eq!(valid_instance_name("my-laser._printer._tcp.local."), true);
+        assert_eq!(valid_instance_name("my-laser.._printer._tcp.local."), true);
+        assert_eq!(valid_instance_name("_printer._tcp.local."), false);
     }
 
     #[test]

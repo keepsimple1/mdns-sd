@@ -107,6 +107,7 @@
 //! - Only support multicast, not unicast send/recv.
 //! - Only support 32-bit or bigger platforms, not 16-bit platforms.
 
+#![forbid(unsafe_code)]
 #![allow(clippy::single_component_path_imports)]
 
 // log for logging (optional).
