@@ -85,7 +85,7 @@ pub enum UnregisterStatus {
 }
 
 /// Status code for the service daemon.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Eq)]
 #[non_exhaustive]
 pub enum DaemonStatus {
     /// The daemon is running as normal.
