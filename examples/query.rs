@@ -56,7 +56,7 @@ fn print_usage() {
     println!("Usage: cargo run --example query <service_type_without_domain_postfix>");
     println!("Example: ");
     println!("cargo run --example query _my-service._udp");
-    println!("");
+    println!();
     println!("You can also do a meta-query per RFC 6763 to find which services are available:");
     println!("cargo run --example query _services._dns-sd._udp");
 }

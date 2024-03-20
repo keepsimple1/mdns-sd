@@ -2305,9 +2305,9 @@ mod tests {
 
     #[test]
     fn test_instance_name() {
-        assert_eq!(valid_instance_name("my-laser._printer._tcp.local."), true);
-        assert_eq!(valid_instance_name("my-laser.._printer._tcp.local."), true);
-        assert_eq!(valid_instance_name("_printer._tcp.local."), false);
+        assert!(valid_instance_name("my-laser._printer._tcp.local."));
+        assert!(valid_instance_name("my-laser.._printer._tcp.local."));
+        assert!(!valid_instance_name("_printer._tcp.local."));
     }
 
     #[test]
