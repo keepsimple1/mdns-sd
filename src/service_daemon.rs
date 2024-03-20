@@ -434,9 +434,18 @@ impl ServiceDaemon {
 
         // Add mDNS sockets to the poller.
         for (ip, if_sock) in zc.intf_socks.iter() {
-            let key = Zeroconf::add_poll_impl(&mut zc.poll_ids, &mut zc.poll_id_count, *ip);
+            let (key, uni_key) =
+                Zeroconf::add_poll_impl(&mut zc.poll_ids, &mut zc.poll_id_count, *ip);
             if let Err(e) = zc.poller.add(&if_sock.sock, polling::Event::readable(key)) {
                 error!("add socket of {:?} to poller: {}", ip, e);
+                return None;
+            }
+
+            if let Err(e) = zc
+                .poller
+                .add(&if_sock.uni_sock, polling::Event::readable(uni_key))
+            {
+                error!("add unicast socket of {:?} to poller: {}", ip, e);
                 return None;
             }
         }
@@ -1034,7 +1043,7 @@ impl Zeroconf {
     }
 
     /// Insert a new IP into the poll map and return key
-    fn add_poll(&mut self, ip: IpAddr) -> usize {
+    fn add_poll(&mut self, ip: IpAddr) -> (usize, usize) {
         Self::add_poll_impl(&mut self.poll_ids, &mut self.poll_id_count, ip)
     }
 
@@ -1044,11 +1053,16 @@ impl Zeroconf {
         poll_ids: &mut HashMap<usize, IpAddr>,
         poll_id_count: &mut usize,
         ip: IpAddr,
-    ) -> usize {
+    ) -> (usize, usize) {
         let key = *poll_id_count;
         *poll_id_count += 1;
         let _ = (*poll_ids).insert(key, ip);
-        key
+
+        let uni_key = *poll_id_count;
+        *poll_id_count += 1;
+        let _ = (*poll_ids).insert(uni_key, ip);
+
+        (key, uni_key)
     }
 
     /// Apply all selections to `interfaces`.
@@ -1142,9 +1156,16 @@ impl Zeroconf {
         };
 
         // Add the new interface into the poller.
-        let key = self.add_poll(new_ip);
+        let (key, uni_key) = self.add_poll(new_ip);
         if let Err(e) = self.poller.add(&sock, polling::Event::readable(key)) {
             error!("check_ip_changes: poller add ip {}: {}", new_ip, e);
+            return;
+        }
+        if let Err(e) = self
+            .poller
+            .add(&uni_sock, polling::Event::readable(uni_key))
+        {
+            error!("check_ip_changes: poller add ip unicast {}: {}", new_ip, e);
             return;
         }
 
