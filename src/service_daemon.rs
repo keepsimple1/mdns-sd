@@ -724,10 +724,7 @@ fn new_socket_bind(intf: &Interface) -> Result<(Socket, Socket)> {
             sock.set_multicast_if_v6(intf.index.unwrap_or(0))
                 .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
 
-            let scope_id = match intf.index {
-                Some(idx) => idx,
-                None => 0,
-            };
+            let scope_id = intf.index.unwrap_or(0);
             let uni_addr = SocketAddrV6::new(*ip, MDNS_PORT, 0, scope_id);
             let uni_sock = new_socket(uni_addr.into(), true)?;
             Ok((sock, uni_sock))
