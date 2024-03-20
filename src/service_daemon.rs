@@ -691,13 +691,13 @@ impl ServiceDaemon {
 }
 
 /// Creates a new UDP socket that uses `intf` to send and recv multicast.
-fn new_socket_bind(intf: &Interface) -> Result<Socket> {
+fn new_socket_bind(intf: &Interface) -> Result<(Socket, Socket)> {
     // Use the same socket for receiving and sending multicast packets.
     // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
     let intf_ip = &intf.ip();
     match intf_ip {
         IpAddr::V4(ip) => {
-            let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), MDNS_PORT);
+            let addr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT);
             let sock = new_socket(addr.into(), true)?;
 
             // Join mDNS group to receive packets.
@@ -708,15 +708,12 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
             sock.set_multicast_if_v4(ip)
                 .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
 
-            // Test if we can send packets successfully.
-            let multicast_addr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
-            let test_packet = DnsOutgoing::new(0).to_packet_data();
-            sock.send_to(&test_packet, &multicast_addr)
-                .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
-            Ok(sock)
+            let uni_addr = SocketAddrV4::new(*ip, MDNS_PORT);
+            let uni_sock = new_socket(uni_addr.into(), true)?;
+            Ok((sock, uni_sock))
         }
         IpAddr::V6(ip) => {
-            let addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), MDNS_PORT, 0, 0);
+            let addr = SocketAddrV6::new(GROUP_ADDR_V6, MDNS_PORT, 0, 0);
             let sock = new_socket(addr.into(), true)?;
 
             // Join mDNS group to receive packets.
@@ -727,11 +724,9 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
             sock.set_multicast_if_v6(intf.index.unwrap_or(0))
                 .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
 
-            // We are not sending multicast packets to test this socket as there might
-            // be many IPv6 interfaces on a host and could cause such send error:
-            // "No buffer space available (os error 55)".
-
-            Ok(sock)
+            let uni_addr = SocketAddrV6::new(*ip, MDNS_PORT, 0, 0);
+            let uni_sock = new_socket(uni_addr.into(), true)?;
+            Ok((sock, uni_sock))
         }
     }
 }
@@ -778,6 +773,7 @@ struct ReRun {
 struct IntfSock {
     intf: Interface,
     sock: Socket,
+    uni_sock: Socket,
 }
 
 /// Specify kinds of interfaces. It is used to enable or to disable interfaces in the daemon.
@@ -929,7 +925,7 @@ impl Zeroconf {
         // Note: it is possible that `my_ifaddrs` contains duplicated IP addrs.
         let mut intf_socks = HashMap::new();
         for intf in my_ifaddrs {
-            let sock = match new_socket_bind(&intf) {
+            let (sock, uni_sock) = match new_socket_bind(&intf) {
                 Ok(s) => s,
                 Err(e) => {
                     debug!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
@@ -937,7 +933,7 @@ impl Zeroconf {
                 }
             };
 
-            intf_socks.insert(intf.ip(), IntfSock { intf, sock });
+            intf_socks.insert(intf.ip(), IntfSock { intf, sock, uni_sock });
         }
 
         let monitors = Vec::new();
@@ -1129,7 +1125,7 @@ impl Zeroconf {
     fn add_new_interface(&mut self, intf: Interface) {
         // Bind the new interface.
         let new_ip = intf.ip();
-        let sock = match new_socket_bind(&intf) {
+        let (sock, uni_sock) = match new_socket_bind(&intf) {
             Ok(s) => s,
             Err(e) => {
                 error!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
@@ -1144,7 +1140,7 @@ impl Zeroconf {
             return;
         }
 
-        self.intf_socks.insert(new_ip, IntfSock { intf, sock });
+        self.intf_socks.insert(new_ip, IntfSock { intf, sock, uni_sock });
 
         self.add_addr_in_my_services(new_ip);
 
@@ -1416,11 +1412,15 @@ impl Zeroconf {
                 error!("failed to remove sock {:?} from poller: {}", intf_sock, &e);
             }
 
+            if let Err(e) = self.poller.delete(&intf_sock.uni_sock) {
+                error!("failed to remove uni_sock {:?} from poller: {}", intf_sock, &e);
+            }
+
             // Replace the closed socket with a new one.
             match new_socket_bind(&intf_sock.intf) {
-                Ok(sock) => {
+                Ok((sock, uni_sock)) => {
                     let intf = intf_sock.intf.clone();
-                    self.intf_socks.insert(*ip, IntfSock { intf, sock });
+                    self.intf_socks.insert(*ip, IntfSock { intf, sock, uni_sock });
                     debug!("reset socket for IP {}", ip);
                 }
                 Err(e) => error!("re-bind a socket to {}: {}", ip, e),
@@ -2254,14 +2254,14 @@ fn broadcast_dns_on_intf(out: &DnsOutgoing, intf: &IntfSock) -> Vec<u8> {
     packet
 }
 
-/// Sends an outgoing broadcast packet, and returns the packet bytes.
+/// Sends an outgoing multicast packet, and returns the packet bytes.
 fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock) -> &'a [u8] {
     if packet.len() > MAX_MSG_ABSOLUTE {
         error!("Drop over-sized packet ({})", packet.len());
         return &[];
     }
 
-    let sock: SocketAddr = match intf.intf.addr {
+    let addr: SocketAddr = match intf.intf.addr {
         if_addrs::IfAddr::V4(_) => SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into(),
         if_addrs::IfAddr::V6(_) => {
             let mut sock = SocketAddrV6::new(GROUP_ADDR_V6, MDNS_PORT, 0, 0);
@@ -2270,7 +2270,7 @@ fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock) -> &'a [u8] {
         }
     };
 
-    send_packet(packet, sock, intf);
+    send_packet(packet, addr, intf);
     packet
 }
 
@@ -2406,9 +2406,11 @@ mod tests {
         packet_buffer.add_additional_answer(Box::new(invalidate_ptr_packet));
 
         for intf in intfs {
+            let (sock, uni_sock) = new_socket_bind(&intf).unwrap();
             let intf_sock = IntfSock {
                 intf: intf.clone(),
-                sock: new_socket_bind(&intf).unwrap(),
+                sock,
+                uni_sock,
             };
             broadcast_dns_on_intf(&packet_buffer, &intf_sock);
         }
