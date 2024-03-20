@@ -19,9 +19,8 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let mut should_unreg = false;
     for arg in args.iter() {
-        match arg.as_str() {
-            "--unregister" => should_unreg = true,
-            _ => {}
+        if arg.as_str() == "--unregister" {
+            should_unreg = true
         }
     }
 
@@ -50,12 +49,12 @@ fn main() {
 
     // The key string in TXT properties is case insensitive. Only the first
     // (key, val) pair will take effect.
-    let properties = vec![("PATH", "one"), ("Path", "two"), ("PaTh", "three")];
+    let properties = [("PATH", "one"), ("Path", "two"), ("PaTh", "three")];
 
     // Register a service.
     let service_info = ServiceInfo::new(
         &service_type,
-        &instance_name,
+        instance_name,
         service_hostname,
         my_addrs,
         port,
@@ -85,12 +84,9 @@ fn main() {
         // Monitor the daemon events.
         while let Ok(event) = monitor.recv() {
             println!("Daemon event: {:?}", &event);
-            match event {
-                DaemonEvent::Error(e) => {
-                    println!("Failed: {}", e);
-                    break;
-                }
-                _ => {}
+            if let DaemonEvent::Error(e) = event {
+                println!("Failed: {}", e);
+                break;
             }
         }
     }
@@ -101,7 +97,7 @@ fn print_usage() {
     println!("cargo run --example register <service_type> <instance_name> [--unregister]");
     println!("Options:");
     println!("--unregister: automatically unregister after 2 seconds");
-    println!("");
+    println!();
     println!("For example:");
     println!("cargo run --example register _my-hello._udp test1");
 }

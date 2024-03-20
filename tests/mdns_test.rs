@@ -211,8 +211,7 @@ fn integration_success() {
                 }
             },
             Err(e) => {
-                println!("browse error: {}", e);
-                assert!(false);
+                panic!("browse error: {}", e);
             }
         }
     }
@@ -282,8 +281,7 @@ fn service_without_properties_with_alter_net_v4() {
                 }
             },
             Err(e) => {
-                println!("browse error: {}", e);
-                assert!(false);
+                panic!("browse error: {}", e);
             }
         }
     }
@@ -344,7 +342,7 @@ fn service_without_properties_with_alter_net_v6() {
                     if fullname.as_str() == info.get_fullname() {
                         let addrs: Vec<&IpAddr> = info
                             .get_addresses()
-                            .into_iter()
+                            .iter()
                             .filter(|a| a.is_ipv6())
                             .collect();
                         assert_eq!(addrs.len(), 1); // first_ipv6 but no alter_ipv.
@@ -357,8 +355,7 @@ fn service_without_properties_with_alter_net_v6() {
                 }
             },
             Err(e) => {
-                println!("browse error: {}", e);
-                assert!(false);
+                panic!("browse error: {}", e);
             }
         }
     }
@@ -421,7 +418,7 @@ fn service_txt_properties_key_ascii() {
     assert!(my_service.is_err());
     if let Err(e) = my_service {
         let msg = format!("ERROR: {}", e);
-        assert!(msg.contains("="));
+        assert!(msg.contains('='));
     }
 
     // Verify that properly formatted keys are OK.
@@ -465,7 +462,7 @@ fn service_with_named_interface_only() {
         my_ty_domain,
         "my_instance",
         host_name,
-        &host_ipv4,
+        host_ipv4,
         port,
         None,
     )
@@ -479,30 +476,25 @@ fn service_with_named_interface_only() {
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
 
-    loop {
-        match browse_chan.recv_timeout(timeout) {
-            Ok(event) => match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    let addrs = info.get_addresses();
-                    resolved = true;
-                    println!(
-                        "Resolved a service of {} addr(s): {:?}",
-                        &info.get_fullname(),
-                        addrs
-                    );
-                    break;
-                }
-                e => {
-                    println!("Received event {:?}", e);
-                }
-            },
-            Err(_) => {
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                let addrs = info.get_addresses();
+                resolved = true;
+                println!(
+                    "Resolved a service of {} addr(s): {:?}",
+                    &info.get_fullname(),
+                    addrs
+                );
                 break;
+            }
+            e => {
+                println!("Received event {:?}", e);
             }
         }
     }
 
-    assert!(resolved == false);
+    assert!(!resolved);
 
     // Second, find an interface.
     let if_addrs: Vec<Interface> = my_ip_interfaces()
@@ -520,25 +512,20 @@ fn service_with_named_interface_only() {
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
 
-    loop {
-        match browse_chan.recv_timeout(timeout) {
-            Ok(event) => match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    let addrs = info.get_addresses();
-                    resolved = true;
-                    println!(
-                        "Resolved a service of {} addr(s): {:?}",
-                        &info.get_fullname(),
-                        addrs
-                    );
-                    break;
-                }
-                e => {
-                    println!("Received event {:?}", e);
-                }
-            },
-            Err(_) => {
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                let addrs = info.get_addresses();
+                resolved = true;
+                println!(
+                    "Resolved a service of {} addr(s): {:?}",
+                    &info.get_fullname(),
+                    addrs
+                );
                 break;
+            }
+            e => {
+                println!("Received event {:?}", e);
             }
         }
     }
@@ -565,7 +552,7 @@ fn service_with_ipv4_only() {
         service_ipv4_only,
         "my_instance",
         host_name,
-        &host_ipv4,
+        host_ipv4,
         port,
         None,
     )
@@ -579,29 +566,24 @@ fn service_with_ipv4_only() {
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
 
-    loop {
-        match browse_chan.recv_timeout(timeout) {
-            Ok(event) => match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    let addrs = info.get_addresses();
-                    resolved = true;
-                    println!(
-                        "Resolved a service of {} addr(s): {:?}",
-                        &info.get_fullname(),
-                        addrs
-                    );
-                    assert!(info.get_addresses().len() > 0);
-                    for addr in info.get_addresses().iter() {
-                        assert!(addr.is_ipv4());
-                    }
-                    break;
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                let addrs = info.get_addresses();
+                resolved = true;
+                println!(
+                    "Resolved a service of {} addr(s): {:?}",
+                    &info.get_fullname(),
+                    addrs
+                );
+                assert!(!info.get_addresses().is_empty());
+                for addr in info.get_addresses().iter() {
+                    assert!(addr.is_ipv4());
                 }
-                e => {
-                    println!("Received event {:?}", e);
-                }
-            },
-            Err(_) => {
                 break;
+            }
+            e => {
+                println!("Received event {:?}", e);
             }
         }
     }
@@ -628,7 +610,7 @@ fn service_with_invalid_addr_v4() {
     let alter_ip = ipv4_alter_net(&if_addrs);
     let host_name = "my_host.";
     let port = 5201;
-    let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, &alter_ip, port, None)
+    let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, alter_ip, port, None)
         .expect("valid service info");
     d.register(my_service)
         .expect("Failed to register our service");
@@ -664,7 +646,7 @@ fn service_with_invalid_addr_v4() {
 
     // We cannot resolve the service because the published address
     // is not valid in the LAN.
-    assert_eq!(resolved, false);
+    assert!(!resolved);
 }
 
 #[test]
@@ -685,7 +667,7 @@ fn service_with_invalid_addr_v6() {
     let alter_ip = ipv6_alter_net(&if_addrs);
     let host_name = "my_host.";
     let port = 5201;
-    let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, &alter_ip, port, None)
+    let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, alter_ip, port, None)
         .expect("valid service info");
     d.register(my_service)
         .expect("Failed to register our service");
@@ -721,7 +703,7 @@ fn service_with_invalid_addr_v6() {
 
     // We cannot resolve the service because the published address
     // is not valid in the LAN.
-    assert_eq!(resolved, false);
+    assert!(!resolved);
 }
 
 #[test]
@@ -743,7 +725,7 @@ fn subtype() {
         subtype_domain,
         &instance_name,
         host_name,
-        &host_ipv4,
+        host_ipv4,
         port,
         None,
     )
@@ -774,8 +756,7 @@ fn subtype() {
                     }
                 },
                 Err(e) => {
-                    println!("browse error: {}", e);
-                    assert!(false);
+                    panic!("browse error: {}", e);
                 }
             }
         }
@@ -799,7 +780,7 @@ fn service_name_check() {
         service_name_too_long,
         "my_instance",
         host_name,
-        &host_ipv4,
+        host_ipv4,
         port,
         None,
     )
@@ -811,9 +792,8 @@ fn service_name_check() {
     // Verify that the daemon reported error.
     let event = monitor.recv_timeout(Duration::from_millis(500)).unwrap();
     assert!(matches!(event, DaemonEvent::Error(_)));
-    match event {
-        DaemonEvent::Error(e) => println!("Daemon error: {}", e),
-        _ => {}
+    if let DaemonEvent::Error(e) = event {
+        println!("Daemon error: {}", e)
     }
 
     // Verify that we can increase the service name length max.
@@ -842,7 +822,7 @@ fn service_new_publish_after_browser() {
 
     sleep(Duration::from_millis(1000));
 
-    let txt_properties = vec![("key1", "value1")];
+    let txt_properties = [("key1", "value1")];
     let service_info = ServiceInfo::new(
         "_new-pub._udp.local.",
         "test1",
@@ -907,7 +887,7 @@ fn instance_name_two_dots() {
         service_type,
         instance_name,
         host_name,
-        &host_ipv4,
+        host_ipv4,
         port,
         None,
     )

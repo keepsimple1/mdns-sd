@@ -27,7 +27,7 @@ fn test_addr_str() {
 
     // verify that `&String` also works.
     assert_eq!(
-        (&addr).as_ip_addrs(),
+        addr.as_ip_addrs(),
         Ok({
             let mut set = HashSet::new();
             set.insert(Ipv4Addr::new(127, 0, 0, 1).into());
@@ -134,7 +134,7 @@ fn test_addr_ip() {
     );
 
     assert_eq!(
-        (&ip).as_ip_addrs(),
+        ip.as_ip_addrs(),
         Ok({
             let mut set = HashSet::new();
             set.insert(Ipv4Addr::new(127, 0, 0, 1).into());
