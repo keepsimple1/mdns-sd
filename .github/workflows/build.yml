@@ -29,4 +29,4 @@ jobs:
       - name: Run clippy and fail if any warnings
         run: cargo clippy -- -D warnings
       - name: Run tests
-        run: RUST_LOG=debug cargo test
+        run: cargo test
