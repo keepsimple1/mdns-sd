@@ -2376,8 +2376,6 @@ mod tests {
 
     #[test]
     fn service_with_temporarily_invalidated_ptr() {
-        env_logger::init();
-
         // Create a daemon
         let d = ServiceDaemon::new().expect("Failed to create daemon");
 
