@@ -128,6 +128,7 @@ pub type Metrics = HashMap<String, i64>;
 
 const SIGNAL_SOCK_EVENT_KEY: usize = usize::MAX - 1; // avoid to overlap with zc.poll_ids
 const UNI_SOCK_V4_EVENT_KEY: usize = usize::MAX - 2;
+const UNI_SOCK_V6_EVENT_KEY: usize = usize::MAX - 3;
 
 /// A daemon thread for mDNS
 ///
@@ -404,6 +405,18 @@ impl ServiceDaemon {
                 continue;
             }
 
+            if ev.key == UNI_SOCK_V6_EVENT_KEY {
+                while zc.handle_unicast_read_v6() {}
+
+                if let Err(e) = zc
+                    .poller
+                    .modify(&zc.uni_sock_v6, polling::Event::readable(ev.key))
+                {
+                    error!("failed to modify poller for uni socket v6: {}", e);
+                }
+                continue;
+            }
+
             // Read until no more packets available.
             let ip = match zc.poll_ids.get(&ev.key) {
                 Some(ip) => *ip,
@@ -446,10 +459,18 @@ impl ServiceDaemon {
         }
 
         if let Err(e) = zc.poller.add(
-            &zc.signal_sock,
+            &zc.uni_sock,
             polling::Event::readable(UNI_SOCK_V4_EVENT_KEY),
         ) {
             error!("failed to add unicast socket to the poller: {}", e);
+            return None;
+        }
+
+        if let Err(e) = zc.poller.add(
+            &zc.uni_sock_v6,
+            polling::Event::readable(UNI_SOCK_V6_EVENT_KEY),
+        ) {
+            error!("failed to add unicast v6 socket to the poller: {}", e);
             return None;
         }
 
@@ -922,7 +943,9 @@ struct Zeroconf {
     /// Socket for signaling.
     signal_sock: UdpSocket,
 
+    /// Socket for unicast.
     uni_sock: UdpSocket,
+    uni_sock_v6: UdpSocket,
 
     timers: Vec<u64>,
 
@@ -963,6 +986,10 @@ impl Zeroconf {
             .set_nonblocking(true)
             .map_err(|e| e_fmt!("failed to set nonblocking for signal socket: {}", e))?;
 
+        let uni_addr_v6 = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, MDNS_PORT, 0, 0);
+        let uni_sock_v6 = UdpSocket::bind(uni_addr_v6)
+            .map_err(|e| e_fmt!("failed to bind unicast socket for v6: {}", e))?;
+
         let monitors = Vec::new();
         let service_name_len_max = SERVICE_NAME_LEN_MAX_DEFAULT;
 
@@ -986,6 +1013,7 @@ impl Zeroconf {
             if_selections,
             signal_sock,
             uni_sock,
+            uni_sock_v6,
             timers,
             status,
             pending_resolves: HashSet::new(),
@@ -1308,8 +1336,16 @@ impl Zeroconf {
             );
         }
 
-        broadcast_dns_on_intf(&out, intf_sock, &self.uni_sock);
+        broadcast_dns_on_intf(&out, intf_sock, self.uni_sock_for_intf(intf_sock));
         true
+    }
+
+    fn uni_sock_for_intf(&self, intf: &IntfSock) -> &UdpSocket {
+        if intf.intf.ip().is_ipv4() {
+            &self.uni_sock
+        } else {
+            &self.uni_sock_v6
+        }
     }
 
     fn unregister_service(&self, info: &ServiceInfo, intf_sock: &IntfSock) -> Vec<u8> {
@@ -1379,7 +1415,7 @@ impl Zeroconf {
             );
         }
 
-        broadcast_dns_on_intf(&out, intf_sock, &self.uni_sock)
+        broadcast_dns_on_intf(&out, intf_sock, self.uni_sock_for_intf(intf_sock))
     }
 
     /// Binds a channel `listener` to querying mDNS domain type `ty`.
@@ -1401,7 +1437,7 @@ impl Zeroconf {
                 continue; // no need to send query the same subnet again.
             }
             subnet_set.insert(subnet);
-            broadcast_dns_on_intf(&out, intf_sock, &self.uni_sock);
+            broadcast_dns_on_intf(&out, intf_sock, self.uni_sock_for_intf(intf_sock));
         }
     }
 
@@ -1409,6 +1445,20 @@ impl Zeroconf {
         let mut buf = vec![0u8; MAX_MSG_ABSOLUTE];
 
         let (sz, querier) = match self.uni_sock.recv_from(&mut buf) {
+            Ok((sz, sender)) => (sz, sender),
+            Err(e) => {
+                error!("failed to recv from unicast socket: {}", e);
+                return false;
+            }
+        };
+        debug!("Received {} bytes from {}", sz, &querier);
+        sz > 0
+    }
+
+    fn handle_unicast_read_v6(&mut self) -> bool {
+        let mut buf = vec![0u8; MAX_MSG_ABSOLUTE];
+
+        let (sz, querier) = match self.uni_sock_v6.recv_from(&mut buf) {
             Ok((sz, sender)) => (sz, sender),
             Err(e) => {
                 error!("failed to recv from unicast socket: {}", e);
@@ -1902,7 +1952,7 @@ impl Zeroconf {
 
         if !out.answers.is_empty() {
             out.id = msg.id;
-            broadcast_dns_on_intf(&out, intf_sock, &self.uni_sock);
+            broadcast_dns_on_intf(&out, intf_sock, self.uni_sock_for_intf(intf_sock));
 
             self.increase_counter(Counter::Respond, 1);
         }
