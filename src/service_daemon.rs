@@ -2385,8 +2385,9 @@ mod tests {
     use crate::dns_parser::{
         DnsOutgoing, DnsPointer, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE, TYPE_PTR,
     };
+    use crate::service_daemon::new_socket;
     use std::net::Ipv4Addr;
-    use std::{net::SocketAddr, net::SocketAddrV4, net::UdpSocket, time::Duration};
+    use std::{net::SocketAddr, net::SocketAddrV4, time::Duration};
 
     #[test]
     fn test_socketaddr_print() {
@@ -2489,8 +2490,7 @@ mod tests {
         packet_buffer.add_additional_answer(Box::new(invalidate_ptr_packet));
 
         let uni_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS_PORT);
-        let uni_sock = UdpSocket::bind(uni_addr).unwrap();
-        uni_sock.set_nonblocking(true).unwrap();
+        let uni_sock = new_socket(uni_addr.into(), true).unwrap();
 
         for intf in intfs {
             let sock = new_socket_bind(&intf).unwrap();
