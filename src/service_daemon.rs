@@ -44,7 +44,7 @@ use crate::{
 use flume::{bounded, Sender, TrySendError};
 use if_addrs::Interface;
 use polling::Poller;
-use socket2::{SockAddr, Socket};
+use socket2::Socket;
 use std::{
     cmp,
     collections::{HashMap, HashSet},
@@ -127,6 +127,7 @@ impl fmt::Display for Counter {
 pub type Metrics = HashMap<String, i64>;
 
 const SIGNAL_SOCK_EVENT_KEY: usize = usize::MAX - 1; // avoid to overlap with zc.poll_ids
+const UNI_SOCK_V4_EVENT_KEY: usize = usize::MAX - 2;
 
 /// A daemon thread for mDNS
 ///
@@ -391,6 +392,18 @@ impl ServiceDaemon {
                 continue; // Next event.
             }
 
+            if ev.key == UNI_SOCK_V4_EVENT_KEY {
+                while zc.handle_unicast_read() {}
+
+                if let Err(e) = zc
+                    .poller
+                    .modify(&zc.uni_sock, polling::Event::readable(ev.key))
+                {
+                    error!("failed to modify poller for uni socket: {}", e);
+                }
+                continue;
+            }
+
             // Read until no more packets available.
             let ip = match zc.poll_ids.get(&ev.key) {
                 Some(ip) => *ip,
@@ -432,20 +445,19 @@ impl ServiceDaemon {
             return None;
         }
 
+        if let Err(e) = zc.poller.add(
+            &zc.signal_sock,
+            polling::Event::readable(UNI_SOCK_V4_EVENT_KEY),
+        ) {
+            error!("failed to add unicast socket to the poller: {}", e);
+            return None;
+        }
+
         // Add mDNS sockets to the poller.
         for (ip, if_sock) in zc.intf_socks.iter() {
-            let (key, uni_key) =
-                Zeroconf::add_poll_impl(&mut zc.poll_ids, &mut zc.poll_id_count, *ip);
+            let key = Zeroconf::add_poll_impl(&mut zc.poll_ids, &mut zc.poll_id_count, *ip);
             if let Err(e) = zc.poller.add(&if_sock.sock, polling::Event::readable(key)) {
                 error!("add socket of {:?} to poller: {}", ip, e);
-                return None;
-            }
-
-            if let Err(e) = zc
-                .poller
-                .add(&if_sock.uni_sock, polling::Event::readable(uni_key))
-            {
-                error!("add unicast socket of {:?} to poller: {}", ip, e);
                 return None;
             }
         }
@@ -633,7 +645,7 @@ impl ServiceDaemon {
             Command::UnregisterResend(packet, ip) => {
                 if let Some(intf_sock) = zc.intf_socks.get(&ip) {
                     debug!("UnregisterResend from {}", &ip);
-                    broadcast_on_intf(&packet[..], intf_sock);
+                    broadcast_on_intf(&packet[..], intf_sock, &zc.uni_sock);
                     zc.increase_counter(Counter::UnregisterResend, 1);
                 }
             }
@@ -700,7 +712,7 @@ impl ServiceDaemon {
 }
 
 /// Creates a new UDP socket that uses `intf` to send and recv multicast.
-fn new_socket_bind(intf: &Interface) -> Result<(Socket, Socket)> {
+fn new_socket_bind(intf: &Interface) -> Result<Socket> {
     // Use the same socket for receiving and sending multicast packets.
     // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
     let intf_ip = &intf.ip();
@@ -717,9 +729,7 @@ fn new_socket_bind(intf: &Interface) -> Result<(Socket, Socket)> {
             sock.set_multicast_if_v4(ip)
                 .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
 
-            let uni_addr = SocketAddrV4::new(*ip, MDNS_PORT);
-            let uni_sock = new_socket(uni_addr.into(), true)?;
-            Ok((sock, uni_sock))
+            Ok(sock)
         }
         IpAddr::V6(ip) => {
             let addr = SocketAddrV6::new(GROUP_ADDR_V6, MDNS_PORT, 0, 0);
@@ -733,10 +743,7 @@ fn new_socket_bind(intf: &Interface) -> Result<(Socket, Socket)> {
             sock.set_multicast_if_v6(intf.index.unwrap_or(0))
                 .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
 
-            let scope_id = intf.index.unwrap_or(0);
-            let uni_addr = SocketAddrV6::new(*ip, MDNS_PORT, 0, scope_id);
-            let uni_sock = new_socket(uni_addr.into(), true)?;
-            Ok((sock, uni_sock))
+            Ok(sock)
         }
     }
 }
@@ -783,7 +790,6 @@ struct ReRun {
 struct IntfSock {
     intf: Interface,
     sock: Socket,
-    uni_sock: Socket,
 }
 
 /// Specify kinds of interfaces. It is used to enable or to disable interfaces in the daemon.
@@ -916,6 +922,8 @@ struct Zeroconf {
     /// Socket for signaling.
     signal_sock: UdpSocket,
 
+    uni_sock: UdpSocket,
+
     timers: Vec<u64>,
 
     status: DaemonStatus,
@@ -935,7 +943,7 @@ impl Zeroconf {
         // Note: it is possible that `my_ifaddrs` contains duplicated IP addrs.
         let mut intf_socks = HashMap::new();
         for intf in my_ifaddrs {
-            let (sock, uni_sock) = match new_socket_bind(&intf) {
+            let sock = match new_socket_bind(&intf) {
                 Ok(s) => s,
                 Err(e) => {
                     debug!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
@@ -943,15 +951,17 @@ impl Zeroconf {
                 }
             };
 
-            intf_socks.insert(
-                intf.ip(),
-                IntfSock {
-                    intf,
-                    sock,
-                    uni_sock,
-                },
-            );
+            intf_socks.insert(intf.ip(), IntfSock { intf, sock });
         }
+
+        let uni_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS_PORT);
+        let uni_sock = UdpSocket::bind(uni_addr)
+            .map_err(|e| e_fmt!("failed to create uni_sock for daemon: {}", e))?;
+
+        // Must be nonblocking so we can listen to it via poller.
+        uni_sock
+            .set_nonblocking(true)
+            .map_err(|e| e_fmt!("failed to set nonblocking for signal socket: {}", e))?;
 
         let monitors = Vec::new();
         let service_name_len_max = SERVICE_NAME_LEN_MAX_DEFAULT;
@@ -975,6 +985,7 @@ impl Zeroconf {
             service_name_len_max,
             if_selections,
             signal_sock,
+            uni_sock,
             timers,
             status,
             pending_resolves: HashSet::new(),
@@ -1043,7 +1054,7 @@ impl Zeroconf {
     }
 
     /// Insert a new IP into the poll map and return key
-    fn add_poll(&mut self, ip: IpAddr) -> (usize, usize) {
+    fn add_poll(&mut self, ip: IpAddr) -> usize {
         Self::add_poll_impl(&mut self.poll_ids, &mut self.poll_id_count, ip)
     }
 
@@ -1053,16 +1064,12 @@ impl Zeroconf {
         poll_ids: &mut HashMap<usize, IpAddr>,
         poll_id_count: &mut usize,
         ip: IpAddr,
-    ) -> (usize, usize) {
+    ) -> usize {
         let key = *poll_id_count;
         *poll_id_count += 1;
         let _ = (*poll_ids).insert(key, ip);
 
-        let uni_key = *poll_id_count;
-        *poll_id_count += 1;
-        let _ = (*poll_ids).insert(uni_key, ip);
-
-        (key, uni_key)
+        key
     }
 
     /// Apply all selections to `interfaces`.
@@ -1147,7 +1154,7 @@ impl Zeroconf {
     fn add_new_interface(&mut self, intf: Interface) {
         // Bind the new interface.
         let new_ip = intf.ip();
-        let (sock, uni_sock) = match new_socket_bind(&intf) {
+        let sock = match new_socket_bind(&intf) {
             Ok(s) => s,
             Err(e) => {
                 error!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
@@ -1156,27 +1163,13 @@ impl Zeroconf {
         };
 
         // Add the new interface into the poller.
-        let (key, uni_key) = self.add_poll(new_ip);
+        let key = self.add_poll(new_ip);
         if let Err(e) = self.poller.add(&sock, polling::Event::readable(key)) {
             error!("check_ip_changes: poller add ip {}: {}", new_ip, e);
             return;
         }
-        if let Err(e) = self
-            .poller
-            .add(&uni_sock, polling::Event::readable(uni_key))
-        {
-            error!("check_ip_changes: poller add ip unicast {}: {}", new_ip, e);
-            return;
-        }
 
-        self.intf_socks.insert(
-            new_ip,
-            IntfSock {
-                intf,
-                sock,
-                uni_sock,
-            },
-        );
+        self.intf_socks.insert(new_ip, IntfSock { intf, sock });
 
         self.add_addr_in_my_services(new_ip);
 
@@ -1315,7 +1308,7 @@ impl Zeroconf {
             );
         }
 
-        broadcast_dns_on_intf(&out, intf_sock);
+        broadcast_dns_on_intf(&out, intf_sock, &self.uni_sock);
         true
     }
 
@@ -1386,7 +1379,7 @@ impl Zeroconf {
             );
         }
 
-        broadcast_dns_on_intf(&out, intf_sock)
+        broadcast_dns_on_intf(&out, intf_sock, &self.uni_sock)
     }
 
     /// Binds a channel `listener` to querying mDNS domain type `ty`.
@@ -1408,8 +1401,22 @@ impl Zeroconf {
                 continue; // no need to send query the same subnet again.
             }
             subnet_set.insert(subnet);
-            broadcast_dns_on_intf(&out, intf_sock);
+            broadcast_dns_on_intf(&out, intf_sock, &self.uni_sock);
         }
+    }
+
+    fn handle_unicast_read(&mut self) -> bool {
+        let mut buf = vec![0u8; MAX_MSG_ABSOLUTE];
+
+        let (sz, querier) = match self.uni_sock.recv_from(&mut buf) {
+            Ok((sz, sender)) => (sz, sender),
+            Err(e) => {
+                error!("failed to recv from unicast socket: {}", e);
+                return false;
+            }
+        };
+        debug!("Received {} bytes from {}", sz, &querier);
+        sz > 0
     }
 
     /// Reads from the socket of `ip`.
@@ -1448,25 +1455,11 @@ impl Zeroconf {
                 error!("failed to remove sock {:?} from poller: {}", intf_sock, &e);
             }
 
-            if let Err(e) = self.poller.delete(&intf_sock.uni_sock) {
-                error!(
-                    "failed to remove uni_sock {:?} from poller: {}",
-                    intf_sock, &e
-                );
-            }
-
             // Replace the closed socket with a new one.
             match new_socket_bind(&intf_sock.intf) {
-                Ok((sock, uni_sock)) => {
+                Ok(sock) => {
                     let intf = intf_sock.intf.clone();
-                    self.intf_socks.insert(
-                        *ip,
-                        IntfSock {
-                            intf,
-                            sock,
-                            uni_sock,
-                        },
-                    );
+                    self.intf_socks.insert(*ip, IntfSock { intf, sock });
                     debug!("reset socket for IP {}", ip);
                 }
                 Err(e) => error!("re-bind a socket to {}: {}", ip, e),
@@ -1909,7 +1902,7 @@ impl Zeroconf {
 
         if !out.answers.is_empty() {
             out.id = msg.id;
-            broadcast_dns_on_intf(&out, intf_sock);
+            broadcast_dns_on_intf(&out, intf_sock, &self.uni_sock);
 
             self.increase_counter(Counter::Respond, 1);
         }
@@ -2285,7 +2278,7 @@ fn my_ip_interfaces() -> Vec<Interface> {
 }
 
 /// Send an outgoing broadcast DNS query or response, and returns the packet bytes.
-fn broadcast_dns_on_intf(out: &DnsOutgoing, intf: &IntfSock) -> Vec<u8> {
+fn broadcast_dns_on_intf(out: &DnsOutgoing, intf: &IntfSock, sender_sock: &UdpSocket) -> Vec<u8> {
     let qtype = if out.is_query() { "query" } else { "response" };
     debug!(
         "Broadcasting {}: {} questions {} answers {} authorities {} additional",
@@ -2296,12 +2289,12 @@ fn broadcast_dns_on_intf(out: &DnsOutgoing, intf: &IntfSock) -> Vec<u8> {
         out.additionals.len()
     );
     let packet = out.to_packet_data();
-    broadcast_on_intf(&packet[..], intf);
+    broadcast_on_intf(&packet[..], intf, sender_sock);
     packet
 }
 
 /// Sends an outgoing multicast packet, and returns the packet bytes.
-fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock) -> &'a [u8] {
+fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock, sender_sock: &UdpSocket) -> &'a [u8] {
     if packet.len() > MAX_MSG_ABSOLUTE {
         error!("Drop over-sized packet ({})", packet.len());
         return &[];
@@ -2316,14 +2309,14 @@ fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock) -> &'a [u8] {
         }
     };
 
-    send_packet(packet, addr, intf);
+    send_packet(packet, addr, intf, sender_sock);
     packet
 }
 
 /// Sends out `packet` to `addr` on the socket in `intf_sock`.
-fn send_packet(packet: &[u8], addr: SocketAddr, intf_sock: &IntfSock) {
-    let sockaddr = SockAddr::from(addr);
-    match intf_sock.uni_sock.send_to(packet, &sockaddr) {
+fn send_packet(packet: &[u8], addr: SocketAddr, intf_sock: &IntfSock, sender_sock: &UdpSocket) {
+    // let sockaddr = SockAddr::from(addr);
+    match sender_sock.send_to(packet, addr) {
         Ok(sz) => debug!("sent out {} bytes on interface {:?}", sz, &intf_sock.intf),
         Err(e) => error!(
             "Failed to send to {} via {:?}: {}",
@@ -2452,11 +2445,10 @@ mod tests {
         packet_buffer.add_additional_answer(Box::new(invalidate_ptr_packet));
 
         for intf in intfs {
-            let (sock, uni_sock) = new_socket_bind(&intf).unwrap();
+            let sock = new_socket_bind(&intf).unwrap();
             let intf_sock = IntfSock {
                 intf: intf.clone(),
                 sock,
-                uni_sock,
             };
             broadcast_dns_on_intf(&packet_buffer, &intf_sock);
         }
