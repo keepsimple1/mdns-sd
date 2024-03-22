@@ -44,7 +44,7 @@ use crate::{
 use flume::{bounded, Sender, TrySendError};
 use if_addrs::Interface;
 use polling::Poller;
-use socket2::Socket;
+use socket2::{SockAddr, Socket};
 use std::{
     cmp,
     collections::{HashMap, HashSet},
@@ -944,8 +944,8 @@ struct Zeroconf {
     signal_sock: UdpSocket,
 
     /// Socket for unicast.
-    uni_sock: UdpSocket,
-    uni_sock_v6: UdpSocket,
+    uni_sock: Socket,
+    uni_sock_v6: Socket,
 
     timers: Vec<u64>,
 
@@ -978,17 +978,10 @@ impl Zeroconf {
         }
 
         let uni_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS_PORT);
-        let uni_sock = UdpSocket::bind(uni_addr)
-            .map_err(|e| e_fmt!("failed to create uni_sock for daemon: {}", e))?;
-
-        // Must be nonblocking so we can listen to it via poller.
-        uni_sock
-            .set_nonblocking(true)
-            .map_err(|e| e_fmt!("failed to set nonblocking for signal socket: {}", e))?;
+        let uni_sock = new_socket(uni_addr.into(), true)?;
 
         let uni_addr_v6 = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, MDNS_PORT, 0, 0);
-        let uni_sock_v6 = UdpSocket::bind(uni_addr_v6)
-            .map_err(|e| e_fmt!("failed to bind unicast socket for v6: {}", e))?;
+        let uni_sock_v6 = new_socket(uni_addr_v6.into(), true)?;
 
         let monitors = Vec::new();
         let service_name_len_max = SERVICE_NAME_LEN_MAX_DEFAULT;
@@ -1340,7 +1333,7 @@ impl Zeroconf {
         true
     }
 
-    fn uni_sock_for_intf(&self, intf: &IntfSock) -> &UdpSocket {
+    fn uni_sock_for_intf(&self, intf: &IntfSock) -> &Socket {
         if intf.intf.ip().is_ipv4() {
             &self.uni_sock
         } else {
@@ -1444,28 +1437,28 @@ impl Zeroconf {
     fn handle_unicast_read(&mut self) -> bool {
         let mut buf = vec![0u8; MAX_MSG_ABSOLUTE];
 
-        let (sz, querier) = match self.uni_sock.recv_from(&mut buf) {
-            Ok((sz, sender)) => (sz, sender),
+        let sz = match self.uni_sock.read(&mut buf) {
+            Ok(sz) => sz,
             Err(e) => {
                 error!("failed to recv from unicast socket: {}", e);
                 return false;
             }
         };
-        debug!("Received {} bytes from {}", sz, &querier);
+        debug!("Received {} bytes from", sz);
         sz > 0
     }
 
     fn handle_unicast_read_v6(&mut self) -> bool {
         let mut buf = vec![0u8; MAX_MSG_ABSOLUTE];
 
-        let (sz, querier) = match self.uni_sock_v6.recv_from(&mut buf) {
-            Ok((sz, sender)) => (sz, sender),
+        let sz = match self.uni_sock_v6.read(&mut buf) {
+            Ok(sz) => sz,
             Err(e) => {
                 error!("failed to recv from unicast socket: {}", e);
                 return false;
             }
         };
-        debug!("Received {} bytes from {}", sz, &querier);
+        debug!("Received {} bytes", sz);
         sz > 0
     }
 
@@ -2328,7 +2321,7 @@ fn my_ip_interfaces() -> Vec<Interface> {
 }
 
 /// Send an outgoing broadcast DNS query or response, and returns the packet bytes.
-fn broadcast_dns_on_intf(out: &DnsOutgoing, intf: &IntfSock, sender_sock: &UdpSocket) -> Vec<u8> {
+fn broadcast_dns_on_intf(out: &DnsOutgoing, intf: &IntfSock, sender_sock: &Socket) -> Vec<u8> {
     let qtype = if out.is_query() { "query" } else { "response" };
     debug!(
         "Broadcasting {}: {} questions {} answers {} authorities {} additional",
@@ -2344,7 +2337,7 @@ fn broadcast_dns_on_intf(out: &DnsOutgoing, intf: &IntfSock, sender_sock: &UdpSo
 }
 
 /// Sends an outgoing multicast packet, and returns the packet bytes.
-fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock, sender_sock: &UdpSocket) -> &'a [u8] {
+fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock, sender_sock: &Socket) -> &'a [u8] {
     if packet.len() > MAX_MSG_ABSOLUTE {
         error!("Drop over-sized packet ({})", packet.len());
         return &[];
@@ -2364,9 +2357,9 @@ fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock, sender_sock: &UdpSoc
 }
 
 /// Sends out `packet` to `addr` on the socket in `intf_sock`.
-fn send_packet(packet: &[u8], addr: SocketAddr, intf_sock: &IntfSock, sender_sock: &UdpSocket) {
-    // let sockaddr = SockAddr::from(addr);
-    match sender_sock.send_to(packet, addr) {
+fn send_packet(packet: &[u8], addr: SocketAddr, intf_sock: &IntfSock, sender_sock: &Socket) {
+    let sockaddr = SockAddr::from(addr);
+    match sender_sock.send_to(packet, &sockaddr) {
         Ok(sz) => debug!("sent out {} bytes on interface {:?}", sz, &intf_sock.intf),
         Err(e) => error!(
             "Failed to send to {} via {:?}: {}",
@@ -2392,7 +2385,8 @@ mod tests {
     use crate::dns_parser::{
         DnsOutgoing, DnsPointer, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE, TYPE_PTR,
     };
-    use std::{net::SocketAddr, net::SocketAddrV4, time::Duration};
+    use std::net::Ipv4Addr;
+    use std::{net::SocketAddr, net::SocketAddrV4, net::UdpSocket, time::Duration};
 
     #[test]
     fn test_socketaddr_print() {
@@ -2494,13 +2488,17 @@ mod tests {
         let mut packet_buffer = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         packet_buffer.add_additional_answer(Box::new(invalidate_ptr_packet));
 
+        let uni_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS_PORT);
+        let uni_sock = UdpSocket::bind(uni_addr).unwrap();
+        uni_sock.set_nonblocking(true).unwrap();
+
         for intf in intfs {
             let sock = new_socket_bind(&intf).unwrap();
             let intf_sock = IntfSock {
                 intf: intf.clone(),
                 sock,
             };
-            broadcast_dns_on_intf(&packet_buffer, &intf_sock);
+            broadcast_dns_on_intf(&packet_buffer, &intf_sock, &uni_sock);
         }
 
         println!(
