@@ -304,10 +304,8 @@ impl ServiceInfo {
     }
 }
 
-/// Removes potential duplicated ".local." at the end of "hostname".
+/// Removes potentially duplicated ".local." at the end of "hostname".
 fn normalize_hostname(mut hostname: String) -> String {
-    // on macOS, hostname includes ".local" by default,
-    // so we want to remove duplicated ".local." if needed.
     if hostname.ends_with(".local.local.") {
         let new_len = hostname.len() - "local.".len();
         hostname.truncate(new_len);
