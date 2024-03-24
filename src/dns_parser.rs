@@ -454,7 +454,7 @@ impl DnsNSec {
     }
 
     /// Returns the types marked by `type_bitmap`
-    pub(crate) fn types(&self) -> Vec<u16> {
+    pub(crate) fn _types(&self) -> Vec<u16> {
         // From RFC 4034: 4.1.2 The Type Bit Maps Field
         // https://datatracker.ietf.org/doc/html/rfc4034#section-4.1.2
         //
