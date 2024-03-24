@@ -438,15 +438,8 @@ pub(crate) struct DnsNSec {
 }
 
 impl DnsNSec {
-    fn new(
-        name: &str,
-        ty: u16,
-        class: u16,
-        ttl: u32,
-        next_domain: String,
-        type_bitmap: Vec<u8>,
-    ) -> Self {
-        let record = DnsRecord::new(name, ty, class, ttl);
+    fn new(name: &str, class: u16, ttl: u32, next_domain: String, type_bitmap: Vec<u8>) -> Self {
+        let record = DnsRecord::new(name, TYPE_NSEC, class, ttl);
         Self {
             record,
             next_domain,
@@ -1111,7 +1104,6 @@ impl DnsIncoming {
                 ))),
                 TYPE_NSEC => Some(Box::new(DnsNSec::new(
                     &name,
-                    ty,
                     class,
                     ttl,
                     self.read_name()?,
@@ -1336,8 +1328,10 @@ fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::dns_parser::{TYPE_A, TYPE_AAAA};
+
     use super::{
-        DnsIncoming, DnsOutgoing, DnsSrv, CLASS_IN, CLASS_UNIQUE, FLAGS_QR_QUERY,
+        DnsIncoming, DnsNSec, DnsOutgoing, DnsSrv, CLASS_IN, CLASS_UNIQUE, FLAGS_QR_QUERY,
         FLAGS_QR_RESPONSE, TYPE_PTR,
     };
 
@@ -1406,5 +1400,17 @@ mod tests {
         if let Err(e) = invalid {
             println!("error: {}", e);
         }
+    }
+
+    #[test]
+    fn test_dns_nsec() {
+        let name = "instance1._nsec_test._udp.local.";
+        let next_domain = name.to_string();
+        let type_bitmap = vec![64, 0, 0, 8]; // Two bits set to '1': bit 1 and bit 28.
+        let nsec = DnsNSec::new(name, CLASS_IN | CLASS_UNIQUE, 1, next_domain, type_bitmap);
+        let absent_types = nsec._types();
+        assert_eq!(absent_types.len(), 2);
+        assert_eq!(absent_types[0], TYPE_A);
+        assert_eq!(absent_types[1], TYPE_AAAA);
     }
 }
