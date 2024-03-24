@@ -13,7 +13,7 @@
 * bump socket2 version (#174)
 * add NSEC record to debug resolve issue (#183)
 
-Welcome our new contributors: @hrzlgnm and @irvingouj ! Thanks!
+Welcome our new contributors: @hrzlgnm and @irvingoujAtDevolution ! Thanks!
 
 # Version 0.10.4 (2024-02-10)
 
