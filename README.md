@@ -3,7 +3,7 @@
 [![Build](https://github.com/keepsimple1/mdns-sd/actions/workflows/build.yml/badge.svg)](https://github.com/keepsimple1/mdns-sd/actions)
 [![Cargo](https://img.shields.io/crates/v/mdns-sd.svg)](https://crates.io/crates/mdns-sd)
 [![docs.rs](https://img.shields.io/docsrs/mdns-sd)](https://docs.rs/mdns-sd/latest/mdns_sd/)
-[![Rust version: 1.63+](https://img.shields.io/badge/rust%20version-1.63+-orange)][blogpost]
+[Rust version: 1.63+](https://img.shields.io/badge/rust%20version-1.63+-orange)
 
 This is a small implementation of mDNS (Multicast DNS) based service discovery in safe Rust, with a small set of dependencies. Some highlights:
 
