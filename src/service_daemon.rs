@@ -2007,7 +2007,7 @@ struct DnsCache {
     subtype: HashMap<String, String>,
 
     /// Negative responses:
-    /// A map from "instance fullname" to "types of missing RR".
+    /// A map from "instance fullname" to DnsNSec.
     nsec: HashMap<String, Vec<DnsRecordBox>>,
 }
 
