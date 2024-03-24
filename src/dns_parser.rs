@@ -26,6 +26,7 @@ pub(crate) const TYPE_HINFO: u16 = 13;
 pub(crate) const TYPE_TXT: u16 = 16;
 pub(crate) const TYPE_AAAA: u16 = 28; // IPv6 address
 pub(crate) const TYPE_SRV: u16 = 33;
+pub(crate) const TYPE_NSEC: u16 = 47; // Negative responses
 pub(crate) const TYPE_ANY: u16 = 255;
 
 pub(crate) const CLASS_IN: u16 = 1;
@@ -419,6 +420,85 @@ impl DnsRecordExt for DnsHostInfo {
             return self.cpu == other_hinfo.cpu
                 && self.os == other_hinfo.os
                 && self.record.entry == other_hinfo.record.entry;
+        }
+        false
+    }
+}
+
+/// Record for negative responses
+///
+/// [RFC4034 section 4.1](https://datatracker.ietf.org/doc/html/rfc4034#section-4.1)
+/// and
+/// [RFC6762 section 6.1](https://datatracker.ietf.org/doc/html/rfc6762#section-6.1)
+#[derive(Debug)]
+pub(crate) struct DnsNSec {
+    record: DnsRecord,
+    next_domain: String,
+    type_bitmap: Vec<u8>,
+}
+
+impl DnsNSec {
+    fn new(name: &str, class: u16, ttl: u32, next_domain: String, type_bitmap: Vec<u8>) -> Self {
+        let record = DnsRecord::new(name, TYPE_NSEC, class, ttl);
+        Self {
+            record,
+            next_domain,
+            type_bitmap,
+        }
+    }
+
+    /// Returns the types marked by `type_bitmap`
+    pub(crate) fn _types(&self) -> Vec<u16> {
+        // From RFC 4034: 4.1.2 The Type Bit Maps Field
+        // https://datatracker.ietf.org/doc/html/rfc4034#section-4.1.2
+        //
+        // Each bitmap encodes the low-order 8 bits of RR types within the
+        // window block, in network bit order.  The first bit is bit 0.  For
+        // window block 0, bit 1 corresponds to RR type 1 (A), bit 2 corresponds
+        // to RR type 2 (NS), and so forth.
+
+        let mut bit_num = 0;
+        let mut results = Vec::new();
+
+        for byte in self.type_bitmap.iter() {
+            let mut bit_mask: u8 = 0x80; // for bit 0 in network bit order
+
+            // check every bit in this byte, one by one.
+            for _ in 0..8 {
+                if (byte & bit_mask) != 0 {
+                    results.push(bit_num);
+                }
+                bit_num += 1;
+                bit_mask >>= 1; // mask for the next bit
+            }
+        }
+        results
+    }
+}
+
+impl DnsRecordExt for DnsNSec {
+    fn get_record(&self) -> &DnsRecord {
+        &self.record
+    }
+
+    fn get_record_mut(&mut self) -> &mut DnsRecord {
+        &mut self.record
+    }
+
+    fn write(&self, packet: &mut DnsOutPacket) {
+        packet.write_bytes(self.next_domain.as_bytes());
+        packet.write_bytes(&self.type_bitmap);
+    }
+
+    fn any(&self) -> &dyn Any {
+        self
+    }
+
+    fn matches(&self, other: &dyn DnsRecordExt) -> bool {
+        if let Some(other_record) = other.any().downcast_ref::<DnsNSec>() {
+            return self.next_domain == other_record.next_domain
+                && self.type_bitmap == other_record.type_bitmap
+                && self.record.entry == other_record.record.entry;
         }
         false
     }
@@ -1022,8 +1102,15 @@ impl DnsIncoming {
                     ttl,
                     self.read_ipv6().into(),
                 ))),
-                _ => {
-                    debug!("Unknown DNS record type");
+                TYPE_NSEC => Some(Box::new(DnsNSec::new(
+                    &name,
+                    class,
+                    ttl,
+                    self.read_name()?,
+                    self.read_type_bitmap()?,
+                ))),
+                x => {
+                    debug!("Unknown DNS record type: {} name: {}", x, &name);
                     self.offset += length;
                     None
                 }
@@ -1057,6 +1144,46 @@ impl DnsIncoming {
         let num = u16_from_be_slice(&slice[..2]);
         self.offset += 2;
         num
+    }
+
+    /// Reads the "Type Bit Map" block for a DNS NSEC record.
+    fn read_type_bitmap(&mut self) -> Result<Vec<u8>> {
+        // From RFC 6762: 6.1.  Negative Responses
+        // https://datatracker.ietf.org/doc/html/rfc6762#section-6.1
+        //   o The Type Bit Map block number is 0.
+        //   o The Type Bit Map block length byte is a value in the range 1-32.
+        //   o The Type Bit Map data is 1-32 bytes, as indicated by length
+        //     byte.
+        let block_num = self.data[self.offset];
+        self.offset += 1;
+        if block_num != 0 {
+            return Err(Error::Msg(format!(
+                "NSEC block number is not 0: {}",
+                block_num
+            )));
+        }
+
+        let block_len = self.data[self.offset] as usize;
+        if !(1..=32).contains(&block_len) {
+            return Err(Error::Msg(format!(
+                "NSEC block length must be in the range 1-32: {}",
+                block_len
+            )));
+        }
+        self.offset += 1;
+
+        let end = self.offset + block_len;
+        if end > self.data.len() {
+            return Err(Error::Msg(format!(
+                "NSEC block overflow: {} over RData len {}",
+                end,
+                self.data.len()
+            )));
+        }
+        let bitmap = self.data[self.offset..end].to_vec();
+        self.offset += block_len;
+
+        Ok(bitmap)
     }
 
     fn read_vec(&mut self, length: usize) -> Vec<u8> {
@@ -1201,8 +1328,10 @@ fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::dns_parser::{TYPE_A, TYPE_AAAA};
+
     use super::{
-        DnsIncoming, DnsOutgoing, DnsSrv, CLASS_IN, CLASS_UNIQUE, FLAGS_QR_QUERY,
+        DnsIncoming, DnsNSec, DnsOutgoing, DnsSrv, CLASS_IN, CLASS_UNIQUE, FLAGS_QR_QUERY,
         FLAGS_QR_RESPONSE, TYPE_PTR,
     };
 
@@ -1271,5 +1400,17 @@ mod tests {
         if let Err(e) = invalid {
             println!("error: {}", e);
         }
+    }
+
+    #[test]
+    fn test_dns_nsec() {
+        let name = "instance1._nsec_test._udp.local.";
+        let next_domain = name.to_string();
+        let type_bitmap = vec![64, 0, 0, 8]; // Two bits set to '1': bit 1 and bit 28.
+        let nsec = DnsNSec::new(name, CLASS_IN | CLASS_UNIQUE, 1, next_domain, type_bitmap);
+        let absent_types = nsec._types();
+        assert_eq!(absent_types.len(), 2);
+        assert_eq!(absent_types[0], TYPE_A);
+        assert_eq!(absent_types[1], TYPE_AAAA);
     }
 }
