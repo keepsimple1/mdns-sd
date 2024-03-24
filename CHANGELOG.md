@@ -1,3 +1,20 @@
+# Version 0.10.5 (2024-03-24)
+
+## Notes
+
+* Port 0 is now considered valid in ServiceInfo (#181)
+
+## Changes
+
+* reduce SearchStopped notification send error to warn (#178)
+* refactoring: extract handle_poller_events() (#177)
+* Do not consider port 0 as a missing info (#181)
+* query TYPE_A and TYPE_AAAA via Command::Resolve (#185)
+* bump socket2 version (#174)
+* add NSEC record to debug resolve issue (#183)
+
+Welcome our new contributors: @hrzlgnm and @irvingouj ! Thanks!
+
 # Version 0.10.4 (2024-02-10)
 
 This is a bug fix release.
