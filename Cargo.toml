@@ -1,6 +1,6 @@
 [package]
 name = "mdns-sd"
-version = "0.10.4"
+version = "0.10.5"
 authors = ["keepsimple <keepsimple@gmail.com>"]
 edition = "2018"
 rust-version = "1.63.0"
