@@ -43,7 +43,7 @@ fn main() {
                     info.get_port(),
                 );
                 for addr in info.get_addresses().iter() {
-                    println!(" address: {}", addr);
+                    println!(" Address: {}", addr);
                 }
                 for prop in info.get_properties().iter() {
                     println!(" Property: {}", prop);
