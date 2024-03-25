@@ -3,6 +3,7 @@
 [![Build](https://github.com/keepsimple1/mdns-sd/actions/workflows/build.yml/badge.svg)](https://github.com/keepsimple1/mdns-sd/actions)
 [![Cargo](https://img.shields.io/crates/v/mdns-sd.svg)](https://crates.io/crates/mdns-sd)
 [![docs.rs](https://img.shields.io/docsrs/mdns-sd)](https://docs.rs/mdns-sd/latest/mdns_sd/)
+[![Rust version: 1.63+](https://img.shields.io/badge/rust%20version-1.63+-orange)](https://blog.rust-lang.org/2022/08/11/Rust-1.63.0.html)
 
 This is a small implementation of mDNS (Multicast DNS) based service discovery in safe Rust, with a small set of dependencies. Some highlights:
 
@@ -29,10 +30,6 @@ This is still beta software. We focus on the common use cases at hand. And we te
 
 Currently this library has the following limitations:
 - Only support multicast, no unicast send/recv.
-
-## Minimum Rust version
-
-Tested against Rust 1.61.0
 
 ## License
 
