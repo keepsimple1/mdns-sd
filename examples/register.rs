@@ -44,7 +44,7 @@ fn main() {
     // With `enable_addr_auto()`, we can give empty addrs and let the lib find them.
     // If the caller knows specific addrs to use, then assign the addrs here.
     let my_addrs = "";
-    let service_hostname = "mdns-example.local.";
+    let service_hostname = format!("{}{}", instance_name, &service_type);
     let port = 3456;
 
     // The key string in TXT properties is case insensitive. Only the first
@@ -55,7 +55,7 @@ fn main() {
     let service_info = ServiceInfo::new(
         &service_type,
         instance_name,
-        service_hostname,
+        &service_hostname,
         my_addrs,
         port,
         &properties[..],

@@ -36,14 +36,18 @@ fn main() {
         match event {
             ServiceEvent::ServiceResolved(info) => {
                 println!(
-                    "At {:?}: Resolved a new service: {} host: {} port: {} IP: {:?} TXT properties: {:?}",
+                    "At {:?}: Resolved a new service: {}\n host: {}\n port: {}",
                     now.elapsed(),
                     info.get_fullname(),
                     info.get_hostname(),
                     info.get_port(),
-                    info.get_addresses(),
-                    info.get_properties(),
                 );
+                for addr in info.get_addresses().iter() {
+                    println!(" Address: {}", addr);
+                }
+                for prop in info.get_properties().iter() {
+                    println!(" Property: {}", prop);
+                }
             }
             other_event => {
                 println!("At {:?} : {:?}", now.elapsed(), &other_event);
