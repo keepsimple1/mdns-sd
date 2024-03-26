@@ -114,7 +114,8 @@ fn integration_success() {
                     let other_ttl = info.get_other_ttl();
                     assert_eq!(other_ttl, 4500); // default value.
                 }
-                ServiceEvent::ServiceRemoved(_ty_domain, fullname) => {
+                ServiceEvent::ServiceInactive(_ty_domain, fullname)
+                | ServiceEvent::ServiceRemoved(_ty_domain, fullname) => {
                     println!("Removed service: {}", &fullname);
                     if fullname.contains(&instance_name) {
                         let mut num = remove_count_clone.lock().unwrap();
