@@ -507,8 +507,8 @@ impl ServiceDaemon {
             // Refresh cache records with active queriers
             let mut query_count = 0;
             for (ty_domain, _sender) in zc.queriers.iter() {
-                for instance in zc.cache.refresh_due(ty_domain).iter() {
-                    zc.send_query(instance, TYPE_ANY);
+                for instance in zc.cache.refresh_due(ty_domain) {
+                    zc.send_query(&instance, TYPE_ANY);
                     query_count += 1;
                 }
             }
@@ -516,17 +516,17 @@ impl ServiceDaemon {
 
             // check and evict expired records in our cache
             let now = current_time_millis();
-            let map = zc.queriers.clone();
-            zc.cache.evict_expired(now, |expired| {
-                if let Some(dns_ptr) = expired.any().downcast_ref::<DnsPointer>() {
-                    let ty_domain = dns_ptr.get_name();
-                    call_listener(
-                        &map,
-                        ty_domain,
-                        ServiceEvent::ServiceRemoved(ty_domain.to_string(), dns_ptr.alias.clone()),
-                    );
+            for (ty_domain, sender) in zc.queriers.iter() {
+                let expired_instances = zc.cache.evict_expired_ty_domain(ty_domain, now);
+                for instance in expired_instances {
+                    let event = ServiceEvent::ServiceRemoved(ty_domain.to_string(), instance);
+                    match sender.send(event) {
+                        Ok(()) => debug!("Sent ServiceRemoved to listener successfully"),
+                        Err(e) => error!("Failed to send event: {}", e),
+                    }
                 }
-            });
+            }
+            zc.cache.evict_expired_addr(now);
 
             // check IP changes.
             if now > next_ip_check {
@@ -1365,7 +1365,7 @@ impl Zeroconf {
     }
 
     fn send_query(&self, name: &str, qtype: u16) {
-        debug!("Sending multicast query for {}", name);
+        debug!("Sending multicast query for {} qtype {}", name, qtype);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         out.add_question(name, qtype);
 
@@ -2079,6 +2079,7 @@ impl DnsCache {
         {
             Some((i, r)) => {
                 r.reset_ttl(incoming.as_ref());
+                debug!("reset TTL for {} qtype {}", r.get_name(), r.get_type());
                 (i, false)
             }
             None => {
@@ -2113,27 +2114,59 @@ impl DnsCache {
         found
     }
 
-    /// Iterate all records and remove ones that expired, allowing
-    /// a function `f` to react with the expired ones.
-    fn evict_expired<F>(&mut self, now: u64, f: F)
-    where
-        F: Fn(&DnsRecordBox), // Caller has a chance to do something with expired
-    {
-        let all_records = self
-            .ptr
-            .values_mut()
-            .chain(self.srv.values_mut())
-            .chain(self.txt.values_mut())
-            .chain(self.addr.values_mut());
-        for records in all_records {
-            records.retain(|x| {
+    /// Evicts any address records that expired.
+    /// We don't send any event notifications for expired address yet.
+    /// It is possible that we need to do something extra in future.
+    fn evict_expired_addr(&mut self, now: u64) {
+        for records in self.addr.values_mut() {
+            records.retain(|addr| !addr.get_record().is_expired(now))
+        }
+    }
+
+    /// Evicts expired PTR and SRV, TXT records for given `ty_domain`, and
+    /// returns the set of expired instance names according to PTR and SRV.
+    ///
+    /// The expired instances could due to PTR records and/or SRV records.
+    fn evict_expired_ty_domain(&mut self, ty_domain: &str, now: u64) -> HashSet<String> {
+        let mut expired_instances = HashSet::new();
+
+        if let Some(ptr_records) = self.ptr.get_mut(ty_domain) {
+            // check records using instance names from PTR
+            for ptr in ptr_records.iter() {
+                if let Some(dns_ptr) = ptr.any().downcast_ref::<DnsPointer>() {
+                    let instance_name = &dns_ptr.alias;
+
+                    // check SRV records
+                    if let Some(srv_records) = self.srv.get_mut(instance_name) {
+                        srv_records.retain(|srv| {
+                            let expired = srv.get_record().is_expired(now);
+                            if expired {
+                                expired_instances.insert(srv.get_name().to_string());
+                            }
+                            !expired
+                        });
+                    }
+
+                    // check TXT records
+                    if let Some(txt_records) = self.txt.get_mut(instance_name) {
+                        txt_records.retain(|txt| !txt.get_record().is_expired(now))
+                    }
+                }
+            }
+
+            // check PTR records
+            ptr_records.retain(|x| {
                 let expired = x.get_record().is_expired(now);
                 if expired {
-                    f(x);
+                    if let Some(dns_ptr) = x.any().downcast_ref::<DnsPointer>() {
+                        expired_instances.insert(dns_ptr.alias.clone());
+                    }
                 }
-                !expired // only retain non-expired ones
+                !expired
             });
         }
+
+        expired_instances
     }
 
     /// Returns the list of instance names that are due for refresh
@@ -2141,26 +2174,68 @@ impl DnsCache {
     ///
     /// For these instances, their refresh time will be updated so that
     /// they will not refresh again.
-    fn refresh_due(&mut self, ty_domain: &str) -> Vec<String> {
+    fn refresh_due(&mut self, ty_domain: &str) -> HashSet<String> {
         let now = current_time_millis();
 
-        self.ptr
-            .get_mut(ty_domain)
-            .into_iter()
-            .flatten()
-            .filter_map(|record| {
-                let rec = record.get_record_mut();
-                if rec.is_expired(now) || !rec.refresh_due(now) {
-                    return None;
-                }
-                rec.refresh_no_more();
+        let mut due_set = HashSet::new();
+        let mut not_due = vec![];
 
-                record
-                    .any()
-                    .downcast_ref::<DnsPointer>()
-                    .map(|dns_ptr| dns_ptr.alias.clone())
-            })
-            .collect()
+        // find PTR records that are due for refresh.
+        for record in self.ptr.get_mut(ty_domain).into_iter().flatten() {
+            let is_due = record.get_record_mut().refresh_maybe(now);
+
+            if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
+                let instance = ptr.alias.clone();
+                if is_due {
+                    due_set.insert(instance);
+                } else {
+                    not_due.push(instance);
+                }
+            }
+        }
+
+        // find other records that are due for refresh.
+        for instance in not_due {
+            let srv_due = self.refresh_due_srv(&instance, now);
+            let txt_due = self.refresh_due_txt(&instance, now);
+            if srv_due || txt_due {
+                due_set.insert(instance);
+            }
+        }
+
+        due_set
+    }
+
+    /// Checks if any SRV records of `instance` are due to refresh.
+    fn refresh_due_srv(&mut self, instance: &str, now: u64) -> bool {
+        for record in self.srv.get_mut(instance).into_iter().flatten() {
+            if record.get_record_mut().refresh_maybe(now) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Returns true if any A or AAAA records of `srv_name` are due to refresh.
+    /// We're not using this function yet.
+    fn _refresh_due_address(&mut self, srv_name: &str, now: u64) -> bool {
+        for record in self.addr.get_mut(srv_name).into_iter().flatten() {
+            if record.get_record_mut().refresh_maybe(now) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Returns true if any TXT records of `instance` are due to refresh.
+    fn refresh_due_txt(&mut self, instance: &str, now: u64) -> bool {
+        for record in self.txt.get_mut(instance).into_iter().flatten() {
+            if record.get_record_mut().refresh_maybe(now) {
+                return true;
+            }
+        }
+        false
     }
 }
 
