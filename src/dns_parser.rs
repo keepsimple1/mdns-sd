@@ -48,6 +48,7 @@ pub(crate) const MAX_MSG_ABSOLUTE: usize = 8972;
 pub(crate) const FLAGS_QR_MASK: u16 = 0x8000; // mask for query/response bit
 pub(crate) const FLAGS_QR_QUERY: u16 = 0x0000;
 pub(crate) const FLAGS_QR_RESPONSE: u16 = 0x8000;
+pub(crate) const FLAGS_UNICAST_RESPONSE_MASK: u16 = 0x8000; // mask for question unicast response bit
 pub(crate) const FLAGS_AA: u16 = 0x0400; // mask for Authoritative answer bit
 
 pub(crate) type DnsRecordBox = Box<dyn DnsRecordExt + Send>;
@@ -75,6 +76,12 @@ impl DnsEntry {
 #[derive(Debug)]
 pub(crate) struct DnsQuestion {
     pub(crate) entry: DnsEntry,
+}
+
+impl DnsQuestion {
+    pub fn is_unicast_response_requested(&self) -> bool {
+        self.entry.class & FLAGS_UNICAST_RESPONSE_MASK == FLAGS_UNICAST_RESPONSE_MASK
+    }
 }
 
 /// A DNS Resource Record - like a DNS entry, but has a TTL.

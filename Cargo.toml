@@ -22,6 +22,7 @@ if-addrs = { version = "0.10", features = ["link-local"] } # get local IP addres
 log = { version = "0.4", optional = true }             # logging
 polling = "2.1"                                        # select/poll sockets
 socket2 = { version = "0.5.5", features = ["all"] }      # socket APIs
+socket-pktinfo = { version = "0.2.1" }                  # socket packet info extension
 
 [dev-dependencies]
 fastrand = "1.8"
