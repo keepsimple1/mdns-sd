@@ -33,7 +33,7 @@ use crate::log::{debug, error, warn};
 use crate::{
     dns_parser::{
         current_time_millis, DnsAddress, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
-        DnsRecordExt, DnsSrv, DnsTxt, CLASS_IN, CLASS_UNIQUE, FLAGS_AA, FLAGS_QR_QUERY,
+        DnsRecordExt, DnsSrv, DnsTxt, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY,
         FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_AAAA, TYPE_ANY, TYPE_NSEC, TYPE_PTR,
         TYPE_SRV, TYPE_TXT,
     },
@@ -76,7 +76,8 @@ const LOOPBACK_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
 const RESOLVE_WAIT_IN_MILLIS: u64 = 500;
 
-const LEGACY_UNICAST_RR_TTL: u32 = 10;
+/// Maximum TTL value allowed for resource records in legacy unicast responses
+const LEGACY_UNICAST_RR_MAX_TTL: u32 = 10;
 
 /// Response status code for the service `unregister` call.
 #[derive(Debug)]
@@ -1247,7 +1248,7 @@ impl Zeroconf {
         out.add_answer_at_time(
             Box::new(DnsSrv::new(
                 info.get_fullname(),
-                CLASS_IN | CLASS_UNIQUE,
+                CLASS_IN | CLASS_CACHE_FLUSH,
                 info.get_host_ttl(),
                 info.get_priority(),
                 info.get_weight(),
@@ -1260,7 +1261,7 @@ impl Zeroconf {
             Box::new(DnsTxt::new(
                 info.get_fullname(),
                 TYPE_TXT,
-                CLASS_IN | CLASS_UNIQUE,
+                CLASS_IN | CLASS_CACHE_FLUSH,
                 info.get_other_ttl(),
                 info.generate_txt(),
             )),
@@ -1281,7 +1282,7 @@ impl Zeroconf {
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
                     t,
-                    CLASS_IN | CLASS_UNIQUE,
+                    CLASS_IN | CLASS_CACHE_FLUSH,
                     info.get_host_ttl(),
                     addr,
                 )),
@@ -1323,7 +1324,7 @@ impl Zeroconf {
         out.add_answer_at_time(
             Box::new(DnsSrv::new(
                 info.get_fullname(),
-                CLASS_IN | CLASS_UNIQUE,
+                CLASS_IN | CLASS_CACHE_FLUSH,
                 0,
                 info.get_priority(),
                 info.get_weight(),
@@ -1336,7 +1337,7 @@ impl Zeroconf {
             Box::new(DnsTxt::new(
                 info.get_fullname(),
                 TYPE_TXT,
-                CLASS_IN | CLASS_UNIQUE,
+                CLASS_IN | CLASS_CACHE_FLUSH,
                 0,
                 info.generate_txt(),
             )),
@@ -1352,7 +1353,7 @@ impl Zeroconf {
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
                     t,
-                    CLASS_IN | CLASS_UNIQUE,
+                    CLASS_IN | CLASS_CACHE_FLUSH,
                     0,
                     addr,
                 )),
@@ -1779,7 +1780,11 @@ impl Zeroconf {
             None => return,
         };
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+
+        // Legacy unicast query responses require special handling
+        // See https://datatracker.ietf.org/doc/html/rfc6762#section-6.7
         let is_legacy_unicast = is_unicast_query && src_addr.port() != MDNS_PORT;
+
         let is_unicast_reply = is_unicast_query
             && msg
                 .questions
@@ -1796,6 +1801,12 @@ impl Zeroconf {
 
             if qtype == TYPE_PTR {
                 for service in self.my_services.values() {
+                    let ttl = if is_legacy_unicast {
+                        min(LEGACY_UNICAST_RR_MAX_TTL, service.get_other_ttl())
+                    } else {
+                        service.get_other_ttl()
+                    };
+
                     if question.entry.name == service.get_type()
                         || service
                             .get_subtype()
@@ -1810,11 +1821,7 @@ impl Zeroconf {
                                 &question.entry.name,
                                 TYPE_PTR,
                                 CLASS_IN,
-                                if is_legacy_unicast {
-                                    min(LEGACY_UNICAST_RR_TTL, service.get_host_ttl())
-                                } else {
-                                    service.get_other_ttl()
-                                },
+                                ttl,
                                 service.get_type().to_string(),
                             )),
                         );
@@ -1826,6 +1833,12 @@ impl Zeroconf {
             } else {
                 if qtype == TYPE_A || qtype == TYPE_AAAA || qtype == TYPE_ANY {
                     for service in self.my_services.values() {
+                        let ttl = if is_legacy_unicast {
+                            min(LEGACY_UNICAST_RR_MAX_TTL, service.get_host_ttl())
+                        } else {
+                            service.get_host_ttl()
+                        };
+
                         if service.get_hostname() == question.entry.name.to_lowercase() {
                             let intf_addrs = service.get_addrs_on_intf(&intf_sock.intf);
                             if intf_addrs.is_empty() && (qtype == TYPE_A || qtype == TYPE_AAAA) {
@@ -1850,12 +1863,8 @@ impl Zeroconf {
                                     Box::new(DnsAddress::new(
                                         &question.entry.name,
                                         t,
-                                        CLASS_IN | CLASS_UNIQUE,
-                                        if is_legacy_unicast {
-                                            min(LEGACY_UNICAST_RR_TTL, service.get_host_ttl())
-                                        } else {
-                                            service.get_host_ttl()
-                                        },
+                                        CLASS_IN | CLASS_CACHE_FLUSH,
+                                        ttl,
                                         address,
                                     )),
                                 );
@@ -1870,17 +1879,19 @@ impl Zeroconf {
                     None => continue,
                 };
 
+                let ttl = match (qtype, is_legacy_unicast) {
+                    (TYPE_TXT, true) => min(LEGACY_UNICAST_RR_MAX_TTL, service.get_other_ttl()),
+                    (_, true) => min(LEGACY_UNICAST_RR_MAX_TTL, service.get_host_ttl()),
+                    (_, false) => service.get_host_ttl(),
+                };
+
                 if qtype == TYPE_SRV || qtype == TYPE_ANY {
                     out.add_answer(
                         &msg,
                         Box::new(DnsSrv::new(
                             &question.entry.name,
-                            CLASS_IN | CLASS_UNIQUE,
-                            if is_legacy_unicast {
-                                min(LEGACY_UNICAST_RR_TTL, service.get_host_ttl())
-                            } else {
-                                service.get_host_ttl()
-                            },
+                            CLASS_IN | CLASS_CACHE_FLUSH,
+                            ttl,
                             service.get_priority(),
                             service.get_weight(),
                             service.get_port(),
@@ -1895,12 +1906,8 @@ impl Zeroconf {
                         Box::new(DnsTxt::new(
                             &question.entry.name,
                             TYPE_TXT,
-                            CLASS_IN | CLASS_UNIQUE,
-                            if is_legacy_unicast {
-                                min(LEGACY_UNICAST_RR_TTL, service.get_host_ttl())
-                            } else {
-                                service.get_host_ttl()
-                            },
+                            CLASS_IN | CLASS_CACHE_FLUSH,
+                            ttl,
                             service.generate_txt(),
                         )),
                     );
@@ -1923,12 +1930,8 @@ impl Zeroconf {
                         out.add_additional_answer(Box::new(DnsAddress::new(
                             service.get_hostname(),
                             t,
-                            CLASS_IN | CLASS_UNIQUE,
-                            if is_legacy_unicast {
-                                min(LEGACY_UNICAST_RR_TTL, service.get_host_ttl())
-                            } else {
-                                service.get_host_ttl()
-                            },
+                            CLASS_IN | CLASS_CACHE_FLUSH,
+                            ttl,
                             address,
                         )));
                     }
@@ -1939,11 +1942,10 @@ impl Zeroconf {
         if !out.answers.is_empty() {
             out.id = msg.id;
             if is_unicast_reply {
+                unicast_dns_on_intf(&out, src_addr.ip(), intf_sock);
                 if is_legacy_unicast {
-                    unicast_dns_on_intf(&out, src_addr.ip(), intf_sock);
                     self.increase_counter(Counter::RespondLegacyUnicast, 1);
                 } else {
-                    unicast_dns_on_intf(&out, src_addr.ip(), intf_sock);
                     self.increase_counter(Counter::RespondUnicast, 1);
                 }
             } else {
