@@ -104,6 +104,7 @@ enum Counter {
     Unregister,
     UnregisterResend,
     Browse,
+    ResolveHostname,
     Respond,
     CacheRefreshQuery,
 }
@@ -116,6 +117,7 @@ impl fmt::Display for Counter {
             Counter::Unregister => write!(f, "unregister"),
             Counter::UnregisterResend => write!(f, "unregister-resend"),
             Counter::Browse => write!(f, "browse"),
+            Counter::ResolveHostname => write!(f, "resolve-hostname"),
             Counter::Respond => write!(f, "respond"),
             Counter::CacheRefreshQuery => write!(f, "cache-refresh"),
         }
@@ -231,6 +233,26 @@ impl ServiceDaemon {
     /// the error is `Error::Again`, otherwise should log and move on.
     pub fn stop_browse(&self, ty_domain: &str) -> Result<()> {
         self.send_cmd(Command::StopBrowse(ty_domain.to_string()))
+    }
+
+    /// Starts querying for the ip addresses of a hostname.
+    ///
+    /// Returns a channel `Receiver` to receive events about the hostname.
+    /// The caller can call `.recv_async().await` on this receiver to handle events in an
+    /// async environment or call `.recv()` in a sync environment.
+    pub fn resolve_hostname(&self, hostname: &str) -> Result<Receiver<ResolutionEvent>> {
+        check_hostname(hostname)?;
+        let (resp_s, resp_r) = bounded(10);
+        self.send_cmd(Command::ResolveHostname(hostname.to_string(), 1, resp_s))?;
+        Ok(resp_r)
+    }
+
+    /// Stops querying for the ip addresses of a hostname.
+    ///
+    /// When an error is returned, the caller should retry only when
+    /// the error is `Error::Again`, otherwise should log and move on.
+    pub fn stop_resolve_hostname(&self, hostname: &str) -> Result<()> {
+        self.send_cmd(Command::StopResolveHostname(hostname.to_string()))
     }
 
     /// Registers a service provided by this host.
@@ -504,29 +526,63 @@ impl ServiceDaemon {
                 }
             }
 
-            // Refresh cache records with active queriers
+            // Refresh cached service records with active queriers
             let mut query_count = 0;
-            for (ty_domain, _sender) in zc.queriers.iter() {
-                for instance in zc.cache.refresh_due(ty_domain).iter() {
+            for (ty_domain, _sender) in zc.service_queriers.iter() {
+                for instance in zc.cache.refresh_due_services(ty_domain).iter() {
                     zc.send_query(instance, TYPE_ANY);
                     query_count += 1;
                 }
             }
+
+            // Refresh cached A/AAAA records with active queriers
+            for (hostname, _sender) in zc.hostname_resolvers.iter() {
+                for (hostname, ip_addr) in
+                    zc.cache.refresh_due_hostname_resolutions(hostname).iter()
+                {
+                    match ip_addr {
+                        IpAddr::V4(_) => zc.send_query(hostname, TYPE_A),
+                        IpAddr::V6(_) => zc.send_query(hostname, TYPE_AAAA),
+                    }
+                    query_count += 1;
+                }
+            }
+
             zc.increase_counter(Counter::CacheRefreshQuery, query_count);
 
             // check and evict expired records in our cache
             let now = current_time_millis();
-            let map = zc.queriers.clone();
-            zc.cache.evict_expired(now, |expired| {
+            let expired_records = zc.cache.evict_expired(now);
+
+            // Notify service listeners about the expired records.
+            for expired in &expired_records {
                 if let Some(dns_ptr) = expired.any().downcast_ref::<DnsPointer>() {
                     let ty_domain = dns_ptr.get_name();
-                    call_listener(
-                        &map,
+                    call_service_listener(
+                        &zc.service_queriers,
                         ty_domain,
                         ServiceEvent::ServiceRemoved(ty_domain.to_string(), dns_ptr.alias.clone()),
                     );
                 }
-            });
+            }
+
+            // Notify hostname listeners about the expired records.
+            expired_records
+                .iter()
+                .filter_map(|record| record.any().downcast_ref::<DnsAddress>())
+                .map(|record| record.get_name().to_owned())
+                .collect::<HashSet<String>>()
+                .iter()
+                .for_each(|hostname| {
+                    call_host_resolution_listener(
+                        &zc.hostname_resolvers,
+                        hostname,
+                        ResolutionEvent::HostnameAddressesRemoved(
+                            hostname.to_string(),
+                            zc.cache.get_addresses_for_host(hostname),
+                        ),
+                    )
+                });
 
             // check IP changes.
             if now > next_ip_check {
@@ -555,9 +611,9 @@ impl ServiceDaemon {
                     return;
                 }
                 if !repeating {
-                    zc.add_querier(ty.clone(), listener.clone());
+                    zc.add_service_querier(ty.clone(), listener.clone());
                     // if we already have the records in our cache, just send them
-                    zc.query_cache(&ty, listener.clone());
+                    zc.query_cache_for_service(&ty, listener.clone());
                 }
 
                 zc.send_query(&ty, TYPE_PTR);
@@ -567,6 +623,37 @@ impl ServiceDaemon {
                 let max_delay = 60 * 60;
                 let delay = cmp::min(next_delay * 2, max_delay);
                 zc.add_retransmission(next_time, Command::Browse(ty, delay, listener));
+            }
+
+            Command::ResolveHostname(hostname, next_delay, listener) => {
+                let addr_list: Vec<_> = zc.intf_socks.keys().collect();
+                if let Err(e) = listener.send(ResolutionEvent::SearchStarted(format!(
+                    "{} on addrs {:?}",
+                    &hostname, &addr_list
+                ))) {
+                    error!(
+                        "Failed to send ResolveStarted({})(repeating:{}): {}",
+                        &hostname, repeating, e
+                    );
+                    return;
+                }
+                if !repeating {
+                    zc.add_hostname_resolver(hostname.clone(), listener.clone());
+                    // if we already have the records in our cache, just send them
+                    zc.query_cache_for_hostname(&hostname, listener.clone());
+                }
+
+                zc.send_query(&hostname, TYPE_A);
+                zc.send_query(&hostname, TYPE_AAAA);
+                zc.increase_counter(Counter::ResolveHostname, 1);
+
+                let next_time = current_time_millis() + (next_delay * 1000) as u64;
+                let max_delay = 60 * 60;
+                let delay = cmp::min(next_delay * 2, max_delay);
+                zc.add_retransmission(
+                    next_time,
+                    Command::ResolveHostname(hostname, delay, listener),
+                );
             }
 
             Command::Register(service_info) => {
@@ -629,7 +716,7 @@ impl ServiceDaemon {
                 }
             }
 
-            Command::StopBrowse(ty_domain) => match zc.queriers.remove_entry(&ty_domain) {
+            Command::StopBrowse(ty_domain) => match zc.service_queriers.remove_entry(&ty_domain) {
                 None => error!("StopBrowse: cannot find querier for {}", &ty_domain),
                 Some((ty, sender)) => {
                     // Remove pending browse commands in the reruns.
@@ -653,6 +740,30 @@ impl ServiceDaemon {
                     }
                 }
             },
+
+            Command::StopResolveHostname(hostname) => {
+                if let Some((host, sender)) = zc.hostname_resolvers.remove_entry(&hostname) {
+                    // Remove pending resolve commands in the reruns.
+                    debug!("StopResolve: removed queryer for {}", &host);
+                    let mut i = 0;
+                    while i < zc.retransmissions.len() {
+                        if let Command::Resolve(t, _) = &zc.retransmissions[i].command {
+                            if t == &host {
+                                zc.retransmissions.remove(i);
+                                debug!("StopResolve: removed retransmission for {}", &host);
+                                continue;
+                            }
+                        }
+                        i += 1;
+                    }
+
+                    // Notify the client.
+                    match sender.send(ResolutionEvent::SearchStopped(hostname)) {
+                        Ok(()) => debug!("Sent SearchStopped to the listener"),
+                        Err(e) => warn!("Failed to send SearchStopped: {}", e),
+                    }
+                }
+            }
 
             Command::Resolve(instance, try_count) => {
                 let pending_query = zc.query_unresolved(&instance);
@@ -888,7 +999,10 @@ struct Zeroconf {
     cache: DnsCache,
 
     /// Active "Browse" commands.
-    queriers: HashMap<String, Sender<ServiceEvent>>, // <ty_domain, channel::sender>
+    service_queriers: HashMap<String, Sender<ServiceEvent>>, // <ty_domain, channel::sender>
+
+    /// Active "Resolve" commands.
+    hostname_resolvers: HashMap<String, Sender<ResolutionEvent>>, // <hostname, channel::sender>
 
     /// All repeating transmissions.
     retransmissions: Vec<ReRun>,
@@ -954,7 +1068,8 @@ impl Zeroconf {
             poll_id_count: 0,
             my_services: HashMap::new(),
             cache: DnsCache::new(),
-            queriers: HashMap::new(),
+            hostname_resolvers: HashMap::new(),
+            service_queriers: HashMap::new(),
             retransmissions: Vec::new(),
             counters: HashMap::new(),
             poller,
@@ -1360,10 +1475,18 @@ impl Zeroconf {
     /// Binds a channel `listener` to querying mDNS domain type `ty`.
     ///
     /// If there is already a `listener`, it will be updated, i.e. overwritten.
-    fn add_querier(&mut self, ty: String, listener: Sender<ServiceEvent>) {
-        self.queriers.insert(ty, listener);
+    fn add_service_querier(&mut self, ty: String, listener: Sender<ServiceEvent>) {
+        self.service_queriers.insert(ty, listener);
     }
 
+    /// Binds a channel `listener` to querying mDNS hostnames.
+    ///
+    /// If there is already a `listener`, it will be updated, i.e. overwritten.
+    fn add_hostname_resolver(&mut self, hostname: String, listener: Sender<ResolutionEvent>) {
+        self.hostname_resolvers.insert(hostname, listener);
+    }
+
+    /// Sends a multicast query for `name` with `qtype`.
     fn send_query(&self, name: &str, qtype: u16) {
         self.send_query_vec(&[(name, qtype)]);
     }
@@ -1479,7 +1602,7 @@ impl Zeroconf {
 
     /// Checks if `ty_domain` has records in the cache. If yes, sends the
     /// cached records via `sender`.
-    fn query_cache(&mut self, ty_domain: &str, sender: Sender<ServiceEvent>) {
+    fn query_cache_for_service(&mut self, ty_domain: &str, sender: Sender<ServiceEvent>) {
         let mut resolved: HashSet<String> = HashSet::new();
         let mut unresolved: HashSet<String> = HashSet::new();
 
@@ -1524,6 +1647,21 @@ impl Zeroconf {
 
         for instance in unresolved.drain() {
             self.add_pending_resolve(instance);
+        }
+    }
+
+    /// Checks if `hostname` has records in the cache. If yes, sends the
+    /// cached records via `sender`.
+    fn query_cache_for_hostname(&mut self, hostname: &str, sender: Sender<ResolutionEvent>) {
+        let addresses = self.cache.get_addresses_for_host(hostname);
+        if !addresses.is_empty() {
+            match sender.send(ResolutionEvent::HostnameAddressesFound(
+                hostname.to_string(),
+                addresses,
+            )) {
+                Ok(()) => debug!("sent hostname addresses found"),
+                Err(e) => error!("failed to send hostname addresses found: {}", e),
+            }
         }
     }
 
@@ -1610,8 +1748,8 @@ impl Zeroconf {
             if self.cache.remove(record) {
                 // for PTR records, send event to listeners
                 if let Some(dns_ptr) = record.any().downcast_ref::<DnsPointer>() {
-                    call_listener(
-                        &self.queriers,
+                    call_service_listener(
+                        &self.service_queriers,
                         dns_ptr.get_name(),
                         ServiceEvent::ServiceRemoved(
                             dns_ptr.get_name().to_string(),
@@ -1644,14 +1782,14 @@ impl Zeroconf {
                 let ty = dns_record.get_type();
                 let name = dns_record.get_name();
                 if ty == TYPE_PTR {
-                    if self.queriers.contains_key(name) {
+                    if self.service_queriers.contains_key(name) {
                         self.timers.push(dns_record.get_record().get_refresh_time());
                     }
 
                     // send ServiceFound
                     if let Some(dns_ptr) = dns_record.any().downcast_ref::<DnsPointer>() {
-                        call_listener(
-                            &self.queriers,
+                        call_service_listener(
+                            &self.service_queriers,
                             name,
                             ServiceEvent::ServiceFound(name.to_string(), dns_ptr.alias.clone()),
                         );
@@ -1668,6 +1806,22 @@ impl Zeroconf {
                 }
             }
         }
+
+        // Go through remaining changes to see if any hostname resolutions were found or updated.
+        changes
+            .iter()
+            .filter(|change| change.ty == TYPE_A || change.ty == TYPE_AAAA)
+            .map(|change| change.name.clone())
+            .collect::<HashSet<String>>()
+            .iter()
+            .map(|hostname| (hostname, self.cache.get_addresses_for_host(hostname)))
+            .for_each(|(hostname, addresses)| {
+                call_host_resolution_listener(
+                    &self.hostname_resolvers,
+                    hostname,
+                    ResolutionEvent::HostnameAddressesFound(hostname.to_string(), addresses),
+                )
+            });
 
         // Identify the instances that need to be "resolved".
         let mut updated_instances = HashSet::new();
@@ -1694,7 +1848,7 @@ impl Zeroconf {
         let mut unresolved: HashSet<String> = HashSet::new();
 
         for (ty_domain, records) in self.cache.ptr.iter() {
-            if !self.queriers.contains_key(ty_domain) {
+            if !self.service_queriers.contains_key(ty_domain) {
                 // No need to resolve if not in our queries.
                 continue;
             }
@@ -1707,8 +1861,8 @@ impl Zeroconf {
                         {
                             if info.is_ready() {
                                 resolved.insert(dns_ptr.alias.clone());
-                                call_listener(
-                                    &self.queriers,
+                                call_service_listener(
+                                    &self.service_queriers,
                                     ty_domain,
                                     ServiceEvent::ServiceResolved(info),
                                 );
@@ -1730,6 +1884,7 @@ impl Zeroconf {
         }
     }
 
+    /// Handle incoming query packets, figure out whether and what to respond.
     fn handle_query(&mut self, msg: DnsIncoming, ip: &IpAddr) {
         let intf_sock = match self.intf_socks.get(ip) {
             Some(sock) => sock,
@@ -1773,7 +1928,9 @@ impl Zeroconf {
             } else {
                 if qtype == TYPE_A || qtype == TYPE_AAAA || qtype == TYPE_ANY {
                     for service in self.my_services.values() {
-                        if service.get_hostname() == question.entry.name.to_lowercase() {
+                        if service.get_hostname().to_lowercase()
+                            == question.entry.name.to_lowercase()
+                        {
                             let intf_addrs = service.get_addrs_on_intf(&intf_sock.intf);
                             if intf_addrs.is_empty() && (qtype == TYPE_A || qtype == TYPE_AAAA) {
                                 let t = match qtype {
@@ -1920,6 +2077,21 @@ pub enum ServiceEvent {
     SearchStopped(String),
 }
 
+/// All possible events sent to the client from the daemon
+/// regarding host resolution.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ResolutionEvent {
+    /// Started searching for the ip address of a hostname.
+    SearchStarted(String),
+    /// One or more addresses for a hostname has been found.
+    HostnameAddressesFound(String, HashSet<IpAddr>),
+    /// One or more addresses for a hostname has been removed.
+    HostnameAddressesRemoved(String, HashSet<IpAddr>),
+    /// Stopped searching for the ip address of a hostname.
+    SearchStopped(String),
+}
+
 /// Some notable events from the daemon besides [`ServiceEvent`].
 /// These events are expected to happen infrequently.
 #[derive(Clone, Debug)]
@@ -1944,6 +2116,9 @@ enum Command {
     /// Browsing for a service type (ty_domain, next_time_delay_in_seconds, channel::sender)
     Browse(String, u32, Sender<ServiceEvent>),
 
+    /// Resolve a hostname to IP addresses.
+    ResolveHostname(String, u32, Sender<ResolutionEvent>), // (hostname, next_time_delay_in_seconds, sender)
+
     /// Register a service
     Register(ServiceInfo),
 
@@ -1958,6 +2133,9 @@ enum Command {
 
     /// Stop browsing a service type
     StopBrowse(String), // (ty_domain)
+
+    /// Stop resolving a hostname
+    StopResolveHostname(String), // (hostname)
 
     /// Send query to resolve a service instance.
     /// This is used when a PTR record exists but SRV & TXT records are missing.
@@ -1981,6 +2159,7 @@ impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Command::Browse(_, _, _) => write!(f, "Command Browse"),
+            Command::ResolveHostname(_, _, _) => write!(f, "Command ResolveHostname"),
             Command::Exit(_) => write!(f, "Command Exit"),
             Command::GetStatus(_) => write!(f, "Command GetStatus"),
             Command::GetMetrics(_) => write!(f, "Command GetMetrics"),
@@ -1989,6 +2168,7 @@ impl fmt::Display for Command {
             Command::RegisterResend(_) => write!(f, "Command RegisterResend"),
             Command::SetOption(_) => write!(f, "Command SetOption"),
             Command::StopBrowse(_) => write!(f, "Command StopBrowse"),
+            Command::StopResolveHostname(_) => write!(f, "Command StopResolveHostname"),
             Command::Unregister(_, _) => write!(f, "Command Unregister"),
             Command::UnregisterResend(_, _) => write!(f, "Command UnregisterResend"),
             Command::Resolve(_, _) => write!(f, "Command Resolve"),
@@ -2042,6 +2222,21 @@ impl DnsCache {
                     }
                 }
                 None
+            })
+            .collect()
+    }
+
+    // Returns the set of IP addresses for a hostname.
+    fn get_addresses_for_host(&self, host: &str) -> HashSet<IpAddr> {
+        self.addr
+            .get(host)
+            .into_iter()
+            .flatten()
+            .filter_map(|record| {
+                record
+                    .any()
+                    .downcast_ref::<DnsAddress>()
+                    .map(|addr| addr.address)
             })
             .collect()
     }
@@ -2121,33 +2316,35 @@ impl DnsCache {
 
     /// Iterate all records and remove ones that expired, allowing
     /// a function `f` to react with the expired ones.
-    fn evict_expired<F>(&mut self, now: u64, f: F)
-    where
-        F: Fn(&DnsRecordBox), // Caller has a chance to do something with expired
-    {
-        let all_records = self
-            .ptr
+    fn evict_expired(&mut self, now: u64) -> Vec<DnsRecordBox> {
+        self.ptr
             .values_mut()
             .chain(self.srv.values_mut())
             .chain(self.txt.values_mut())
-            .chain(self.addr.values_mut());
-        for records in all_records {
-            records.retain(|x| {
-                let expired = x.get_record().is_expired(now);
-                if expired {
-                    f(x);
+            .chain(self.addr.values_mut())
+            .flat_map(|record_boxes| {
+                let mut removed = Vec::new();
+
+                // NOTE: replacement for `extract_if`: https://github.com/rust-lang/rust/issues/43244
+                let mut i = 0;
+                while i < record_boxes.len() {
+                    if record_boxes[i].get_record().is_expired(now) {
+                        removed.push(record_boxes.remove(i));
+                    } else {
+                        i += 1;
+                    }
                 }
-                !expired // only retain non-expired ones
-            });
-        }
+                removed
+            })
+            .collect()
     }
 
-    /// Returns the list of instance names that are due for refresh
+    /// Returns the set of instance names that are due for refresh
     /// for a `ty_domain`.
     ///
     /// For these instances, their refresh time will be updated so that
     /// they will not refresh again.
-    fn refresh_due(&mut self, ty_domain: &str) -> Vec<String> {
+    fn refresh_due_services(&mut self, ty_domain: &str) -> HashSet<String> {
         let now = current_time_millis();
 
         self.ptr
@@ -2165,6 +2362,31 @@ impl DnsCache {
                     .any()
                     .downcast_ref::<DnsPointer>()
                     .map(|dns_ptr| dns_ptr.alias.clone())
+            })
+            .collect()
+    }
+
+    /// Returns the set of A/AAAA records that are due for refresh for a `hostname`.
+    ///
+    /// For these records, their refresh time will be updated so that they will not refresh again.
+    fn refresh_due_hostname_resolutions(&mut self, hostname: &str) -> HashSet<(String, IpAddr)> {
+        let now = current_time_millis();
+
+        self.addr
+            .get_mut(hostname)
+            .into_iter()
+            .flatten()
+            .filter_map(|record| {
+                let rec = record.get_record_mut();
+                if rec.is_expired(now) || !rec.refresh_due(now) {
+                    return None;
+                }
+                rec.refresh_no_more();
+
+                Some((
+                    hostname.to_owned(),
+                    record.any().downcast_ref::<DnsAddress>().unwrap().address,
+                ))
             })
             .collect()
     }
@@ -2229,12 +2451,44 @@ fn check_service_name(fullname: &str) -> Result<()> {
     Ok(())
 }
 
-fn call_listener(
+/// Validate a hostname.
+fn check_hostname(hostname: &str) -> Result<()> {
+    if !hostname.ends_with(".local.") {
+        return Err(e_fmt!("Hostname must end with '.local.'"));
+    }
+
+    if hostname == ".local." {
+        return Err(e_fmt!(
+            "The part of the hostname before '.local.' cannot be empty"
+        ));
+    }
+
+    if hostname.len() > 255 {
+        return Err(e_fmt!("Hostname length must be <= 255 bytes"));
+    }
+
+    Ok(())
+}
+
+fn call_service_listener(
     listeners_map: &HashMap<String, Sender<ServiceEvent>>,
     ty_domain: &str,
     event: ServiceEvent,
 ) {
     if let Some(listener) = listeners_map.get(ty_domain) {
+        match listener.send(event) {
+            Ok(()) => debug!("Sent event to listener successfully"),
+            Err(e) => error!("Failed to send event: {}", e),
+        }
+    }
+}
+
+fn call_host_resolution_listener(
+    listeners_map: &HashMap<String, Sender<ResolutionEvent>>,
+    hostname: &str,
+    event: ResolutionEvent,
+) {
+    if let Some(listener) = listeners_map.get(hostname) {
         match listener.send(event) {
             Ok(()) => debug!("Sent event to listener successfully"),
             Err(e) => error!("Failed to send event: {}", e),
