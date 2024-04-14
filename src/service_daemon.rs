@@ -1365,9 +1365,16 @@ impl Zeroconf {
     }
 
     fn send_query(&self, name: &str, qtype: u16) {
-        debug!("Sending multicast query for {}", name);
+        self.send_query_vec(&[(name, qtype)]);
+    }
+
+    /// Sends out a list of `queries` (i.e. DNS questions) via multicast.
+    fn send_query_vec(&self, queries: &[(&str, u16)]) {
+        debug!("Sending multicast queries: {:?}", queries);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
-        out.add_question(name, qtype);
+        for (name, qtype) in queries {
+            out.add_question(name, *qtype);
+        }
 
         let mut subnet_set: HashSet<u128> = HashSet::new();
         for (_, intf_sock) in self.intf_socks.iter() {
@@ -1457,8 +1464,7 @@ impl Zeroconf {
             for record in records {
                 if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
                     if self.cache.addr.get(&srv.host).is_none() {
-                        self.send_query(&srv.host, TYPE_A);
-                        self.send_query(&srv.host, TYPE_AAAA);
+                        self.send_query_vec(&[(&srv.host, TYPE_A), (&srv.host, TYPE_AAAA)]);
                         return true;
                     }
                 }
