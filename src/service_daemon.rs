@@ -275,6 +275,7 @@ impl ServiceDaemon {
     /// this `register` function again. No need to call `unregister` first.
     pub fn register(&self, mut service_info: ServiceInfo) -> Result<()> {
         check_service_name(service_info.get_fullname())?;
+        check_hostname(service_info.get_hostname())?;
 
         if service_info.is_addr_auto() {
             for iface in my_ip_interfaces() {
@@ -2674,7 +2675,7 @@ mod tests {
         let d = ServiceDaemon::new().expect("Failed to create daemon");
 
         let service = "_test_inval_ptr._udp.local.";
-        let host_name = "my_host_tmp_invalidated_ptr.";
+        let host_name = "my_host_tmp_invalidated_ptr.local.";
         let intfs: Vec<_> = my_ip_interfaces();
         let intf_ips: Vec<_> = intfs.iter().map(|intf| intf.ip()).collect();
         let port = 5201;
