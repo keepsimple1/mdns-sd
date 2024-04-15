@@ -345,6 +345,9 @@ fn service_without_properties_with_alter_net_v6() {
                             .iter()
                             .filter(|a| a.is_ipv6())
                             .collect();
+                        if addrs.is_empty() {
+                            continue; // In case IPv4 addr received first.
+                        }
                         assert_eq!(addrs.len(), 1); // first_ipv6 but no alter_ipv.
                         found = true;
                         break;
