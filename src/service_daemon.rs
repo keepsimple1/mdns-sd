@@ -523,7 +523,7 @@ impl ServiceDaemon {
                 .hostname_resolvers
                 .clone()
                 .into_iter()
-                .filter(|(_, (_, timeout))| timeout.is_some_and(|t| now >= t))
+                .filter(|(_, (_, timeout))| timeout.map(|t| now >= t).unwrap_or(false))
                 .map(|(hostname, _)| hostname)
             {
                 log::debug!("hostname resolver timeout for {}", &hostname);
