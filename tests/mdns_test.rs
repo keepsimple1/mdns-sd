@@ -1,7 +1,7 @@
 use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
-    DaemonEvent, DaemonStatus, IfKind, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo,
-    UnregisterStatus,
+    DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, IntoTxtProperties, ServiceDaemon,
+    ServiceEvent, ServiceInfo, UnregisterStatus,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -1052,4 +1052,79 @@ fn test_shutdown() {
     let receiver = mdns.status().unwrap();
     let status = receiver.recv().unwrap();
     assert!(matches!(status, DaemonStatus::Shutdown));
+}
+
+#[test]
+fn test_hostname_resolution() {
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+    let hostname = "my_host._tcp.local.";
+    let service_ip_addr = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv4())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    let my_service = ServiceInfo::new(
+        "_test._tcp.local.",
+        "my_instance",
+        hostname,
+        &[service_ip_addr] as &[IpAddr],
+        1234,
+        None,
+    )
+    .expect("invalid service info");
+    d.register(my_service).unwrap();
+
+    let event_receiver = d.resolve_hostname(hostname, Some(2000)).unwrap();
+    let resolved = loop {
+        match event_receiver.recv() {
+            Ok(HostnameResolutionEvent::HostnameAddressesFound(found_hostname, addresses)) => {
+                assert!(found_hostname == hostname);
+                assert!(addresses.contains(&service_ip_addr));
+                break true;
+            }
+            Ok(HostnameResolutionEvent::SearchStopped(_)) => break false,
+            Ok(event) => println!("Received event {:?}", event),
+            Err(_) => break false,
+        }
+    };
+
+    assert!(resolved);
+    d.shutdown().unwrap();
+}
+
+#[test]
+fn hostname_resolution_timeout() {
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+    let hostname = "nonexistent._tcp.local.";
+
+    let before = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("failed to get current UNIX time")
+        .as_millis() as u64;
+    let event_receiver = d.resolve_hostname(hostname, Some(2000)).unwrap();
+    let resolved = loop {
+        match event_receiver.recv() {
+            Ok(HostnameResolutionEvent::HostnameAddressesFound(found_hostname, _addresses)) => {
+                assert!(found_hostname == hostname);
+                break true;
+            }
+            Ok(HostnameResolutionEvent::SearchTimeout(_)) => break false,
+            Ok(event) => println!("Received event {:?}", event),
+            Err(_) => break false,
+        }
+    };
+    let after = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("failed to get current UNIX time")
+        .as_millis() as u64;
+
+    assert!(!resolved);
+
+    println!("Time spent resolving: {} ms", after - before);
+    assert!(after - before >= 2000 - 5);
+    assert!(after - before < 2000 + 1000);
+
+    d.shutdown().unwrap();
 }

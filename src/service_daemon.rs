@@ -2641,8 +2641,9 @@ mod tests {
         valid_instance_name, IntfSock, ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4,
         MDNS_PORT,
     };
-    use crate::dns_parser::{
-        DnsOutgoing, DnsPointer, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE, TYPE_PTR,
+    use crate::{
+        dns_parser::{DnsOutgoing, DnsPointer, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE, TYPE_PTR},
+        service_daemon::check_hostname,
     };
     use std::{net::SocketAddr, net::SocketAddrV4, time::Duration};
 
@@ -2666,6 +2667,31 @@ mod tests {
         assert!(result.is_err());
         if let Err(e) = result {
             println!("{}", e);
+        }
+    }
+
+    #[test]
+    fn test_check_hostname() {
+        // valid hostnames
+        for hostname in &[
+            "my_host.local.",
+            &("A".repeat(255 - ".local.".len()) + ".local."),
+        ] {
+            let result = check_hostname(hostname);
+            assert!(result.is_ok());
+        }
+
+        // erroneous hostnames
+        for hostname in &[
+            "my_host.local",
+            ".local.",
+            &("A".repeat(256 - ".local.".len()) + ".local."),
+        ] {
+            let result = check_hostname(hostname);
+            assert!(result.is_err());
+            if let Err(e) = result {
+                println!("{}", e);
+            }
         }
     }
 
