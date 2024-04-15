@@ -246,7 +246,7 @@ impl ServiceDaemon {
         &self,
         hostname: &str,
         timeout: Option<u64>,
-    ) -> Result<Receiver<ResolutionEvent>> {
+    ) -> Result<Receiver<HostnameResolutionEvent>> {
         check_hostname(hostname)?;
         let (resp_s, resp_r) = bounded(10);
         self.send_cmd(Command::ResolveHostname(
@@ -519,25 +519,24 @@ impl ServiceDaemon {
 
             // Remove hostname resolvers with expired timeouts.
             for hostname in zc
-                .hostname_resolver_timeouts
+                .hostname_resolvers
                 .clone()
                 .into_iter()
-                .filter(|(_, t)| now >= *t)
-                .map(|(h, _)| h)
+                .filter(|(_, (_, timeout))| timeout.is_some_and(|t| now >= t))
+                .map(|(hostname, _)| hostname)
             {
                 log::debug!("hostname resolver timeout for {}", &hostname);
                 call_hostname_resolution_listener(
                     &zc.hostname_resolvers,
                     &hostname,
-                    ResolutionEvent::SearchTimeout(hostname.to_owned()),
+                    HostnameResolutionEvent::SearchTimeout(hostname.to_owned()),
                 );
                 call_hostname_resolution_listener(
                     &zc.hostname_resolvers,
                     &hostname,
-                    ResolutionEvent::SearchStopped(hostname.to_owned()),
+                    HostnameResolutionEvent::SearchStopped(hostname.to_owned()),
                 );
                 zc.hostname_resolvers.remove(&hostname);
-                zc.hostname_resolver_timeouts.remove(&hostname);
             }
 
             // process commands from the command channel
@@ -611,7 +610,7 @@ impl ServiceDaemon {
                     call_hostname_resolution_listener(
                         &zc.hostname_resolvers,
                         hostname,
-                        ResolutionEvent::HostnameAddressesRemoved(
+                        HostnameResolutionEvent::HostnameAddressesRemoved(
                             hostname.to_string(),
                             zc.cache.get_addresses_for_host(hostname),
                         ),
@@ -661,7 +660,7 @@ impl ServiceDaemon {
 
             Command::ResolveHostname(hostname, next_delay, listener, timeout) => {
                 let addr_list: Vec<_> = zc.intf_socks.keys().collect();
-                if let Err(e) = listener.send(ResolutionEvent::SearchStarted(format!(
+                if let Err(e) = listener.send(HostnameResolutionEvent::SearchStarted(format!(
                     "{} on addrs {:?}",
                     &hostname, &addr_list
                 ))) {
@@ -677,8 +676,7 @@ impl ServiceDaemon {
                     zc.query_cache_for_hostname(&hostname, listener.clone());
                 }
 
-                zc.send_query(&hostname, TYPE_A);
-                zc.send_query(&hostname, TYPE_AAAA);
+                zc.send_query_vec(&[(&hostname, TYPE_A), (&hostname, TYPE_AAAA)]);
                 zc.increase_counter(Counter::ResolveHostname, 1);
 
                 let now = current_time_millis();
@@ -688,14 +686,15 @@ impl ServiceDaemon {
 
                 // Only add retransmission if it does not exceed the hostname resolver timeout, if any.
                 if zc
-                    .hostname_resolver_timeouts
+                    .hostname_resolvers
                     .get(&hostname)
-                    .map(|timeout| next_time < *timeout)
+                    .and_then(|(_sender, timeout)| *timeout)
+                    .map(|timeout| next_time < timeout)
                     .unwrap_or(true)
                 {
                     zc.add_retransmission(
                         next_time,
-                        Command::ResolveHostname(hostname, delay, listener, timeout),
+                        Command::ResolveHostname(hostname, delay, listener, None),
                     );
                 }
             }
@@ -786,7 +785,9 @@ impl ServiceDaemon {
             },
 
             Command::StopResolveHostname(hostname) => {
-                if let Some((host, sender)) = zc.hostname_resolvers.remove_entry(&hostname) {
+                if let Some((host, (sender, _timeout))) =
+                    zc.hostname_resolvers.remove_entry(&hostname)
+                {
                     // Remove pending resolve commands in the reruns.
                     debug!("StopResolve: removed queryer for {}", &host);
                     let mut i = 0;
@@ -801,11 +802,8 @@ impl ServiceDaemon {
                         i += 1;
                     }
 
-                    // Remove the timeout, if any.
-                    zc.hostname_resolver_timeouts.remove(&hostname);
-
                     // Notify the client.
-                    match sender.send(ResolutionEvent::SearchStopped(hostname)) {
+                    match sender.send(HostnameResolutionEvent::SearchStopped(hostname)) {
                         Ok(()) => debug!("Sent SearchStopped to the listener"),
                         Err(e) => warn!("Failed to send SearchStopped: {}", e),
                     }
@@ -1049,13 +1047,9 @@ struct Zeroconf {
     service_queriers: HashMap<String, Sender<ServiceEvent>>, // <ty_domain, channel::sender>
 
     /// Active "ResolveHostname" commands.
-    hostname_resolvers: HashMap<String, Sender<ResolutionEvent>>, // <hostname, channel::sender>
-
-    /// Timeout timestamps for active "ResolveHostname" commands.
     ///
-    /// The timestamps are set at the future time when the command should timeout.
-    /// If a hostname resolver does not have a timeout, it will not be added to this map.
-    hostname_resolver_timeouts: HashMap<String, u64>, // <hostname, UNIX timestamp in millis>
+    /// The timestamps are set at the future timestamp when the command should timeout.
+    hostname_resolvers: HashMap<String, (Sender<HostnameResolutionEvent>, Option<u64>)>, // <hostname, (channel::sender, UNIX timestamp in millis)>
 
     /// All repeating transmissions.
     retransmissions: Vec<ReRun>,
@@ -1127,7 +1121,7 @@ impl Zeroconf {
             my_services: HashMap::new(),
             cache: DnsCache::new(),
             hostname_resolvers: HashMap::new(),
-            hostname_resolver_timeouts: HashMap::new(),
+            // hostname_resolver_timeouts: HashMap::new(),
             service_queriers: HashMap::new(),
             retransmissions: Vec::new(),
             counters: HashMap::new(),
@@ -1544,15 +1538,14 @@ impl Zeroconf {
     fn add_hostname_resolver(
         &mut self,
         hostname: String,
-        listener: Sender<ResolutionEvent>,
+        listener: Sender<HostnameResolutionEvent>,
         timeout: Option<u64>,
     ) {
+        let real_timeout = timeout.map(|t| current_time_millis() + t);
         self.hostname_resolvers
-            .insert(hostname.to_owned(), listener);
-        if let Some(t) = timeout {
-            let now = current_time_millis();
-            self.hostname_resolver_timeouts.insert(hostname, now + t);
-            self.timers.push(now + t);
+            .insert(hostname, (listener, real_timeout));
+        if let Some(t) = real_timeout {
+            self.timers.push(t);
         }
     }
 
@@ -1722,10 +1715,14 @@ impl Zeroconf {
 
     /// Checks if `hostname` has records in the cache. If yes, sends the
     /// cached records via `sender`.
-    fn query_cache_for_hostname(&mut self, hostname: &str, sender: Sender<ResolutionEvent>) {
+    fn query_cache_for_hostname(
+        &mut self,
+        hostname: &str,
+        sender: Sender<HostnameResolutionEvent>,
+    ) {
         let addresses = self.cache.get_addresses_for_host(hostname);
         if !addresses.is_empty() {
-            match sender.send(ResolutionEvent::HostnameAddressesFound(
+            match sender.send(HostnameResolutionEvent::HostnameAddressesFound(
                 hostname.to_string(),
                 addresses,
             )) {
@@ -1889,7 +1886,10 @@ impl Zeroconf {
                 call_hostname_resolution_listener(
                     &self.hostname_resolvers,
                     hostname,
-                    ResolutionEvent::HostnameAddressesFound(hostname.to_string(), addresses),
+                    HostnameResolutionEvent::HostnameAddressesFound(
+                        hostname.to_string(),
+                        addresses,
+                    ),
                 )
             });
 
@@ -2151,7 +2151,7 @@ pub enum ServiceEvent {
 /// regarding host resolution.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum ResolutionEvent {
+pub enum HostnameResolutionEvent {
     /// Started searching for the ip address of a hostname.
     SearchStarted(String),
     /// One or more addresses for a hostname has been found.
@@ -2189,7 +2189,7 @@ enum Command {
     Browse(String, u32, Sender<ServiceEvent>),
 
     /// Resolve a hostname to IP addresses.
-    ResolveHostname(String, u32, Sender<ResolutionEvent>, Option<u64>), // (hostname, next_time_delay_in_seconds, sender, timeout_in_milliseconds)
+    ResolveHostname(String, u32, Sender<HostnameResolutionEvent>, Option<u64>), // (hostname, next_time_delay_in_seconds, sender, timeout_in_milliseconds)
 
     /// Register a service
     Register(ServiceInfo),
@@ -2556,11 +2556,11 @@ fn call_service_listener(
 }
 
 fn call_hostname_resolution_listener(
-    listeners_map: &HashMap<String, Sender<ResolutionEvent>>,
+    listeners_map: &HashMap<String, (Sender<HostnameResolutionEvent>, Option<u64>)>,
     hostname: &str,
-    event: ResolutionEvent,
+    event: HostnameResolutionEvent,
 ) {
-    if let Some(listener) = listeners_map.get(hostname) {
+    if let Some(listener) = listeners_map.get(hostname).map(|(l, _)| l) {
         match listener.send(event) {
             Ok(()) => debug!("Sent event to listener successfully"),
             Err(e) => error!("Failed to send event: {}", e),
