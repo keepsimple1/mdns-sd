@@ -611,7 +611,7 @@ impl ServiceDaemon {
                     call_hostname_resolution_listener(
                         &zc.hostname_resolvers,
                         hostname,
-                        HostnameResolutionEvent::HostnameAddressesRemoved(
+                        HostnameResolutionEvent::AddressesRemoved(
                             hostname.to_string(),
                             zc.cache.get_addresses_for_host(hostname),
                         ),
@@ -1122,7 +1122,6 @@ impl Zeroconf {
             my_services: HashMap::new(),
             cache: DnsCache::new(),
             hostname_resolvers: HashMap::new(),
-            // hostname_resolver_timeouts: HashMap::new(),
             service_queriers: HashMap::new(),
             retransmissions: Vec::new(),
             counters: HashMap::new(),
@@ -1723,7 +1722,7 @@ impl Zeroconf {
     ) {
         let addresses = self.cache.get_addresses_for_host(hostname);
         if !addresses.is_empty() {
-            match sender.send(HostnameResolutionEvent::HostnameAddressesFound(
+            match sender.send(HostnameResolutionEvent::AddressesFound(
                 hostname.to_string(),
                 addresses,
             )) {
@@ -1887,10 +1886,7 @@ impl Zeroconf {
                 call_hostname_resolution_listener(
                     &self.hostname_resolvers,
                     hostname,
-                    HostnameResolutionEvent::HostnameAddressesFound(
-                        hostname.to_string(),
-                        addresses,
-                    ),
+                    HostnameResolutionEvent::AddressesFound(hostname.to_string(), addresses),
                 )
             });
 
@@ -2156,9 +2152,9 @@ pub enum HostnameResolutionEvent {
     /// Started searching for the ip address of a hostname.
     SearchStarted(String),
     /// One or more addresses for a hostname has been found.
-    HostnameAddressesFound(String, HashSet<IpAddr>),
+    AddressesFound(String, HashSet<IpAddr>),
     /// One or more addresses for a hostname has been removed.
-    HostnameAddressesRemoved(String, HashSet<IpAddr>),
+    AddressesRemoved(String, HashSet<IpAddr>),
     /// The search for the ip address of a hostname has timed out.
     SearchTimeout(String),
     /// Stopped searching for the ip address of a hostname.

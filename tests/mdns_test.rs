@@ -1078,7 +1078,7 @@ fn test_hostname_resolution() {
     let event_receiver = d.resolve_hostname(hostname, Some(2000)).unwrap();
     let resolved = loop {
         match event_receiver.recv() {
-            Ok(HostnameResolutionEvent::HostnameAddressesFound(found_hostname, addresses)) => {
+            Ok(HostnameResolutionEvent::AddressesFound(found_hostname, addresses)) => {
                 assert!(found_hostname == hostname);
                 assert!(addresses.contains(&service_ip_addr));
                 break true;
@@ -1106,7 +1106,7 @@ fn hostname_resolution_timeout() {
     let event_receiver = d.resolve_hostname(hostname, Some(2000)).unwrap();
     let resolved = loop {
         match event_receiver.recv() {
-            Ok(HostnameResolutionEvent::HostnameAddressesFound(found_hostname, _addresses)) => {
+            Ok(HostnameResolutionEvent::AddressesFound(found_hostname, _addresses)) => {
                 assert!(found_hostname == hostname);
                 break true;
             }
