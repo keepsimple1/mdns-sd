@@ -1066,7 +1066,7 @@ fn test_hostname_resolution() {
         .unwrap();
 
     let my_service = ServiceInfo::new(
-        "_test._tcp.local.",
+        "_host_res_test._tcp.local.",
         "my_instance",
         hostname,
         &[service_ip_addr] as &[IpAddr],
