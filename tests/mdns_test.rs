@@ -8,6 +8,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
+use test_log::test;
 
 /// This test covers:
 /// register(announce), browse(query), response, unregister, shutdown.
