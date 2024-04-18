@@ -8,6 +8,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
+use test_log::test;
 
 /// This test covers:
 /// register(announce), browse(query), response, unregister, shutdown.
@@ -1065,7 +1066,7 @@ fn test_hostname_resolution() {
         .unwrap();
 
     let my_service = ServiceInfo::new(
-        "_test._tcp.local.",
+        "_host_res_test._tcp.local.",
         "my_instance",
         hostname,
         &[service_ip_addr] as &[IpAddr],
