@@ -16,6 +16,8 @@
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 
 fn main() {
+    env_logger::init();
+
     // Create a daemon
     let mdns = ServiceDaemon::new().expect("Failed to create daemon");
 
