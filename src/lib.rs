@@ -114,13 +114,13 @@
 //! as the logger and use [`test-log`](https://docs.rs/test-log/latest/test_log/) to enable logging for tests.
 //! For instance you can show all test logs using:
 //!
-//! ```
+//! ```shell
 //! RUST_LOG=debug cargo test integration_success -- --nocapture
 //! ```
 //!
 //! We also enabled the logging for the examples. For instance you can do:
 //!
-//! ```
+//! ```shell
 //! RUST_LOG=debug cargo run --example query _printer._tcp
 //! ```
 //!
