@@ -106,6 +106,24 @@
 //! We focus on the common use cases at first, and currently have the following limitations:
 //! - Only support multicast, not unicast send/recv.
 //! - Only support 32-bit or bigger platforms, not 16-bit platforms.
+//!
+//! # Use logging in tests and examples
+//!
+//! Often times it is helpful to enable logging running tests or examples to examine the details.
+//! For tests and examples, we use [`env_logger`](https://docs.rs/env_logger/latest/env_logger/)
+//! as the logger and use [`test-log`](https://docs.rs/test-log/latest/test_log/) to enable logging for tests.
+//! For instance you can show all test logs using:
+//!
+//! ```shell
+//! RUST_LOG=debug cargo test integration_success -- --nocapture
+//! ```
+//!
+//! We also enabled the logging for the examples. For instance you can do:
+//!
+//! ```shell
+//! RUST_LOG=debug cargo run --example query _printer._tcp
+//! ```
+//!
 
 #![forbid(unsafe_code)]
 #![allow(clippy::single_component_path_imports)]

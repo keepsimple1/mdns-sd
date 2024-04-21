@@ -15,6 +15,8 @@ use mdns_sd::{DaemonEvent, ServiceDaemon, ServiceInfo};
 use std::{env, thread, time::Duration};
 
 fn main() {
+    env_logger::init();
+
     // Simple command line options.
     let args: Vec<String> = env::args().collect();
     let mut should_unreg = false;
