@@ -29,6 +29,9 @@
 //! to publish (i.e. announce) its own service. And, the daemon type can be cloned and passed
 //! around between threads.
 //!
+//! The user can also call [`resolve_hostname`](`ServiceDaemon::resolve_hostname`) to
+//! resolve a hostname to IP addresses using mDNS, regardless if the host publishes a service name.
+//!
 //! ## Example: a client querying for a service type.
 //!
 //! ```rust
