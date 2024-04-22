@@ -29,6 +29,9 @@
 //! to publish (i.e. announce) its own service. And, the daemon type can be cloned and passed
 //! around between threads.
 //!
+//! The user can also call [`resolve_hostname`](`ServiceDaemon::resolve_hostname`) to
+//! resolve a hostname to IP addresses using mDNS, regardless if the host publishes a service name.
+//!
 //! ## Example: a client querying for a service type.
 //!
 //! ```rust
@@ -106,6 +109,24 @@
 //! We focus on the common use cases at first, and currently have the following limitations:
 //! - Only support multicast, not unicast send/recv.
 //! - Only support 32-bit or bigger platforms, not 16-bit platforms.
+//!
+//! # Use logging in tests and examples
+//!
+//! Often times it is helpful to enable logging running tests or examples to examine the details.
+//! For tests and examples, we use [`env_logger`](https://docs.rs/env_logger/latest/env_logger/)
+//! as the logger and use [`test-log`](https://docs.rs/test-log/latest/test_log/) to enable logging for tests.
+//! For instance you can show all test logs using:
+//!
+//! ```shell
+//! RUST_LOG=debug cargo test integration_success -- --nocapture
+//! ```
+//!
+//! We also enabled the logging for the examples. For instance you can do:
+//!
+//! ```shell
+//! RUST_LOG=debug cargo run --example query _printer._tcp
+//! ```
+//!
 
 #![forbid(unsafe_code)]
 #![allow(clippy::single_component_path_imports)]
@@ -131,8 +152,8 @@ mod service_info;
 
 pub use error::{Error, Result};
 pub use service_daemon::{
-    DaemonEvent, DaemonStatus, IfKind, Metrics, ServiceDaemon, ServiceEvent, UnregisterStatus,
-    SERVICE_NAME_LEN_MAX_DEFAULT,
+    DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, Metrics, ServiceDaemon,
+    ServiceEvent, UnregisterStatus, SERVICE_NAME_LEN_MAX_DEFAULT,
 };
 pub use service_info::{AsIpAddrs, IntoTxtProperties, ServiceInfo, TxtProperties, TxtProperty};
 

@@ -1,6 +1,6 @@
 [package]
 name = "mdns-sd"
-version = "0.10.5"
+version = "0.11.0"
 authors = ["keepsimple <keepsimple@gmail.com>"]
 edition = "2018"
 rust-version = "1.63.0"
@@ -25,4 +25,7 @@ socket2 = { version = "0.5.5", features = ["all"] }      # socket APIs
 socket-pktinfo = { version = "0.2.1" }                  # socket packet info extension
 
 [dev-dependencies]
+env_logger = { version = "= 0.10.2", default-features = false, features= ["humantime"] }
 fastrand = "1.8"
+test-log = "= 0.2.14"
+test-log-macros = "= 0.2.14"

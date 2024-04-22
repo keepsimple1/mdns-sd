@@ -1,13 +1,14 @@
 use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
-    DaemonEvent, DaemonStatus, IfKind, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo,
-    UnregisterStatus,
+    DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, IntoTxtProperties, ServiceDaemon,
+    ServiceEvent, ServiceInfo, UnregisterStatus,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
+use test_log::test;
 
 /// This test covers:
 /// register(announce), browse(query), response, unregister, shutdown.
@@ -31,7 +32,7 @@ fn integration_success() {
         println!("{}", &item);
     }
 
-    let host_name = "my_host.";
+    let host_name = "my_host.local.";
     let port = 5200;
     let mut properties = HashMap::new();
     properties.insert("property_1".to_string(), "test".to_string());
@@ -238,7 +239,7 @@ fn service_without_properties_with_alter_net_v4() {
     let first_ip = if_addrs[0].ip();
     let alter_ip = ipv4_alter_net(&if_addrs);
     let host_ip = vec![first_ip, alter_ip];
-    let host_name = "serv-no-prop-v4.";
+    let host_name = "serv-no-prop-v4.local.";
     let port = 5201;
     let my_service = ServiceInfo::new(
         ty_domain,
@@ -308,7 +309,7 @@ fn service_without_properties_with_alter_net_v6() {
     let first_ip = if_addrs[0].ip();
     let alter_ip = ipv6_alter_net(&if_addrs);
     let host_ip = vec![first_ip, alter_ip];
-    let host_name = "serv-no-prop-v6.";
+    let host_name = "serv-no-prop-v6.local.";
     let port = 5201;
     let my_service = ServiceInfo::new(
         ty_domain,
@@ -345,6 +346,9 @@ fn service_without_properties_with_alter_net_v6() {
                             .iter()
                             .filter(|a| a.is_ipv6())
                             .collect();
+                        if addrs.is_empty() {
+                            continue; // In case IPv4 addr received first.
+                        }
                         assert_eq!(addrs.len(), 1); // first_ipv6 but no alter_ipv.
                         found = true;
                         break;
@@ -372,7 +376,7 @@ fn service_txt_properties_case_insensitive() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
-    let host_name = "properties_host.";
+    let host_name = "properties_host.local.";
     let port = 5201;
     let properties = [
         ("prop_CAP_CASE", "one"),
@@ -455,7 +459,7 @@ fn service_with_named_interface_only() {
 
     // Register a service with a name len > 15.
     let my_ty_domain = "_named_intf_only._udp.local.";
-    let host_name = "my_host.";
+    let host_name = "my_host.local.";
     let host_ipv4 = "";
     let port = 5202;
     let my_service = ServiceInfo::new(
@@ -545,7 +549,7 @@ fn service_with_ipv4_only() {
 
     // Register a service with a name len > 15.
     let service_ipv4_only = "_test_ipv4_only._udp.local.";
-    let host_name = "my_host_ipv4_only.";
+    let host_name = "my_host_ipv4_only.local.";
     let host_ipv4 = "";
     let port = 5201;
     let my_service = ServiceInfo::new(
@@ -608,7 +612,7 @@ fn service_with_invalid_addr_v4() {
         .filter(|iface| iface.addr.ip().is_ipv4())
         .collect();
     let alter_ip = ipv4_alter_net(&if_addrs);
-    let host_name = "my_host.";
+    let host_name = "my_host.local.";
     let port = 5201;
     let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, alter_ip, port, None)
         .expect("valid service info");
@@ -665,7 +669,7 @@ fn service_with_invalid_addr_v6() {
         .filter(|iface| iface.addr.ip().is_ipv6())
         .collect();
     let alter_ip = ipv6_alter_net(&if_addrs);
-    let host_name = "my_host.";
+    let host_name = "my_host.local.";
     let port = 5201;
     let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, alter_ip, port, None)
         .expect("valid service info");
@@ -719,7 +723,7 @@ fn subtype() {
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
     let host_ipv4 = my_ip_interfaces()[0].ip().to_string();
-    let host_name = "my_host.";
+    let host_name = "my_host.local.";
     let port = 5201;
     let my_service = ServiceInfo::new(
         subtype_domain,
@@ -774,7 +778,7 @@ fn service_name_check() {
     // Register a service with a name len > 15.
     let service_name_too_long = "_service-name-too-long._udp.local.";
     let host_ipv4 = "";
-    let host_name = "my_host.";
+    let host_name = "my_host.local.";
     let port = 5200;
     let my_service = ServiceInfo::new(
         service_name_too_long,
@@ -826,7 +830,7 @@ fn service_new_publish_after_browser() {
     let service_info = ServiceInfo::new(
         "_new-pub._udp.local.",
         "test1",
-        "my_host.",
+        "my_host.local.",
         "",
         1234,
         &txt_properties[..],
@@ -881,7 +885,7 @@ fn instance_name_two_dots() {
     let service_type = "_two-dots._udp.local.";
     let instance_name = "my_instance.";
     let host_ipv4 = "";
-    let host_name = "my_host.";
+    let host_name = "my_host.local.";
     let port = 5200;
     let my_service = ServiceInfo::new(
         service_type,
@@ -1049,4 +1053,79 @@ fn test_shutdown() {
     let receiver = mdns.status().unwrap();
     let status = receiver.recv().unwrap();
     assert!(matches!(status, DaemonStatus::Shutdown));
+}
+
+#[test]
+fn test_hostname_resolution() {
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+    let hostname = "my_host._tcp.local.";
+    let service_ip_addr = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv4())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    let my_service = ServiceInfo::new(
+        "_host_res_test._tcp.local.",
+        "my_instance",
+        hostname,
+        &[service_ip_addr] as &[IpAddr],
+        1234,
+        None,
+    )
+    .expect("invalid service info");
+    d.register(my_service).unwrap();
+
+    let event_receiver = d.resolve_hostname(hostname, Some(2000)).unwrap();
+    let resolved = loop {
+        match event_receiver.recv() {
+            Ok(HostnameResolutionEvent::AddressesFound(found_hostname, addresses)) => {
+                assert!(found_hostname == hostname);
+                assert!(addresses.contains(&service_ip_addr));
+                break true;
+            }
+            Ok(HostnameResolutionEvent::SearchStopped(_)) => break false,
+            Ok(event) => println!("Received event {:?}", event),
+            Err(_) => break false,
+        }
+    };
+
+    assert!(resolved);
+    d.shutdown().unwrap();
+}
+
+#[test]
+fn hostname_resolution_timeout() {
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+    let hostname = "nonexistent._tcp.local.";
+
+    let before = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("failed to get current UNIX time")
+        .as_millis() as u64;
+    let event_receiver = d.resolve_hostname(hostname, Some(2000)).unwrap();
+    let resolved = loop {
+        match event_receiver.recv() {
+            Ok(HostnameResolutionEvent::AddressesFound(found_hostname, _addresses)) => {
+                assert!(found_hostname == hostname);
+                break true;
+            }
+            Ok(HostnameResolutionEvent::SearchTimeout(_)) => break false,
+            Ok(event) => println!("Received event {:?}", event),
+            Err(_) => break false,
+        }
+    };
+    let after = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("failed to get current UNIX time")
+        .as_millis() as u64;
+
+    assert!(!resolved);
+
+    println!("Time spent resolving: {} ms", after - before);
+    assert!(after - before >= 2000 - 5);
+    assert!(after - before < 2000 + 1000);
+
+    d.shutdown().unwrap();
 }
