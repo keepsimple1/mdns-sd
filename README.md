@@ -28,9 +28,6 @@ This implementation is based on the following RFCs:
 
 This is still beta software. We focus on the common use cases at hand. And we tested with some existing common tools (e.g. `Avahi` on Linux, `dns-sd` on MacOS, and `Bonjour` library on iOS) to verify the basic compatibility.
 
-Currently this library has the following limitations:
-- Only support multicast, no unicast send/recv.
-
 ## License
 
 Licensed under either of

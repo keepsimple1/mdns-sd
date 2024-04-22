@@ -33,7 +33,7 @@ use crate::log::{debug, error, warn};
 use crate::{
     dns_parser::{
         current_time_millis, DnsAddress, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
-        DnsRecordExt, DnsSrv, DnsTxt, CLASS_IN, CLASS_UNIQUE, FLAGS_AA, FLAGS_QR_QUERY,
+        DnsRecordExt, DnsSrv, DnsTxt, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY,
         FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_AAAA, TYPE_ANY, TYPE_NSEC, TYPE_PTR,
         TYPE_SRV, TYPE_TXT,
     },
@@ -42,14 +42,15 @@ use crate::{
     Receiver,
 };
 use flume::{bounded, Sender, TrySendError};
-use if_addrs::Interface;
+use if_addrs::{IfAddr, Interface};
 use polling::Poller;
-use socket2::{SockAddr, Socket};
+use socket2::SockAddr;
+use socket_pktinfo::PktInfoUdpSocket;
+use std::cmp::min;
 use std::{
     cmp::{self, Reverse},
     collections::{BinaryHeap, HashMap, HashSet},
     fmt,
-    io::Read,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, UdpSocket},
     str, thread,
     time::Duration,
@@ -74,6 +75,9 @@ const GROUP_ADDR_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
 const LOOPBACK_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
 const RESOLVE_WAIT_IN_MILLIS: u64 = 500;
+
+/// Maximum TTL value allowed for resource records in legacy unicast responses
+const LEGACY_UNICAST_RR_MAX_TTL: u32 = 10;
 
 /// Response status code for the service `unregister` call.
 #[derive(Debug)]
@@ -106,6 +110,8 @@ enum Counter {
     Browse,
     ResolveHostname,
     Respond,
+    RespondUnicast,
+    RespondLegacyUnicast,
     CacheRefreshQuery,
 }
 
@@ -119,6 +125,8 @@ impl fmt::Display for Counter {
             Counter::Browse => write!(f, "browse"),
             Counter::ResolveHostname => write!(f, "resolve-hostname"),
             Counter::Respond => write!(f, "respond"),
+            Counter::RespondUnicast => write!(f, "respond-unicast"),
+            Counter::RespondLegacyUnicast => write!(f, "respond-legacy-unicast"),
             Counter::CacheRefreshQuery => write!(f, "cache-refresh"),
         }
     }
@@ -845,7 +853,7 @@ impl ServiceDaemon {
 }
 
 /// Creates a new UDP socket that uses `intf` to send and recv multicast.
-fn new_socket_bind(intf: &Interface) -> Result<Socket> {
+fn new_socket_bind(intf: &Interface) -> Result<PktInfoUdpSocket> {
     // Use the same socket for receiving and sending multicast packets.
     // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
     let intf_ip = &intf.ip();
@@ -892,31 +900,30 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
 
 /// Creates a new UDP socket to bind to `port` with REUSEPORT option.
 /// `non_block` indicates whether to set O_NONBLOCK for the socket.
-fn new_socket(addr: SocketAddr, non_block: bool) -> Result<Socket> {
+fn new_socket(addr: SocketAddr, non_block: bool) -> Result<PktInfoUdpSocket> {
     let domain = match addr {
         SocketAddr::V4(_) => socket2::Domain::IPV4,
         SocketAddr::V6(_) => socket2::Domain::IPV6,
     };
 
-    let fd = Socket::new(domain, socket2::Type::DGRAM, None)
-        .map_err(|e| e_fmt!("create socket failed: {}", e))?;
+    let sock = PktInfoUdpSocket::new(domain).map_err(|e| e_fmt!("create socket failed: {}", e))?;
 
-    fd.set_reuse_address(true)
+    sock.set_reuse_address(true)
         .map_err(|e| e_fmt!("set ReuseAddr failed: {}", e))?;
     #[cfg(unix)] // this is currently restricted to Unix's in socket2
-    fd.set_reuse_port(true)
+    sock.set_reuse_port(true)
         .map_err(|e| e_fmt!("set ReusePort failed: {}", e))?;
 
     if non_block {
-        fd.set_nonblocking(true)
+        sock.set_nonblocking(true)
             .map_err(|e| e_fmt!("set O_NONBLOCK: {}", e))?;
     }
 
-    fd.bind(&addr.into())
+    sock.bind(&addr.into())
         .map_err(|e| e_fmt!("socket bind to {} failed: {}", &addr, e))?;
 
     debug!("new socket bind to {}", &addr);
-    Ok(fd)
+    Ok(sock)
 }
 
 /// Specify a UNIX timestamp in millis to run `command` for the next time.
@@ -931,7 +938,7 @@ struct ReRun {
 #[derive(Debug)]
 struct IntfSock {
     intf: Interface,
-    sock: Socket,
+    sock: PktInfoUdpSocket,
 }
 
 /// Specify kinds of interfaces. It is used to enable or to disable interfaces in the daemon.
@@ -1036,7 +1043,7 @@ struct Zeroconf {
     /// Next poll id value
     poll_id_count: usize,
 
-    /// Local registered services， keyed by service full names.
+    /// Local registered services，Keyed by service full names.
     my_services: HashMap<String, ServiceInfo>,
 
     cache: DnsCache,
@@ -1305,7 +1312,7 @@ impl Zeroconf {
 
     fn add_new_interface(&mut self, intf: Interface) {
         // Bind the new interface.
-        let new_ip = intf.ip();
+        let new_ip = intf.addr.ip();
         let sock = match new_socket_bind(&intf) {
             Ok(s) => s,
             Err(e) => {
@@ -1418,7 +1425,7 @@ impl Zeroconf {
         out.add_answer_at_time(
             Box::new(DnsSrv::new(
                 info.get_fullname(),
-                CLASS_IN | CLASS_UNIQUE,
+                CLASS_IN | CLASS_CACHE_FLUSH,
                 info.get_host_ttl(),
                 info.get_priority(),
                 info.get_weight(),
@@ -1431,7 +1438,7 @@ impl Zeroconf {
             Box::new(DnsTxt::new(
                 info.get_fullname(),
                 TYPE_TXT,
-                CLASS_IN | CLASS_UNIQUE,
+                CLASS_IN | CLASS_CACHE_FLUSH,
                 info.get_other_ttl(),
                 info.generate_txt(),
             )),
@@ -1452,7 +1459,7 @@ impl Zeroconf {
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
                     t,
-                    CLASS_IN | CLASS_UNIQUE,
+                    CLASS_IN | CLASS_CACHE_FLUSH,
                     info.get_host_ttl(),
                     addr,
                 )),
@@ -1494,7 +1501,7 @@ impl Zeroconf {
         out.add_answer_at_time(
             Box::new(DnsSrv::new(
                 info.get_fullname(),
-                CLASS_IN | CLASS_UNIQUE,
+                CLASS_IN | CLASS_CACHE_FLUSH,
                 0,
                 info.get_priority(),
                 info.get_weight(),
@@ -1507,7 +1514,7 @@ impl Zeroconf {
             Box::new(DnsTxt::new(
                 info.get_fullname(),
                 TYPE_TXT,
-                CLASS_IN | CLASS_UNIQUE,
+                CLASS_IN | CLASS_CACHE_FLUSH,
                 0,
                 info.generate_txt(),
             )),
@@ -1523,7 +1530,7 @@ impl Zeroconf {
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
                     t,
-                    CLASS_IN | CLASS_UNIQUE,
+                    CLASS_IN | CLASS_CACHE_FLUSH,
                     0,
                     addr,
                 )),
@@ -1591,6 +1598,7 @@ impl Zeroconf {
             Some(if_sock) => if_sock,
             None => return false,
         };
+
         let mut buf = vec![0u8; MAX_MSG_ABSOLUTE];
 
         // Read the next mDNS UDP datagram.
@@ -1599,8 +1607,8 @@ impl Zeroconf {
         // be truncated by the socket layer depending on the platform's libc.
         // In any case, such large datagram will not be decoded properly and
         // this function should return false but should not crash.
-        let sz = match intf_sock.sock.read(&mut buf) {
-            Ok(sz) => sz,
+        let (sz, pktinfo) = match intf_sock.sock.recv(&mut buf) {
+            Ok(r) => r,
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::WouldBlock {
                     error!("listening socket read failed: {}", e);
@@ -1632,12 +1640,48 @@ impl Zeroconf {
 
         buf.truncate(sz); // reduce potential processing errors
 
+        let is_unicast = !pktinfo.addr_dst.is_multicast();
+
+        // Ignore unicast packets outside the local link
+        if is_unicast {
+            let should_respond = match (pktinfo.addr_src.ip(), &intf_sock.intf.addr) {
+                (IpAddr::V4(src_ip), IfAddr::V4(intf)) => {
+                    if src_ip.is_loopback() {
+                        true
+                    } else {
+                        let src_ip: u32 = src_ip.into();
+                        let intf_ip: u32 = intf.ip.into();
+                        let intf_netmask: u32 = intf.netmask.into();
+                        // Is src_ip in local subnet?
+                        (intf_ip & intf_netmask) == (src_ip & intf_netmask)
+                    }
+                }
+                (IpAddr::V6(src_ip), &IfAddr::V6(_)) => {
+                    if src_ip.is_loopback() {
+                        true
+                    } else {
+                        // Does src_ip have on-link prefix?
+                        src_ip.segments()[0] & 0xffc0 == 0xfe80
+                    }
+                }
+                // Interface and source message IP versions do not match
+                _ => false,
+            };
+            if !should_respond {
+                return true;
+            }
+        };
+
         match DnsIncoming::new(buf) {
             Ok(msg) => {
                 if msg.is_query() {
-                    self.handle_query(msg, ip);
+                    self.handle_query(msg, ip, pktinfo.addr_src, is_unicast);
                 } else if msg.is_response() {
-                    self.handle_response(msg);
+                    if !is_unicast {
+                        self.handle_response(msg);
+                    } else {
+                        error!("Invalid message: unrequested unicast response");
+                    }
                 } else {
                     error!("Invalid message: not query and not response");
                 }
@@ -1967,12 +2011,28 @@ impl Zeroconf {
     }
 
     /// Handle incoming query packets, figure out whether and what to respond.
-    fn handle_query(&mut self, msg: DnsIncoming, ip: &IpAddr) {
+    fn handle_query(
+        &mut self,
+        msg: DnsIncoming,
+        ip: &IpAddr,
+        src_addr: SocketAddr,
+        is_unicast_query: bool,
+    ) {
         let intf_sock = match self.intf_socks.get(ip) {
             Some(sock) => sock,
             None => return,
         };
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+
+        // Legacy unicast query responses require special handling
+        // See https://datatracker.ietf.org/doc/html/rfc6762#section-6.7
+        let is_legacy_unicast = is_unicast_query && src_addr.port() != MDNS_PORT;
+
+        let is_unicast_reply = is_unicast_query
+            && msg
+                .questions
+                .iter()
+                .all(|q| q.is_unicast_response_requested());
 
         // Special meta-query "_services._dns-sd._udp.<Domain>".
         // See https://datatracker.ietf.org/doc/html/rfc6763#section-9
@@ -1984,6 +2044,12 @@ impl Zeroconf {
 
             if qtype == TYPE_PTR {
                 for service in self.my_services.values() {
+                    let ttl = if is_legacy_unicast {
+                        min(LEGACY_UNICAST_RR_MAX_TTL, service.get_other_ttl())
+                    } else {
+                        service.get_other_ttl()
+                    };
+
                     if question.entry.name == service.get_type()
                         || service
                             .get_subtype()
@@ -1998,7 +2064,7 @@ impl Zeroconf {
                                 &question.entry.name,
                                 TYPE_PTR,
                                 CLASS_IN,
-                                service.get_other_ttl(),
+                                ttl,
                                 service.get_type().to_string(),
                             )),
                         );
@@ -2010,9 +2076,13 @@ impl Zeroconf {
             } else {
                 if qtype == TYPE_A || qtype == TYPE_AAAA || qtype == TYPE_ANY {
                     for service in self.my_services.values() {
-                        if service.get_hostname().to_lowercase()
-                            == question.entry.name.to_lowercase()
-                        {
+                        let ttl = if is_legacy_unicast {
+                            min(LEGACY_UNICAST_RR_MAX_TTL, service.get_host_ttl())
+                        } else {
+                            service.get_host_ttl()
+                        };
+
+                        if service.get_hostname() == question.entry.name.to_lowercase() {
                             let intf_addrs = service.get_addrs_on_intf(&intf_sock.intf);
                             if intf_addrs.is_empty() && (qtype == TYPE_A || qtype == TYPE_AAAA) {
                                 let t = match qtype {
@@ -2036,8 +2106,8 @@ impl Zeroconf {
                                     Box::new(DnsAddress::new(
                                         &question.entry.name,
                                         t,
-                                        CLASS_IN | CLASS_UNIQUE,
-                                        service.get_host_ttl(),
+                                        CLASS_IN | CLASS_CACHE_FLUSH,
+                                        ttl,
                                         address,
                                     )),
                                 );
@@ -2052,13 +2122,19 @@ impl Zeroconf {
                     None => continue,
                 };
 
+                let ttl = match (qtype, is_legacy_unicast) {
+                    (TYPE_TXT, true) => min(LEGACY_UNICAST_RR_MAX_TTL, service.get_other_ttl()),
+                    (_, true) => min(LEGACY_UNICAST_RR_MAX_TTL, service.get_host_ttl()),
+                    (_, false) => service.get_host_ttl(),
+                };
+
                 if qtype == TYPE_SRV || qtype == TYPE_ANY {
                     out.add_answer(
                         &msg,
                         Box::new(DnsSrv::new(
                             &question.entry.name,
-                            CLASS_IN | CLASS_UNIQUE,
-                            service.get_host_ttl(),
+                            CLASS_IN | CLASS_CACHE_FLUSH,
+                            ttl,
                             service.get_priority(),
                             service.get_weight(),
                             service.get_port(),
@@ -2073,8 +2149,8 @@ impl Zeroconf {
                         Box::new(DnsTxt::new(
                             &question.entry.name,
                             TYPE_TXT,
-                            CLASS_IN | CLASS_UNIQUE,
-                            service.get_host_ttl(),
+                            CLASS_IN | CLASS_CACHE_FLUSH,
+                            ttl,
                             service.generate_txt(),
                         )),
                     );
@@ -2097,8 +2173,8 @@ impl Zeroconf {
                         out.add_additional_answer(Box::new(DnsAddress::new(
                             service.get_hostname(),
                             t,
-                            CLASS_IN | CLASS_UNIQUE,
-                            service.get_host_ttl(),
+                            CLASS_IN | CLASS_CACHE_FLUSH,
+                            ttl,
                             address,
                         )));
                     }
@@ -2108,9 +2184,17 @@ impl Zeroconf {
 
         if !out.answers.is_empty() {
             out.id = msg.id;
-            broadcast_dns_on_intf(&out, intf_sock);
-
-            self.increase_counter(Counter::Respond, 1);
+            if is_unicast_reply {
+                unicast_dns_on_intf(&out, src_addr.ip(), intf_sock);
+                if is_legacy_unicast {
+                    self.increase_counter(Counter::RespondLegacyUnicast, 1);
+                } else {
+                    self.increase_counter(Counter::RespondUnicast, 1);
+                }
+            } else {
+                broadcast_dns_on_intf(&out, intf_sock);
+                self.increase_counter(Counter::Respond, 1);
+            }
         }
     }
 
@@ -2623,6 +2707,23 @@ fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock) -> &'a [u8] {
     };
 
     send_packet(packet, sock, intf);
+    packet
+}
+
+/// Send an outgoing unicast DNS query or response, and returns the packet bytes.
+fn unicast_dns_on_intf(out: &DnsOutgoing, ip_addr: IpAddr, intf: &IntfSock) -> Vec<u8> {
+    let qtype = if out.is_query() { "query" } else { "response" };
+    debug!(
+        "Unicasting ({}) {}: {} questions {} answers {} authorities {} additional",
+        ip_addr,
+        qtype,
+        out.questions.len(),
+        out.answers.len(),
+        out.authorities.len(),
+        out.additionals.len()
+    );
+    let packet = out.to_packet_data();
+    send_packet(&packet[..], SocketAddr::new(ip_addr, MDNS_PORT), intf);
     packet
 }
 
