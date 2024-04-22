@@ -2010,7 +2010,6 @@ impl Zeroconf {
         }
     }
 
-
     /// Handle incoming query packets, figure out whether and what to respond.
     fn handle_query(
         &mut self,
