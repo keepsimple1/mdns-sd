@@ -31,7 +31,7 @@ pub(crate) const TYPE_ANY: u16 = 255;
 
 pub(crate) const CLASS_IN: u16 = 1;
 pub(crate) const CLASS_MASK: u16 = 0x7FFF;
-pub(crate) const CLASS_UNIQUE: u16 = 0x8000;
+pub(crate) const CLASS_CACHE_FLUSH: u16 = 0x8000;
 
 /// Max size of UDP datagram payload: 9000 bytes - IP header 20 bytes - UDP header 8 bytes.
 /// Reference: RFC6762: https://datatracker.ietf.org/doc/html/rfc6762#section-17
@@ -57,7 +57,7 @@ pub(crate) struct DnsEntry {
     pub(crate) name: String, // always lower case.
     pub(crate) ty: u16,
     class: u16,
-    unique: bool,
+    cache_flush: bool,
 }
 
 impl DnsEntry {
@@ -66,7 +66,7 @@ impl DnsEntry {
             name,
             ty,
             class: class & CLASS_MASK,
-            unique: (class & CLASS_UNIQUE) != 0,
+            cache_flush: (class & CLASS_CACHE_FLUSH) != 0,
         }
     }
 }
@@ -134,6 +134,16 @@ impl DnsRecord {
         cmp::max(0, remaining_millis / 1000) as u32
     }
 
+    /// Return the absolute time for this record being created
+    fn get_created(&self) -> u64 {
+        self.created
+    }
+
+    /// Set the absolute expiration time in millis
+    fn set_expire(&mut self, expire_at: u64) {
+        self.expires = expire_at;
+    }
+
     fn reset_ttl(&mut self, other: &DnsRecord) {
         self.ttl = other.ttl;
         self.created = other.created;
@@ -157,6 +167,10 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
     /// Returns whether `other` record is considered the same except TTL.
     fn matches(&self, other: &dyn DnsRecordExt) -> bool;
 
+    fn get_cache_flush(&self) -> bool {
+        self.get_record().entry.cache_flush
+    }
+
     fn get_name(&self) -> &str {
         self.get_record().entry.name.as_str()
     }
@@ -166,6 +180,14 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
 
     fn reset_ttl(&mut self, other: &dyn DnsRecordExt) {
         self.get_record_mut().reset_ttl(other.get_record());
+    }
+
+    fn get_created(&self) -> u64 {
+        self.get_record().get_created()
+    }
+
+    fn set_expire(&mut self, expire_at: u64) {
+        self.get_record_mut().set_expire(expire_at);
     }
 
     /// Returns true if another record has matched content,
@@ -546,9 +568,9 @@ impl DnsOutPacket {
         let record = record_ext.get_record();
         self.write_name(&record.entry.name);
         self.write_short(record.entry.ty);
-        if record.entry.unique {
+        if record.entry.cache_flush {
             // check "multicast"
-            self.write_short(record.entry.class | CLASS_UNIQUE);
+            self.write_short(record.entry.class | CLASS_CACHE_FLUSH);
         } else {
             self.write_short(record.entry.class);
         }
@@ -825,7 +847,7 @@ impl DnsOutgoing {
         // https://tools.ietf.org/html/rfc6763#section-12.1.
         self.add_additional_answer(Box::new(DnsSrv::new(
             service.get_fullname(),
-            CLASS_IN | CLASS_UNIQUE,
+            CLASS_IN | CLASS_CACHE_FLUSH,
             service.get_host_ttl(),
             service.get_priority(),
             service.get_weight(),
@@ -836,7 +858,7 @@ impl DnsOutgoing {
         self.add_additional_answer(Box::new(DnsTxt::new(
             service.get_fullname(),
             TYPE_TXT,
-            CLASS_IN | CLASS_UNIQUE,
+            CLASS_IN | CLASS_CACHE_FLUSH,
             service.get_host_ttl(),
             service.generate_txt(),
         )));
@@ -850,7 +872,7 @@ impl DnsOutgoing {
             self.add_additional_answer(Box::new(DnsAddress::new(
                 service.get_hostname(),
                 t,
-                CLASS_IN | CLASS_UNIQUE,
+                CLASS_IN | CLASS_CACHE_FLUSH,
                 service.get_host_ttl(),
                 address,
             )));
@@ -1331,7 +1353,7 @@ mod tests {
     use crate::dns_parser::{TYPE_A, TYPE_AAAA};
 
     use super::{
-        DnsIncoming, DnsNSec, DnsOutgoing, DnsSrv, CLASS_IN, CLASS_UNIQUE, FLAGS_QR_QUERY,
+        DnsIncoming, DnsNSec, DnsOutgoing, DnsSrv, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY,
         FLAGS_QR_RESPONSE, TYPE_PTR,
     };
 
@@ -1379,7 +1401,7 @@ mod tests {
         let mut response = DnsOutgoing::new(FLAGS_QR_RESPONSE);
         response.add_additional_answer(Box::new(DnsSrv::new(
             name,
-            CLASS_IN | CLASS_UNIQUE,
+            CLASS_IN | CLASS_CACHE_FLUSH,
             1,
             1,
             1,
@@ -1407,7 +1429,13 @@ mod tests {
         let name = "instance1._nsec_test._udp.local.";
         let next_domain = name.to_string();
         let type_bitmap = vec![64, 0, 0, 8]; // Two bits set to '1': bit 1 and bit 28.
-        let nsec = DnsNSec::new(name, CLASS_IN | CLASS_UNIQUE, 1, next_domain, type_bitmap);
+        let nsec = DnsNSec::new(
+            name,
+            CLASS_IN | CLASS_CACHE_FLUSH,
+            1,
+            next_domain,
+            type_bitmap,
+        );
         let absent_types = nsec._types();
         assert_eq!(absent_types.len(), 2);
         assert_eq!(absent_types[0], TYPE_A);
