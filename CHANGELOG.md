@@ -1,3 +1,25 @@
+# Version 0.11.0 (2024-04-21)
+
+## Breaking changes
+
+* Now `ServiceDaemon::register()` requires `hostname` to end with ".local."
+
+## New features
+
+* Support resolving hostnames directly: `ServiceDaemon::resolve_hostname()`
+
+## All changes
+
+* example code: refactor the query output prints and the register hostname (#189)
+* support multiple questions in send_query_vec (#194)
+* CI: fix a test waiting for IPv6 addr (#195)
+* Add support for resolving non-service hostnames (#192)
+* zeroconf: use min heap for timers (#196)
+* Fix flaky test (#198)
+* enable logging for examples and add doc for logging (#199)
+
+Welcome our new contributor: @oysteintveit-nordicsemi ! Thanks!
+
 # Version 0.10.5 (2024-03-24)
 
 ## Notes
