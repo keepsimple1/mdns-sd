@@ -510,7 +510,7 @@ enum PacketState {
     Finished = 1,
 }
 
-pub(crate) struct DnsOutPacket {
+pub struct DnsOutPacket {
     pub(crate) data: Vec<Vec<u8>>,
     size: usize,
     state: PacketState,
