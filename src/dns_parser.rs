@@ -167,6 +167,10 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
     /// Returns whether `other` record is considered the same except TTL.
     fn matches(&self, other: &dyn DnsRecordExt) -> bool;
 
+    fn get_class(&self) -> u16 {
+        self.get_record().entry.class
+    }
+
     fn get_cache_flush(&self) -> bool {
         self.get_record().entry.cache_flush
     }

@@ -2363,7 +2363,7 @@ impl DnsCache {
                 // When cache flush is asked, we set expire date to 1 second in the future
                 // if created more than 1 second ago
                 // Ref: RFC 6762 Section 10.2
-                if now > r.get_created() + 1000 {
+                if incoming.get_class() == r.get_class() && now > r.get_created() + 1000 {
                     r.set_expire(now + 1000);
                 }
             });
@@ -2673,7 +2673,6 @@ mod tests {
             FLAGS_QR_RESPONSE, TYPE_PTR, TYPE_TXT,
         },
         service_daemon::check_hostname,
-        service_info::IntoTxtProperties,
     };
     use std::{collections::HashMap, net::SocketAddr, net::SocketAddrV4, time::Duration};
 
