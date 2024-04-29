@@ -61,7 +61,7 @@ pub(crate) struct DnsEntry {
 }
 
 impl DnsEntry {
-    fn new(name: String, ty: u16, class: u16) -> Self {
+    const fn new(name: String, ty: u16, class: u16) -> Self {
         Self {
             name,
             ty,
@@ -106,19 +106,19 @@ impl DnsRecord {
         }
     }
 
-    pub(crate) fn get_expire_time(&self) -> u64 {
+    pub(crate) const fn get_expire_time(&self) -> u64 {
         self.expires
     }
 
-    pub(crate) fn get_refresh_time(&self) -> u64 {
+    pub(crate) const fn get_refresh_time(&self) -> u64 {
         self.refresh
     }
 
-    pub(crate) fn is_expired(&self, now: u64) -> bool {
+    pub(crate) const fn is_expired(&self, now: u64) -> bool {
         now >= self.expires
     }
 
-    pub(crate) fn refresh_due(&self, now: u64) -> bool {
+    pub(crate) const fn refresh_due(&self, now: u64) -> bool {
         now >= self.refresh
     }
 
@@ -707,11 +707,11 @@ impl DnsOutgoing {
         }
     }
 
-    pub(crate) fn is_query(&self) -> bool {
+    pub(crate) const fn is_query(&self) -> bool {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_QUERY
     }
 
-    fn _is_response(&self) -> bool {
+    const fn _is_response(&self) -> bool {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_RESPONSE
     }
 
@@ -945,11 +945,11 @@ impl DnsIncoming {
         Ok(incoming)
     }
 
-    pub(crate) fn is_query(&self) -> bool {
+    pub(crate) const fn is_query(&self) -> bool {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_QUERY
     }
 
-    pub(crate) fn is_response(&self) -> bool {
+    pub(crate) const fn is_response(&self) -> bool {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_RESPONSE
     }
 
@@ -1310,19 +1310,19 @@ pub(crate) fn current_time_millis() -> u64 {
         .as_millis() as u64
 }
 
-fn u16_from_be_slice(bytes: &[u8]) -> u16 {
+const fn u16_from_be_slice(bytes: &[u8]) -> u16 {
     let u8_array: [u8; 2] = [bytes[0], bytes[1]];
     u16::from_be_bytes(u8_array)
 }
 
-fn u32_from_be_slice(s: &[u8]) -> u32 {
+const fn u32_from_be_slice(s: &[u8]) -> u32 {
     let u8_array: [u8; 4] = [s[0], s[1], s[2], s[3]];
     u32::from_be_bytes(u8_array)
 }
 
 /// Returns the time in millis at which this record will have expired
 /// by a certain percentage.
-fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
+const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
     created + (ttl * percent * 10) as u64
 }
 

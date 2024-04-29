@@ -134,7 +134,7 @@ impl ServiceInfo {
 
     /// Returns if the service's addresses will be updated
     /// automatically when the host IP addrs change.
-    pub fn is_addr_auto(&self) -> bool {
+    pub const fn is_addr_auto(&self) -> bool {
         self.addr_auto
     }
 
@@ -151,7 +151,7 @@ impl ServiceInfo {
     ///
     /// For example: "_printer._sub._http._tcp.local.".
     #[inline]
-    pub fn get_subtype(&self) -> &Option<String> {
+    pub const fn get_subtype(&self) -> &Option<String> {
         &self.sub_domain
     }
 
@@ -165,7 +165,7 @@ impl ServiceInfo {
 
     /// Returns the properties from TXT records.
     #[inline]
-    pub fn get_properties(&self) -> &TxtProperties {
+    pub const fn get_properties(&self) -> &TxtProperties {
         &self.txt_properties
     }
 
@@ -201,13 +201,13 @@ impl ServiceInfo {
 
     /// Returns the service's port.
     #[inline]
-    pub fn get_port(&self) -> u16 {
+    pub const fn get_port(&self) -> u16 {
         self.port
     }
 
     /// Returns the service's addresses
     #[inline]
-    pub fn get_addresses(&self) -> &HashSet<IpAddr> {
+    pub const fn get_addresses(&self) -> &HashSet<IpAddr> {
         &self.addresses
     }
 
@@ -226,25 +226,25 @@ impl ServiceInfo {
 
     /// Returns the service's TTL used for SRV and Address records.
     #[inline]
-    pub fn get_host_ttl(&self) -> u32 {
+    pub const fn get_host_ttl(&self) -> u32 {
         self.host_ttl
     }
 
     /// Returns the service's TTL used for PTR and TXT records.
     #[inline]
-    pub fn get_other_ttl(&self) -> u32 {
+    pub const fn get_other_ttl(&self) -> u32 {
         self.other_ttl
     }
 
     /// Returns the service's priority used in SRV records.
     #[inline]
-    pub fn get_priority(&self) -> u16 {
+    pub const fn get_priority(&self) -> u16 {
         self.priority
     }
 
     /// Returns the service's weight used in SRV records.
     #[inline]
-    pub fn get_weight(&self) -> u16 {
+    pub const fn get_weight(&self) -> u16 {
         self.weight
     }
 
