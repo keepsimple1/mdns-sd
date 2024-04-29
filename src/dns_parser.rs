@@ -134,7 +134,7 @@ impl DnsRecord {
         cmp::max(0, remaining_millis / 1000) as u32
     }
 
-    fn reset_ttl(&mut self, other: &DnsRecord) {
+    fn reset_ttl(&mut self, other: &Self) {
         self.ttl = other.ttl;
         self.created = other.created;
         self.refresh = get_expiration_time(self.created, self.ttl, 80);
@@ -219,7 +219,7 @@ impl DnsRecordExt for DnsAddress {
     }
 
     fn matches(&self, other: &dyn DnsRecordExt) -> bool {
-        if let Some(other_a) = other.any().downcast_ref::<DnsAddress>() {
+        if let Some(other_a) = other.any().downcast_ref::<Self>() {
             return self.address == other_a.address && self.record.entry == other_a.record.entry;
         }
         false
@@ -258,7 +258,7 @@ impl DnsRecordExt for DnsPointer {
     }
 
     fn matches(&self, other: &dyn DnsRecordExt) -> bool {
-        if let Some(other_ptr) = other.any().downcast_ref::<DnsPointer>() {
+        if let Some(other_ptr) = other.any().downcast_ref::<Self>() {
             return self.alias == other_ptr.alias && self.record.entry == other_ptr.record.entry;
         }
         false
@@ -319,7 +319,7 @@ impl DnsRecordExt for DnsSrv {
     }
 
     fn matches(&self, other: &dyn DnsRecordExt) -> bool {
-        if let Some(other_svc) = other.any().downcast_ref::<DnsSrv>() {
+        if let Some(other_svc) = other.any().downcast_ref::<Self>() {
             return self.host == other_svc.host
                 && self.port == other_svc.port
                 && self.weight == other_svc.weight
@@ -374,7 +374,7 @@ impl DnsRecordExt for DnsTxt {
     }
 
     fn matches(&self, other: &dyn DnsRecordExt) -> bool {
-        if let Some(other_txt) = other.any().downcast_ref::<DnsTxt>() {
+        if let Some(other_txt) = other.any().downcast_ref::<Self>() {
             return self.text == other_txt.text && self.record.entry == other_txt.record.entry;
         }
         false
@@ -416,7 +416,7 @@ impl DnsRecordExt for DnsHostInfo {
     }
 
     fn matches(&self, other: &dyn DnsRecordExt) -> bool {
-        if let Some(other_hinfo) = other.any().downcast_ref::<DnsHostInfo>() {
+        if let Some(other_hinfo) = other.any().downcast_ref::<Self>() {
             return self.cpu == other_hinfo.cpu
                 && self.os == other_hinfo.os
                 && self.record.entry == other_hinfo.record.entry;
@@ -495,7 +495,7 @@ impl DnsRecordExt for DnsNSec {
     }
 
     fn matches(&self, other: &dyn DnsRecordExt) -> bool {
-        if let Some(other_record) = other.any().downcast_ref::<DnsNSec>() {
+        if let Some(other_record) = other.any().downcast_ref::<Self>() {
             return self.next_domain == other_record.next_domain
                 && self.type_bitmap == other_record.type_bitmap
                 && self.record.entry == other_record.record.entry;
@@ -696,7 +696,7 @@ pub struct DnsOutgoing {
 
 impl DnsOutgoing {
     pub(crate) fn new(flags: u16) -> Self {
-        DnsOutgoing {
+        Self {
             flags,
             id: 0,
             multicast: true,

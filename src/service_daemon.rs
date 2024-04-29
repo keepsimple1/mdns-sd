@@ -112,14 +112,14 @@ enum Counter {
 impl fmt::Display for Counter {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Counter::Register => write!(f, "register"),
-            Counter::RegisterResend => write!(f, "register-resend"),
-            Counter::Unregister => write!(f, "unregister"),
-            Counter::UnregisterResend => write!(f, "unregister-resend"),
-            Counter::Browse => write!(f, "browse"),
-            Counter::ResolveHostname => write!(f, "resolve-hostname"),
-            Counter::Respond => write!(f, "respond"),
-            Counter::CacheRefreshQuery => write!(f, "cache-refresh"),
+            Self::Register => write!(f, "register"),
+            Self::RegisterResend => write!(f, "register-resend"),
+            Self::Unregister => write!(f, "unregister"),
+            Self::UnregisterResend => write!(f, "unregister-resend"),
+            Self::Browse => write!(f, "browse"),
+            Self::ResolveHostname => write!(f, "resolve-hostname"),
+            Self::Respond => write!(f, "respond"),
+            Self::CacheRefreshQuery => write!(f, "cache-refresh"),
         }
     }
 }
@@ -960,11 +960,11 @@ impl IfKind {
     /// Checks if `intf` matches with this interface kind.
     fn matches(&self, intf: &Interface) -> bool {
         match self {
-            IfKind::All => true,
-            IfKind::IPv4 => intf.ip().is_ipv4(),
-            IfKind::IPv6 => intf.ip().is_ipv6(),
-            IfKind::Name(ifname) => ifname == &intf.name,
-            IfKind::Addr(addr) => addr == &intf.ip(),
+            Self::All => true,
+            Self::IPv4 => intf.ip().is_ipv4(),
+            Self::IPv6 => intf.ip().is_ipv6(),
+            Self::Name(ifname) => ifname == &intf.name,
+            Self::Addr(addr) => addr == &intf.ip(),
         }
     }
 }
@@ -972,21 +972,21 @@ impl IfKind {
 /// The first use case of specifying an interface was to
 /// use an interface name. Hence adding this for ergonomic reasons.
 impl From<&str> for IfKind {
-    fn from(val: &str) -> IfKind {
-        IfKind::Name(val.to_string())
+    fn from(val: &str) -> Self {
+        Self::Name(val.to_string())
     }
 }
 
 impl From<&String> for IfKind {
-    fn from(val: &String) -> IfKind {
-        IfKind::Name(val.to_string())
+    fn from(val: &String) -> Self {
+        Self::Name(val.to_string())
     }
 }
 
 /// Still for ergonomic reasons.
 impl From<IpAddr> for IfKind {
-    fn from(val: IpAddr) -> IfKind {
-        IfKind::Addr(val)
+    fn from(val: IpAddr) -> Self {
+        Self::Addr(val)
     }
 }
 
@@ -2242,20 +2242,20 @@ enum Command {
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Command::Browse(_, _, _) => write!(f, "Command Browse"),
-            Command::ResolveHostname(_, _, _, _) => write!(f, "Command ResolveHostname"),
-            Command::Exit(_) => write!(f, "Command Exit"),
-            Command::GetStatus(_) => write!(f, "Command GetStatus"),
-            Command::GetMetrics(_) => write!(f, "Command GetMetrics"),
-            Command::Monitor(_) => write!(f, "Command Monitor"),
-            Command::Register(_) => write!(f, "Command Register"),
-            Command::RegisterResend(_) => write!(f, "Command RegisterResend"),
-            Command::SetOption(_) => write!(f, "Command SetOption"),
-            Command::StopBrowse(_) => write!(f, "Command StopBrowse"),
-            Command::StopResolveHostname(_) => write!(f, "Command StopResolveHostname"),
-            Command::Unregister(_, _) => write!(f, "Command Unregister"),
-            Command::UnregisterResend(_, _) => write!(f, "Command UnregisterResend"),
-            Command::Resolve(_, _) => write!(f, "Command Resolve"),
+            Self::Browse(_, _, _) => write!(f, "Command Browse"),
+            Self::ResolveHostname(_, _, _, _) => write!(f, "Command ResolveHostname"),
+            Self::Exit(_) => write!(f, "Command Exit"),
+            Self::GetStatus(_) => write!(f, "Command GetStatus"),
+            Self::GetMetrics(_) => write!(f, "Command GetMetrics"),
+            Self::Monitor(_) => write!(f, "Command Monitor"),
+            Self::Register(_) => write!(f, "Command Register"),
+            Self::RegisterResend(_) => write!(f, "Command RegisterResend"),
+            Self::SetOption(_) => write!(f, "Command SetOption"),
+            Self::StopBrowse(_) => write!(f, "Command StopBrowse"),
+            Self::StopResolveHostname(_) => write!(f, "Command StopResolveHostname"),
+            Self::Unregister(_, _) => write!(f, "Command Unregister"),
+            Self::UnregisterResend(_, _) => write!(f, "Command UnregisterResend"),
+            Self::Resolve(_, _) => write!(f, "Command Resolve"),
         }
     }
 }

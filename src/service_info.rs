@@ -486,7 +486,7 @@ where
     V: ToString,
 {
     fn from(prop: &(K, V)) -> Self {
-        TxtProperty {
+        Self {
             key: prop.0.to_string(),
             val: Some(prop.1.to_string().into_bytes()),
         }
@@ -499,7 +499,7 @@ where
     V: AsRef<[u8]>,
 {
     fn from(prop: (K, V)) -> Self {
-        TxtProperty {
+        Self {
             key: prop.0.to_string(),
             val: Some(prop.1.as_ref().into()),
         }
@@ -509,7 +509,7 @@ where
 /// Support a property that has no value.
 impl From<&str> for TxtProperty {
     fn from(key: &str) -> Self {
-        TxtProperty {
+        Self {
             key: key.to_string(),
             val: None,
         }
