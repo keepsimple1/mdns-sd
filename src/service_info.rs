@@ -472,7 +472,9 @@ impl TxtProperty {
 
     /// Returns the value of a property as str.
     pub fn val_str(&self) -> &str {
-        self.val.as_ref().map_or("", |v| std::str::from_utf8(&v[..]).unwrap_or_default())
+        self.val
+            .as_ref()
+            .map_or("", |v| std::str::from_utf8(&v[..]).unwrap_or_default())
     }
 }
 
@@ -524,9 +526,15 @@ impl fmt::Display for TxtProperty {
 /// - If self.var is not UTF-8, will output its bytes as in hex.
 impl fmt::Debug for TxtProperty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let val_string = self.val.as_ref()
-            .map_or_else(|| "None".to_string(), |v| std::str::from_utf8(&v[..])
-            .map_or_else(|_| format!("Some({})", u8_slice_to_hex(&v[..])), |s| format!("Some(\"{}\")", s)));
+        let val_string = self.val.as_ref().map_or_else(
+            || "None".to_string(),
+            |v| {
+                std::str::from_utf8(&v[..]).map_or_else(
+                    |_| format!("Some({})", u8_slice_to_hex(&v[..])),
+                    |s| format!("Some(\"{}\")", s),
+                )
+            },
+        );
 
         write!(
             f,
@@ -576,7 +584,12 @@ impl IntoTxtProperties for HashMap<String, String> {
 /// Mainly for backward compatibility.
 impl IntoTxtProperties for Option<HashMap<String, String>> {
     fn into_txt_properties(self) -> TxtProperties {
-        self.map_or_else(|| TxtProperties { properties: Vec::new() }, |h| h.into_txt_properties())
+        self.map_or_else(
+            || TxtProperties {
+                properties: Vec::new(),
+            },
+            |h| h.into_txt_properties(),
+        )
     }
 }
 
@@ -646,9 +659,10 @@ fn decode_txt(txt: &[u8]) -> Vec<TxtProperty> {
         let kv_bytes = &txt[offset..offset_end];
 
         // split key and val using the first `=`
-        let (k, v) = kv_bytes.iter()
-            .position(|&x| x == b'=')
-            .map_or_else(|| (kv_bytes.to_vec(), None), |idx| (kv_bytes[..idx].to_vec(), Some(kv_bytes[idx + 1..].to_vec())));
+        let (k, v) = kv_bytes.iter().position(|&x| x == b'=').map_or_else(
+            || (kv_bytes.to_vec(), None),
+            |idx| (kv_bytes[..idx].to_vec(), Some(kv_bytes[idx + 1..].to_vec())),
+        );
 
         // Make sure the key can be stored in UTF-8.
         match String::from_utf8(k) {
