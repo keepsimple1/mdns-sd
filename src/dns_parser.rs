@@ -19,23 +19,23 @@ use std::{
     time::SystemTime,
 };
 
-pub(crate) const TYPE_A: u16 = 1; // IPv4 address
-pub(crate) const TYPE_CNAME: u16 = 5;
-pub(crate) const TYPE_PTR: u16 = 12;
-pub(crate) const TYPE_HINFO: u16 = 13;
-pub(crate) const TYPE_TXT: u16 = 16;
-pub(crate) const TYPE_AAAA: u16 = 28; // IPv6 address
-pub(crate) const TYPE_SRV: u16 = 33;
-pub(crate) const TYPE_NSEC: u16 = 47; // Negative responses
-pub(crate) const TYPE_ANY: u16 = 255;
+pub const TYPE_A: u16 = 1; // IPv4 address
+pub const TYPE_CNAME: u16 = 5;
+pub const TYPE_PTR: u16 = 12;
+pub const TYPE_HINFO: u16 = 13;
+pub const TYPE_TXT: u16 = 16;
+pub const TYPE_AAAA: u16 = 28; // IPv6 address
+pub const TYPE_SRV: u16 = 33;
+pub const TYPE_NSEC: u16 = 47; // Negative responses
+pub const TYPE_ANY: u16 = 255;
 
-pub(crate) const CLASS_IN: u16 = 1;
-pub(crate) const CLASS_MASK: u16 = 0x7FFF;
-pub(crate) const CLASS_UNIQUE: u16 = 0x8000;
+pub const CLASS_IN: u16 = 1;
+pub const CLASS_MASK: u16 = 0x7FFF;
+pub const CLASS_UNIQUE: u16 = 0x8000;
 
 /// Max size of UDP datagram payload: 9000 bytes - IP header 20 bytes - UDP header 8 bytes.
 /// Reference: RFC6762: https://datatracker.ietf.org/doc/html/rfc6762#section-17
-pub(crate) const MAX_MSG_ABSOLUTE: usize = 8972;
+pub const MAX_MSG_ABSOLUTE: usize = 8972;
 
 // Definitions for DNS message header "flags" field
 //
@@ -45,15 +45,15 @@ pub(crate) const MAX_MSG_ABSOLUTE: usize = 8972;
 //   0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
 // |QR|   Opcode  |AA|TC|RD|RA|   Z    |   RCODE   |
 //
-pub(crate) const FLAGS_QR_MASK: u16 = 0x8000; // mask for query/response bit
-pub(crate) const FLAGS_QR_QUERY: u16 = 0x0000;
-pub(crate) const FLAGS_QR_RESPONSE: u16 = 0x8000;
-pub(crate) const FLAGS_AA: u16 = 0x0400; // mask for Authoritative answer bit
+pub const FLAGS_QR_MASK: u16 = 0x8000; // mask for query/response bit
+pub const FLAGS_QR_QUERY: u16 = 0x0000;
+pub const FLAGS_QR_RESPONSE: u16 = 0x8000;
+pub const FLAGS_AA: u16 = 0x0400; // mask for Authoritative answer bit
 
-pub(crate) type DnsRecordBox = Box<dyn DnsRecordExt + Send>;
+pub type DnsRecordBox = Box<dyn DnsRecordExt + Send>;
 
 #[derive(PartialEq, Debug)]
-pub(crate) struct DnsEntry {
+pub struct DnsEntry {
     pub(crate) name: String, // always lower case.
     pub(crate) ty: u16,
     class: u16,
@@ -73,7 +73,7 @@ impl DnsEntry {
 
 /// A DNS question entry
 #[derive(Debug)]
-pub(crate) struct DnsQuestion {
+pub struct DnsQuestion {
     pub(crate) entry: DnsEntry,
 }
 
@@ -81,7 +81,7 @@ pub(crate) struct DnsQuestion {
 /// RFC: https://www.rfc-editor.org/rfc/rfc1035#section-3.2.1
 ///      https://www.rfc-editor.org/rfc/rfc1035#section-4.1.3
 #[derive(Debug)]
-pub(crate) struct DnsRecord {
+pub struct DnsRecord {
     pub(crate) entry: DnsEntry,
     ttl: u32,     // in seconds, 0 means this record should not be cached
     created: u64, // UNIX time in millis
@@ -148,7 +148,7 @@ impl PartialEq for DnsRecord {
     }
 }
 
-pub(crate) trait DnsRecordExt: fmt::Debug {
+pub trait DnsRecordExt: fmt::Debug {
     fn get_record(&self) -> &DnsRecord;
     fn get_record_mut(&mut self) -> &mut DnsRecord;
     fn write(&self, packet: &mut DnsOutPacket);
@@ -186,7 +186,7 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
 }
 
 #[derive(Debug)]
-pub(crate) struct DnsAddress {
+pub struct DnsAddress {
     pub(crate) record: DnsRecord,
     pub(crate) address: IpAddr,
 }
@@ -228,7 +228,7 @@ impl DnsRecordExt for DnsAddress {
 
 /// A DNS pointer record
 #[derive(Debug)]
-pub(crate) struct DnsPointer {
+pub struct DnsPointer {
     record: DnsRecord,
     pub(crate) alias: String, // the full name of Service Instance
 }
@@ -267,7 +267,7 @@ impl DnsRecordExt for DnsPointer {
 
 // In common cases, there is one and only one SRV record for a particular fullname.
 #[derive(Debug)]
-pub(crate) struct DnsSrv {
+pub struct DnsSrv {
     pub(crate) record: DnsRecord,
     pub(crate) priority: u16,
     // lower number means higher priority. Should be 0 in common cases.
@@ -343,7 +343,7 @@ impl DnsRecordExt for DnsSrv {
 //    6.4).  Everything after the first '=' character to the end of the
 //    string (including subsequent '=' characters, if any) is the value
 #[derive(Debug)]
-pub(crate) struct DnsTxt {
+pub struct DnsTxt {
     pub(crate) record: DnsRecord,
     pub(crate) text: Vec<u8>,
 }
@@ -431,7 +431,7 @@ impl DnsRecordExt for DnsHostInfo {
 /// and
 /// [RFC6762 section 6.1](https://datatracker.ietf.org/doc/html/rfc6762#section-6.1)
 #[derive(Debug)]
-pub(crate) struct DnsNSec {
+pub struct DnsNSec {
     record: DnsRecord,
     next_domain: String,
     type_bitmap: Vec<u8>,
@@ -684,7 +684,7 @@ impl DnsOutPacket {
 
 /// Representation of an outgoing packet. The actual encoded packet
 /// is [DnsOutPacket].
-pub(crate) struct DnsOutgoing {
+pub struct DnsOutgoing {
     flags: u16,
     pub(crate) id: u16,
     multicast: bool,
@@ -907,7 +907,7 @@ impl DnsOutgoing {
 }
 
 #[derive(Debug)]
-pub(crate) struct DnsIncoming {
+pub struct DnsIncoming {
     offset: usize,
     data: Vec<u8>,
     pub(crate) questions: Vec<DnsQuestion>,
@@ -1303,7 +1303,7 @@ impl DnsIncoming {
 }
 
 /// Returns UNIX time in millis
-pub(crate) fn current_time_millis() -> u64 {
+pub fn current_time_millis() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .expect("failed to get current UNIX time")

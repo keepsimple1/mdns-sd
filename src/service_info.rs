@@ -694,7 +694,7 @@ fn decode_txt_unique(txt: &[u8]) -> Vec<TxtProperty> {
 }
 
 /// Returns a tuple of (service_type_domain, optional_sub_domain)
-pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
+pub fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
     if let Some((_, ty_domain)) = domain.rsplit_once("._sub.") {
         (ty_domain, Some(domain))
     } else {
@@ -703,7 +703,7 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
 }
 
 /// Returns true if `addr` is in the same network of `intf`.
-pub(crate) fn valid_ip_on_intf(addr: &IpAddr, intf: &Interface) -> bool {
+pub fn valid_ip_on_intf(addr: &IpAddr, intf: &Interface) -> bool {
     match (addr, &intf.addr) {
         (IpAddr::V4(addr), IfAddr::V4(intf)) => {
             let netmask = u32::from(intf.netmask);
@@ -723,7 +723,7 @@ pub(crate) fn valid_ip_on_intf(addr: &IpAddr, intf: &Interface) -> bool {
 
 /// Returns the bitwise and (&) of the netmask and ip parts of `addr` as `u128` for IPv4 and IPv6 address.
 /// Suitable for checking if two networks are on the same subnet.
-pub(crate) fn ifaddr_subnet(addr: &IfAddr) -> u128 {
+pub fn ifaddr_subnet(addr: &IfAddr) -> u128 {
     match addr {
         IfAddr::V4(addrv4) => (u32::from(addrv4.netmask) & u32::from(addrv4.ip)) as u128,
         IfAddr::V6(addrv6) => u128::from(addrv6.netmask) & u128::from(addrv6.ip),
