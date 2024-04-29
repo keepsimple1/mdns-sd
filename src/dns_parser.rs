@@ -638,10 +638,7 @@ impl DnsOutPacket {
                     // println!("set offset {} for {}", self.size, remaining);
 
                     // Find the current label to write into the packet
-                    let stop = match remaining.find('.') {
-                        Some(i) => here + i,
-                        None => end,
-                    };
+                    let stop = remaining.find('.').map_or(end, |i| here + i);
                     let label = &name[here..stop];
                     self.write_utf8(label);
 
