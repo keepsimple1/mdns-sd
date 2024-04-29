@@ -52,7 +52,7 @@ pub const FLAGS_AA: u16 = 0x0400; // mask for Authoritative answer bit
 
 pub type DnsRecordBox = Box<dyn DnsRecordExt + Send>;
 
-#[derive(PartialEq, Debug)]
+#[derive(Eq, PartialEq, Debug)]
 pub struct DnsEntry {
     pub(crate) name: String, // always lower case.
     pub(crate) ty: u16,
