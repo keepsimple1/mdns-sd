@@ -127,7 +127,7 @@ impl ServiceInfo {
     /// Indicates that the library should automatically
     /// update the addresses of this service, when IP
     /// address(es) are added or removed on the host.
-    pub fn enable_addr_auto(mut self) -> Self {
+    pub const fn enable_addr_auto(mut self) -> Self {
         self.addr_auto = true;
         self
     }
