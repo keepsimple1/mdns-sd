@@ -2673,6 +2673,7 @@ mod tests {
             FLAGS_QR_RESPONSE, TYPE_PTR, TYPE_TXT,
         },
         service_daemon::check_hostname,
+        service_info::IntoTxtProperties,
     };
     use std::{collections::HashMap, net::SocketAddr, net::SocketAddrV4, time::Duration};
 
