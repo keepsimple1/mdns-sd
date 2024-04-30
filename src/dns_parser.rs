@@ -135,7 +135,7 @@ impl DnsRecord {
     }
 
     /// Return the absolute time for this record being created
-    fn get_created(&self) -> u64 {
+    const fn get_created(&self) -> u64 {
         self.created
     }
 
