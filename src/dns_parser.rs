@@ -144,7 +144,7 @@ impl DnsRecord {
         self.expires = expire_at;
     }
 
-    fn reset_ttl(&mut self, other: &DnsRecord) {
+    fn reset_ttl(&mut self, other: &Self) {
         self.ttl = other.ttl;
         self.created = other.created;
         self.refresh = get_expiration_time(self.created, self.ttl, 80);
