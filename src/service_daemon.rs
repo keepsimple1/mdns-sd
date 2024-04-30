@@ -33,7 +33,7 @@ use crate::log::{debug, error, warn};
 use crate::{
     dns_parser::{
         current_time_millis, DnsAddress, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
-        DnsRecordExt, DnsSrv, DnsTxt, CLASS_IN, CLASS_UNIQUE, FLAGS_AA, FLAGS_QR_QUERY,
+        DnsRecordExt, DnsSrv, DnsTxt, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY,
         FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_AAAA, TYPE_ANY, TYPE_NSEC, TYPE_PTR,
         TYPE_SRV, TYPE_TXT,
     },
@@ -1418,7 +1418,7 @@ impl Zeroconf {
         out.add_answer_at_time(
             Box::new(DnsSrv::new(
                 info.get_fullname(),
-                CLASS_IN | CLASS_UNIQUE,
+                CLASS_IN | CLASS_CACHE_FLUSH,
                 info.get_host_ttl(),
                 info.get_priority(),
                 info.get_weight(),
@@ -1431,7 +1431,7 @@ impl Zeroconf {
             Box::new(DnsTxt::new(
                 info.get_fullname(),
                 TYPE_TXT,
-                CLASS_IN | CLASS_UNIQUE,
+                CLASS_IN | CLASS_CACHE_FLUSH,
                 info.get_other_ttl(),
                 info.generate_txt(),
             )),
@@ -1452,7 +1452,7 @@ impl Zeroconf {
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
                     t,
-                    CLASS_IN | CLASS_UNIQUE,
+                    CLASS_IN | CLASS_CACHE_FLUSH,
                     info.get_host_ttl(),
                     addr,
                 )),
@@ -1494,7 +1494,7 @@ impl Zeroconf {
         out.add_answer_at_time(
             Box::new(DnsSrv::new(
                 info.get_fullname(),
-                CLASS_IN | CLASS_UNIQUE,
+                CLASS_IN | CLASS_CACHE_FLUSH,
                 0,
                 info.get_priority(),
                 info.get_weight(),
@@ -1507,7 +1507,7 @@ impl Zeroconf {
             Box::new(DnsTxt::new(
                 info.get_fullname(),
                 TYPE_TXT,
-                CLASS_IN | CLASS_UNIQUE,
+                CLASS_IN | CLASS_CACHE_FLUSH,
                 0,
                 info.generate_txt(),
             )),
@@ -1523,7 +1523,7 @@ impl Zeroconf {
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
                     t,
-                    CLASS_IN | CLASS_UNIQUE,
+                    CLASS_IN | CLASS_CACHE_FLUSH,
                     0,
                     addr,
                 )),
@@ -2036,7 +2036,7 @@ impl Zeroconf {
                                     Box::new(DnsAddress::new(
                                         &question.entry.name,
                                         t,
-                                        CLASS_IN | CLASS_UNIQUE,
+                                        CLASS_IN | CLASS_CACHE_FLUSH,
                                         service.get_host_ttl(),
                                         address,
                                     )),
@@ -2057,7 +2057,7 @@ impl Zeroconf {
                         &msg,
                         Box::new(DnsSrv::new(
                             &question.entry.name,
-                            CLASS_IN | CLASS_UNIQUE,
+                            CLASS_IN | CLASS_CACHE_FLUSH,
                             service.get_host_ttl(),
                             service.get_priority(),
                             service.get_weight(),
@@ -2073,7 +2073,7 @@ impl Zeroconf {
                         Box::new(DnsTxt::new(
                             &question.entry.name,
                             TYPE_TXT,
-                            CLASS_IN | CLASS_UNIQUE,
+                            CLASS_IN | CLASS_CACHE_FLUSH,
                             service.get_host_ttl(),
                             service.generate_txt(),
                         )),
@@ -2097,7 +2097,7 @@ impl Zeroconf {
                         out.add_additional_answer(Box::new(DnsAddress::new(
                             service.get_hostname(),
                             t,
-                            CLASS_IN | CLASS_UNIQUE,
+                            CLASS_IN | CLASS_CACHE_FLUSH,
                             service.get_host_ttl(),
                             address,
                         )));
@@ -2355,6 +2355,21 @@ impl DnsCache {
             TYPE_NSEC => self.nsec.entry(entry_name).or_default(),
             _ => return None,
         };
+
+        if incoming.get_cache_flush() {
+            // Mark all existing records of this type as expired, and prepend the new record.
+            let now = current_time_millis();
+            record_vec.iter_mut().for_each(|r| {
+                // When cache flush is asked, we set expire date to 1 second in the future
+                // if created more than 1 second ago
+                // Ref: RFC 6762 Section 10.2
+                if incoming.get_class() == r.get_class() && now > r.get_created() + 1000 {
+                    r.set_expire(now + 1000);
+                }
+            });
+            record_vec.insert(0, incoming);
+            return Some((record_vec.first().unwrap(), true));
+        }
 
         // update TTL for existing record or create a new record.
         let (idx, updated) = match record_vec
@@ -2653,10 +2668,14 @@ mod tests {
         MDNS_PORT,
     };
     use crate::{
-        dns_parser::{DnsOutgoing, DnsPointer, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE, TYPE_PTR},
+        dns_parser::{
+            DnsOutgoing, DnsPointer, DnsTxt, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA,
+            FLAGS_QR_RESPONSE, TYPE_PTR, TYPE_TXT,
+        },
         service_daemon::check_hostname,
+        service_info::IntoTxtProperties,
     };
-    use std::{net::SocketAddr, net::SocketAddrV4, time::Duration};
+    use std::{collections::HashMap, net::SocketAddr, net::SocketAddrV4, time::Duration};
 
     #[test]
     fn test_socketaddr_print() {
@@ -2805,6 +2824,137 @@ mod tests {
                 ServiceEvent::ServiceResolved(info) => {
                     resolved = true;
                     println!("Resolved a service of {}", &info.get_fullname());
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            }
+        }
+
+        assert!(resolved);
+        d.shutdown().unwrap();
+    }
+
+    #[test]
+    fn service_with_cache_flush_record() {
+        // Create a daemon
+        let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+        let service = "_test_cache_ptr._udp.local.";
+        let host_name = "my_host_tmp_cache_flush.local.";
+        let intfs: Vec<_> = my_ip_interfaces();
+        let intf_ips: Vec<_> = intfs.iter().map(|intf| intf.ip()).collect();
+        let port = 5201;
+        let properties = vec![("key", "value")];
+        let my_service = ServiceInfo::new(
+            service,
+            "my_instance",
+            host_name,
+            &intf_ips[..],
+            port,
+            &properties[..],
+        )
+        .expect("invalid service info")
+        .enable_addr_auto();
+        let result = d.register(my_service.clone());
+        assert!(result.is_ok());
+
+        // Browse for a service
+        let browse_chan = d.browse(service).unwrap();
+        let timeout = Duration::from_secs(2);
+        let mut resolved = false;
+
+        while let Ok(event) = browse_chan.recv_timeout(timeout) {
+            match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    resolved = true;
+                    println!("Resolved a service of {}", &info.get_fullname());
+                    println!("JLN service: {:?}", info);
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            }
+        }
+
+        assert!(resolved);
+
+        println!("Stopping browse of {}", service);
+        // Pause browsing so restarting will cause a new immediate query.
+        // Unregistering will not work here, it will invalidate all the records.
+        d.stop_browse(service).unwrap();
+
+        // Ensure the search is stopped.
+        // Reduces the chance of receiving an answer adding the ptr back to the
+        // cache causing the later browse to return directly from the cache.
+        // (which invalidates what this test is trying to test for.)
+        let mut stopped = false;
+        while let Ok(event) = browse_chan.recv_timeout(timeout) {
+            match event {
+                ServiceEvent::SearchStopped(_) => {
+                    stopped = true;
+                    println!("Stopped browsing service");
+                    break;
+                }
+                // Other `ServiceResolved` messages may be received
+                // here as they come from different interfaces.
+                // That's fine for this test.
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            }
+        }
+
+        assert!(stopped);
+
+        // Change the TXT properties with the cache flush bit set
+        // - use a new Service for this, which holds the calls for converting the properties
+        let new_properties: HashMap<String, String> =
+            HashMap::from([("cache".to_string(), "flush".to_string())]);
+        let new_service = ServiceInfo::new(
+            service,
+            "my_instance_2",
+            host_name,
+            &intf_ips[..],
+            port,
+            new_properties.clone(),
+        )
+        .unwrap();
+        // Announce the new service with cache flush
+        let txt_with_cache_flush = DnsTxt::new(
+            my_service.get_fullname(),
+            TYPE_TXT,
+            CLASS_IN | CLASS_CACHE_FLUSH,
+            my_service.get_other_ttl(),
+            new_service.generate_txt(),
+        );
+        let mut packet_buffer = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+        packet_buffer.add_answer_at_time(Box::new(txt_with_cache_flush), 0);
+
+        for intf in intfs {
+            let intf_sock = IntfSock {
+                intf: intf.clone(),
+                sock: new_socket_bind(&intf).unwrap(),
+            };
+            broadcast_dns_on_intf(&packet_buffer, &intf_sock);
+        }
+
+        println!("Sent txt record with cache flush as service {}", service);
+
+        // Restart the browse to force the sender to re-send the announcements.
+        let browse_chan = d.browse(service).unwrap();
+
+        resolved = false;
+        while let Ok(event) = browse_chan.recv_timeout(timeout) {
+            match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    resolved = true;
+                    println!("Resolved a service of {}", &info.get_fullname());
+                    // Ensure that only the new property remains after cache flush, and it's the
+                    // newly defined txt record from `new_service`
+                    assert_eq!(new_properties.into_txt_properties(), *info.get_properties());
                     break;
                 }
                 e => {

@@ -53,8 +53,8 @@ fn integration_success() {
         .expect("Failed to register our service");
 
     // Browse for a service
-    let resolve_count = Arc::new(Mutex::new(0));
-    let resolve_count_clone = resolve_count.clone();
+    let resolved_ips: Arc<Mutex<HashSet<IpAddr>>> = Arc::new(Mutex::new(HashSet::new()));
+    let resolved_ips_clone = Arc::clone(&resolved_ips);
     let remove_count = Arc::new(Mutex::new(0));
     let remove_count_clone = remove_count.clone();
     let stopped_count = Arc::new(Mutex::new(0));
@@ -83,8 +83,8 @@ fn integration_success() {
                         println!("{}", a);
                     }
                     if info.get_fullname().contains(&instance_name) {
-                        let mut num = resolve_count_clone.lock().unwrap();
-                        *num += 1;
+                        let mut ip_map = resolved_ips_clone.lock().unwrap();
+                        ip_map.extend(addrs);
                     }
                     let hostname = info.get_hostname();
                     assert_eq!(hostname, host_name);
@@ -146,13 +146,13 @@ fn integration_success() {
     let count = addr_count.lock().unwrap();
     assert_eq!(*count, my_addrs_count);
 
-    // `resolve_count` is not guaranteed to always be 1
-    // or `my_addrs_count`. If `my_addrs_count` > 1, these
-    // addrs could be resolved in a single message from
-    // the daemon, or in separate messages.
-    let count = resolve_count.lock().unwrap();
-    assert!(*count >= 1);
-    assert!(*count <= my_addrs_count);
+    // IP's can get resolved more than once if fx a cache-flush is asked from the sender of the
+    // MDNS records, so we look at unique IP addresses to see if they match the number of the
+    // network interfaces.
+    let unique_ip_count = resolved_ips.lock().unwrap();
+    assert_eq!(unique_ip_count.len(), my_addrs_count);
+    assert!(unique_ip_count.len() >= 1);
+    assert!(unique_ip_count.len() <= my_addrs_count);
 
     let count = remove_count.lock().unwrap();
     assert_eq!(*count, 1);
