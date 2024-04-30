@@ -147,7 +147,6 @@ mod log {
 
 mod dns_parser;
 mod error;
-#[allow(clippy::cognitive_complexity)]
 mod service_daemon;
 mod service_info;
 
