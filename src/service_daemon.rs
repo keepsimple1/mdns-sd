@@ -55,6 +55,7 @@ use std::{
     time::Duration,
     vec,
 };
+use crate::dns_parser::ip_address_to_type;
 
 /// A simple macro to report all kinds of errors.
 macro_rules! e_fmt {
@@ -565,10 +566,7 @@ impl ServiceDaemon {
                 for (hostname, ip_addr) in
                     zc.cache.refresh_due_hostname_resolutions(hostname).iter()
                 {
-                    match ip_addr {
-                        IpAddr::V4(_) => zc.send_query(hostname, TYPE_A),
-                        IpAddr::V6(_) => zc.send_query(hostname, TYPE_AAAA),
-                    }
+                    zc.send_query(hostname, ip_address_to_type(*ip_addr));
                     query_count += 1;
                 }
             }
@@ -1443,18 +1441,14 @@ impl Zeroconf {
             debug!("No valid addrs to add on intf {:?}", &intf_sock.intf);
             return false;
         }
-        for addr in intf_addrs {
-            let t = match addr {
-                IpAddr::V4(_) => TYPE_A,
-                IpAddr::V6(_) => TYPE_AAAA,
-            };
+        for address in intf_addrs {
             out.add_answer_at_time(
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
-                    t,
+                    ip_address_to_type(address),
                     CLASS_IN | CLASS_CACHE_FLUSH,
                     info.get_host_ttl(),
-                    addr,
+                    address,
                 )),
                 0,
             );
@@ -1514,18 +1508,14 @@ impl Zeroconf {
             0,
         );
 
-        for addr in info.get_addrs_on_intf(&intf_sock.intf) {
-            let t = match addr {
-                IpAddr::V4(_) => TYPE_A,
-                IpAddr::V6(_) => TYPE_AAAA,
-            };
+        for address in info.get_addrs_on_intf(&intf_sock.intf) {
             out.add_answer_at_time(
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
-                    t,
+                    ip_address_to_type(address),
                     CLASS_IN | CLASS_CACHE_FLUSH,
                     0,
-                    addr,
+                    address,
                 )),
                 0,
             );
@@ -2027,15 +2017,11 @@ impl Zeroconf {
                                 return;
                             }
                             for address in intf_addrs {
-                                let t = match address {
-                                    IpAddr::V4(_) => TYPE_A,
-                                    IpAddr::V6(_) => TYPE_AAAA,
-                                };
                                 out.add_answer(
                                     &msg,
                                     Box::new(DnsAddress::new(
                                         &question.entry.name,
-                                        t,
+                                        ip_address_to_type(address),
                                         CLASS_IN | CLASS_CACHE_FLUSH,
                                         service.get_host_ttl(),
                                         address,
@@ -2090,13 +2076,9 @@ impl Zeroconf {
                         return;
                     }
                     for address in intf_addrs {
-                        let t = match address {
-                            IpAddr::V4(_) => TYPE_A,
-                            IpAddr::V6(_) => TYPE_AAAA,
-                        };
                         out.add_additional_answer(Box::new(DnsAddress::new(
                             service.get_hostname(),
-                            t,
+                            ip_address_to_type(address),
                             CLASS_IN | CLASS_CACHE_FLUSH,
                             service.get_host_ttl(),
                             address,
