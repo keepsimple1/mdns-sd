@@ -52,6 +52,7 @@ pub const FLAGS_AA: u16 = 0x0400; // mask for Authoritative answer bit
 
 pub type DnsRecordBox = Box<dyn DnsRecordExt + Send>;
 
+#[inline]
 pub const fn ip_address_to_type(address: IpAddr) -> u16 {
     match address {
         IpAddr::V4(_) => TYPE_A,
