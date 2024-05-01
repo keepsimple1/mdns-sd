@@ -32,7 +32,7 @@
 use crate::log::{debug, error, warn};
 use crate::{
     dns_parser::{
-        current_time_millis, DnsAddress, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
+        current_time_millis, ip_address_to_type, DnsAddress, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
         DnsRecordExt, DnsSrv, DnsTxt, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY,
         FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_AAAA, TYPE_ANY, TYPE_NSEC, TYPE_PTR,
         TYPE_SRV, TYPE_TXT,
@@ -55,7 +55,6 @@ use std::{
     time::Duration,
     vec,
 };
-use crate::dns_parser::ip_address_to_type;
 
 /// A simple macro to report all kinds of errors.
 macro_rules! e_fmt {
