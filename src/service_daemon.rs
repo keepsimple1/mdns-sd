@@ -1442,13 +1442,13 @@ impl Zeroconf {
         }
         for address in intf_addrs {
             out.add_answer_at_time(
-                Box::new(DnsAddress::new(
+                DnsAddress::new(
                     info.get_hostname(),
                     ip_address_to_type(&address),
                     CLASS_IN | CLASS_CACHE_FLUSH,
                     info.get_host_ttl(),
                     address,
-                )),
+                ),
                 0,
             );
         }
@@ -1460,32 +1460,32 @@ impl Zeroconf {
     fn unregister_service(&self, info: &ServiceInfo, intf_sock: &IntfSock) -> Vec<u8> {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         out.add_answer_at_time(
-            Box::new(DnsPointer::new(
+            DnsPointer::new(
                 info.get_type(),
                 TYPE_PTR,
                 CLASS_IN,
                 0,
                 info.get_fullname().to_string(),
-            )),
+            ),
             0,
         );
 
         if let Some(sub) = info.get_subtype() {
             debug!("Adding subdomain {}", sub);
             out.add_answer_at_time(
-                Box::new(DnsPointer::new(
+                DnsPointer::new(
                     sub,
                     TYPE_PTR,
                     CLASS_IN,
                     0,
                     info.get_fullname().to_string(),
-                )),
+                ),
                 0,
             );
         }
 
         out.add_answer_at_time(
-            Box::new(DnsSrv::new(
+            DnsSrv::new(
                 info.get_fullname(),
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 0,
@@ -1493,23 +1493,23 @@ impl Zeroconf {
                 info.get_weight(),
                 info.get_port(),
                 info.get_hostname().to_string(),
-            )),
+            ),
             0,
         );
         out.add_answer_at_time(
-            Box::new(DnsTxt::new(
+            DnsTxt::new(
                 info.get_fullname(),
                 TYPE_TXT,
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 0,
                 info.generate_txt(),
-            )),
+            ),
             0,
         );
 
         for address in info.get_addrs_on_intf(&intf_sock.intf) {
             out.add_answer_at_time(
-                Box::new(DnsAddress::new(
+                DnsAddress::new(
                     info.get_hostname(),
                     ip_address_to_type(&address),
                     CLASS_IN | CLASS_CACHE_FLUSH,
@@ -2018,13 +2018,13 @@ impl Zeroconf {
                             for address in intf_addrs {
                                 out.add_answer(
                                     &msg,
-                                    Box::new(DnsAddress::new(
+                                    DnsAddress::new(
                                         &question.entry.name,
                                         ip_address_to_type(&address),
                                         CLASS_IN | CLASS_CACHE_FLUSH,
                                         service.get_host_ttl(),
                                         address,
-                                    )),
+                                    ),
                                 );
                             }
                         }
@@ -2040,7 +2040,7 @@ impl Zeroconf {
                 if qtype == TYPE_SRV || qtype == TYPE_ANY {
                     out.add_answer(
                         &msg,
-                        Box::new(DnsSrv::new(
+                        DnsSrv::new(
                             &question.entry.name,
                             CLASS_IN | CLASS_CACHE_FLUSH,
                             service.get_host_ttl(),
@@ -2048,20 +2048,20 @@ impl Zeroconf {
                             service.get_weight(),
                             service.get_port(),
                             service.get_hostname().to_string(),
-                        )),
+                        ),
                     );
                 }
 
                 if qtype == TYPE_TXT || qtype == TYPE_ANY {
                     out.add_answer(
                         &msg,
-                        Box::new(DnsTxt::new(
+                        DnsTxt::new(
                             &question.entry.name,
                             TYPE_TXT,
                             CLASS_IN | CLASS_CACHE_FLUSH,
                             service.get_host_ttl(),
                             service.generate_txt(),
-                        )),
+                        ),
                     );
                 }
 
