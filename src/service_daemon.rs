@@ -32,10 +32,10 @@
 use crate::log::{debug, error, warn};
 use crate::{
     dns_parser::{
-        current_time_millis, ip_address_to_type, DnsAddress, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
-        DnsRecordExt, DnsSrv, DnsTxt, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY,
-        FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_AAAA, TYPE_ANY, TYPE_NSEC, TYPE_PTR,
-        TYPE_SRV, TYPE_TXT,
+        current_time_millis, ip_address_to_type, DnsAddress, DnsIncoming, DnsOutgoing, DnsPointer,
+        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA,
+        FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE, TYPE_A, TYPE_AAAA, TYPE_ANY,
+        TYPE_NSEC, TYPE_PTR, TYPE_SRV, TYPE_TXT,
     },
     error::{Error, Result},
     service_info::{ifaddr_subnet, split_sub_domain, ServiceInfo},
