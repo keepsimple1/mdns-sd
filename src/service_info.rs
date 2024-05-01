@@ -127,14 +127,14 @@ impl ServiceInfo {
     /// Indicates that the library should automatically
     /// update the addresses of this service, when IP
     /// address(es) are added or removed on the host.
-    pub fn enable_addr_auto(mut self) -> Self {
+    pub const fn enable_addr_auto(mut self) -> Self {
         self.addr_auto = true;
         self
     }
 
     /// Returns if the service's addresses will be updated
     /// automatically when the host IP addrs change.
-    pub fn is_addr_auto(&self) -> bool {
+    pub const fn is_addr_auto(&self) -> bool {
         self.addr_auto
     }
 
@@ -151,7 +151,7 @@ impl ServiceInfo {
     ///
     /// For example: "_printer._sub._http._tcp.local.".
     #[inline]
-    pub fn get_subtype(&self) -> &Option<String> {
+    pub const fn get_subtype(&self) -> &Option<String> {
         &self.sub_domain
     }
 
@@ -165,7 +165,7 @@ impl ServiceInfo {
 
     /// Returns the properties from TXT records.
     #[inline]
-    pub fn get_properties(&self) -> &TxtProperties {
+    pub const fn get_properties(&self) -> &TxtProperties {
         &self.txt_properties
     }
 
@@ -201,13 +201,13 @@ impl ServiceInfo {
 
     /// Returns the service's port.
     #[inline]
-    pub fn get_port(&self) -> u16 {
+    pub const fn get_port(&self) -> u16 {
         self.port
     }
 
     /// Returns the service's addresses
     #[inline]
-    pub fn get_addresses(&self) -> &HashSet<IpAddr> {
+    pub const fn get_addresses(&self) -> &HashSet<IpAddr> {
         &self.addresses
     }
 
@@ -226,25 +226,25 @@ impl ServiceInfo {
 
     /// Returns the service's TTL used for SRV and Address records.
     #[inline]
-    pub fn get_host_ttl(&self) -> u32 {
+    pub const fn get_host_ttl(&self) -> u32 {
         self.host_ttl
     }
 
     /// Returns the service's TTL used for PTR and TXT records.
     #[inline]
-    pub fn get_other_ttl(&self) -> u32 {
+    pub const fn get_other_ttl(&self) -> u32 {
         self.other_ttl
     }
 
     /// Returns the service's priority used in SRV records.
     #[inline]
-    pub fn get_priority(&self) -> u16 {
+    pub const fn get_priority(&self) -> u16 {
         self.priority
     }
 
     /// Returns the service's weight used in SRV records.
     #[inline]
-    pub fn get_weight(&self) -> u16 {
+    pub const fn get_weight(&self) -> u16 {
         self.weight
     }
 
@@ -472,10 +472,9 @@ impl TxtProperty {
 
     /// Returns the value of a property as str.
     pub fn val_str(&self) -> &str {
-        match &self.val {
-            Some(v) => std::str::from_utf8(&v[..]).unwrap_or_default(),
-            None => "",
-        }
+        self.val
+            .as_ref()
+            .map_or("", |v| std::str::from_utf8(&v[..]).unwrap_or_default())
     }
 }
 
@@ -486,7 +485,7 @@ where
     V: ToString,
 {
     fn from(prop: &(K, V)) -> Self {
-        TxtProperty {
+        Self {
             key: prop.0.to_string(),
             val: Some(prop.1.to_string().into_bytes()),
         }
@@ -499,7 +498,7 @@ where
     V: AsRef<[u8]>,
 {
     fn from(prop: (K, V)) -> Self {
-        TxtProperty {
+        Self {
             key: prop.0.to_string(),
             val: Some(prop.1.as_ref().into()),
         }
@@ -509,7 +508,7 @@ where
 /// Support a property that has no value.
 impl From<&str> for TxtProperty {
     fn from(key: &str) -> Self {
-        TxtProperty {
+        Self {
             key: key.to_string(),
             val: None,
         }
@@ -527,13 +526,16 @@ impl fmt::Display for TxtProperty {
 /// - If self.var is not UTF-8, will output its bytes as in hex.
 impl fmt::Debug for TxtProperty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let val_string = match &self.val {
-            None => "None".to_string(),
-            Some(v) => match std::str::from_utf8(&v[..]) {
-                Ok(s) => format!("Some(\"{}\")", s),
-                Err(_) => format!("Some({})", u8_slice_to_hex(&v[..])),
+        let val_string = self.val.as_ref().map_or_else(
+            || "None".to_string(),
+            |v| {
+                std::str::from_utf8(&v[..]).map_or_else(
+                    |_| format!("Some({})", u8_slice_to_hex(&v[..])),
+                    |s| format!("Some(\"{}\")", s),
+                )
             },
-        };
+        );
+
         write!(
             f,
             "TxtProperty {{key: \"{}\", val: {}}}",
@@ -582,13 +584,12 @@ impl IntoTxtProperties for HashMap<String, String> {
 /// Mainly for backward compatibility.
 impl IntoTxtProperties for Option<HashMap<String, String>> {
     fn into_txt_properties(self) -> TxtProperties {
-        match self {
-            None => {
-                let properties = Vec::new();
-                TxtProperties { properties }
-            }
-            Some(h) => h.into_txt_properties(),
-        }
+        self.map_or_else(
+            || TxtProperties {
+                properties: Vec::new(),
+            },
+            |h| h.into_txt_properties(),
+        )
     }
 }
 
@@ -658,10 +659,10 @@ fn decode_txt(txt: &[u8]) -> Vec<TxtProperty> {
         let kv_bytes = &txt[offset..offset_end];
 
         // split key and val using the first `=`
-        let (k, v) = match kv_bytes.iter().position(|&x| x == b'=') {
-            Some(idx) => (kv_bytes[..idx].to_vec(), Some(kv_bytes[idx + 1..].to_vec())),
-            None => (kv_bytes.to_vec(), None),
-        };
+        let (k, v) = kv_bytes.iter().position(|&x| x == b'=').map_or_else(
+            || (kv_bytes.to_vec(), None),
+            |idx| (kv_bytes[..idx].to_vec(), Some(kv_bytes[idx + 1..].to_vec())),
+        );
 
         // Make sure the key can be stored in UTF-8.
         match String::from_utf8(k) {
@@ -694,7 +695,7 @@ fn decode_txt_unique(txt: &[u8]) -> Vec<TxtProperty> {
 }
 
 /// Returns a tuple of (service_type_domain, optional_sub_domain)
-pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
+pub fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
     if let Some((_, ty_domain)) = domain.rsplit_once("._sub.") {
         (ty_domain, Some(domain))
     } else {
@@ -703,7 +704,7 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
 }
 
 /// Returns true if `addr` is in the same network of `intf`.
-pub(crate) fn valid_ip_on_intf(addr: &IpAddr, intf: &Interface) -> bool {
+pub fn valid_ip_on_intf(addr: &IpAddr, intf: &Interface) -> bool {
     match (addr, &intf.addr) {
         (IpAddr::V4(addr), IfAddr::V4(intf)) => {
             let netmask = u32::from(intf.netmask);
@@ -723,7 +724,7 @@ pub(crate) fn valid_ip_on_intf(addr: &IpAddr, intf: &Interface) -> bool {
 
 /// Returns the bitwise and (&) of the netmask and ip parts of `addr` as `u128` for IPv4 and IPv6 address.
 /// Suitable for checking if two networks are on the same subnet.
-pub(crate) fn ifaddr_subnet(addr: &IfAddr) -> u128 {
+pub fn ifaddr_subnet(addr: &IfAddr) -> u128 {
     match addr {
         IfAddr::V4(addrv4) => (u32::from(addrv4.netmask) & u32::from(addrv4.ip)) as u128,
         IfAddr::V6(addrv6) => u128::from(addrv6.netmask) & u128::from(addrv6.ip),

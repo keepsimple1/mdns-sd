@@ -17,9 +17,9 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Msg(s) => write!(f, "{}", s),
-            Error::ParseIpAddr(s) => write!(f, "parsing of ip addr failed, reason: {}", s),
-            Error::Again => write!(f, "try again"),
+            Self::Msg(s) => write!(f, "{}", s),
+            Self::ParseIpAddr(s) => write!(f, "parsing of ip addr failed, reason: {}", s),
+            Self::Again => write!(f, "try again"),
         }
     }
 }

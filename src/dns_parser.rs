@@ -19,23 +19,23 @@ use std::{
     time::SystemTime,
 };
 
-pub(crate) const TYPE_A: u16 = 1; // IPv4 address
-pub(crate) const TYPE_CNAME: u16 = 5;
-pub(crate) const TYPE_PTR: u16 = 12;
-pub(crate) const TYPE_HINFO: u16 = 13;
-pub(crate) const TYPE_TXT: u16 = 16;
-pub(crate) const TYPE_AAAA: u16 = 28; // IPv6 address
-pub(crate) const TYPE_SRV: u16 = 33;
-pub(crate) const TYPE_NSEC: u16 = 47; // Negative responses
-pub(crate) const TYPE_ANY: u16 = 255;
+pub const TYPE_A: u16 = 1; // IPv4 address
+pub const TYPE_CNAME: u16 = 5;
+pub const TYPE_PTR: u16 = 12;
+pub const TYPE_HINFO: u16 = 13;
+pub const TYPE_TXT: u16 = 16;
+pub const TYPE_AAAA: u16 = 28; // IPv6 address
+pub const TYPE_SRV: u16 = 33;
+pub const TYPE_NSEC: u16 = 47; // Negative responses
+pub const TYPE_ANY: u16 = 255;
 
-pub(crate) const CLASS_IN: u16 = 1;
-pub(crate) const CLASS_MASK: u16 = 0x7FFF;
-pub(crate) const CLASS_CACHE_FLUSH: u16 = 0x8000;
+pub const CLASS_IN: u16 = 1;
+pub const CLASS_MASK: u16 = 0x7FFF;
+pub const CLASS_CACHE_FLUSH: u16 = 0x8000;
 
 /// Max size of UDP datagram payload: 9000 bytes - IP header 20 bytes - UDP header 8 bytes.
 /// Reference: RFC6762: https://datatracker.ietf.org/doc/html/rfc6762#section-17
-pub(crate) const MAX_MSG_ABSOLUTE: usize = 8972;
+pub const MAX_MSG_ABSOLUTE: usize = 8972;
 
 // Definitions for DNS message header "flags" field
 //
@@ -45,15 +45,15 @@ pub(crate) const MAX_MSG_ABSOLUTE: usize = 8972;
 //   0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
 // |QR|   Opcode  |AA|TC|RD|RA|   Z    |   RCODE   |
 //
-pub(crate) const FLAGS_QR_MASK: u16 = 0x8000; // mask for query/response bit
-pub(crate) const FLAGS_QR_QUERY: u16 = 0x0000;
-pub(crate) const FLAGS_QR_RESPONSE: u16 = 0x8000;
-pub(crate) const FLAGS_AA: u16 = 0x0400; // mask for Authoritative answer bit
+pub const FLAGS_QR_MASK: u16 = 0x8000; // mask for query/response bit
+pub const FLAGS_QR_QUERY: u16 = 0x0000;
+pub const FLAGS_QR_RESPONSE: u16 = 0x8000;
+pub const FLAGS_AA: u16 = 0x0400; // mask for Authoritative answer bit
 
-pub(crate) type DnsRecordBox = Box<dyn DnsRecordExt + Send>;
+pub type DnsRecordBox = Box<dyn DnsRecordExt + Send>;
 
-#[derive(PartialEq, Debug)]
-pub(crate) struct DnsEntry {
+#[derive(Eq, PartialEq, Debug)]
+pub struct DnsEntry {
     pub(crate) name: String, // always lower case.
     pub(crate) ty: u16,
     class: u16,
@@ -61,7 +61,7 @@ pub(crate) struct DnsEntry {
 }
 
 impl DnsEntry {
-    fn new(name: String, ty: u16, class: u16) -> Self {
+    const fn new(name: String, ty: u16, class: u16) -> Self {
         Self {
             name,
             ty,
@@ -73,7 +73,7 @@ impl DnsEntry {
 
 /// A DNS question entry
 #[derive(Debug)]
-pub(crate) struct DnsQuestion {
+pub struct DnsQuestion {
     pub(crate) entry: DnsEntry,
 }
 
@@ -81,7 +81,7 @@ pub(crate) struct DnsQuestion {
 /// RFC: https://www.rfc-editor.org/rfc/rfc1035#section-3.2.1
 ///      https://www.rfc-editor.org/rfc/rfc1035#section-4.1.3
 #[derive(Debug)]
-pub(crate) struct DnsRecord {
+pub struct DnsRecord {
     pub(crate) entry: DnsEntry,
     ttl: u32,     // in seconds, 0 means this record should not be cached
     created: u64, // UNIX time in millis
@@ -106,19 +106,19 @@ impl DnsRecord {
         }
     }
 
-    pub(crate) fn get_expire_time(&self) -> u64 {
+    pub(crate) const fn get_expire_time(&self) -> u64 {
         self.expires
     }
 
-    pub(crate) fn get_refresh_time(&self) -> u64 {
+    pub(crate) const fn get_refresh_time(&self) -> u64 {
         self.refresh
     }
 
-    pub(crate) fn is_expired(&self, now: u64) -> bool {
+    pub(crate) const fn is_expired(&self, now: u64) -> bool {
         now >= self.expires
     }
 
-    pub(crate) fn refresh_due(&self, now: u64) -> bool {
+    pub(crate) const fn refresh_due(&self, now: u64) -> bool {
         now >= self.refresh
     }
 
@@ -135,7 +135,7 @@ impl DnsRecord {
     }
 
     /// Return the absolute time for this record being created
-    fn get_created(&self) -> u64 {
+    const fn get_created(&self) -> u64 {
         self.created
     }
 
@@ -144,7 +144,7 @@ impl DnsRecord {
         self.expires = expire_at;
     }
 
-    fn reset_ttl(&mut self, other: &DnsRecord) {
+    fn reset_ttl(&mut self, other: &Self) {
         self.ttl = other.ttl;
         self.created = other.created;
         self.refresh = get_expiration_time(self.created, self.ttl, 80);
@@ -158,7 +158,7 @@ impl PartialEq for DnsRecord {
     }
 }
 
-pub(crate) trait DnsRecordExt: fmt::Debug {
+pub trait DnsRecordExt: fmt::Debug {
     fn get_record(&self) -> &DnsRecord;
     fn get_record_mut(&mut self) -> &mut DnsRecord;
     fn write(&self, packet: &mut DnsOutPacket);
@@ -212,7 +212,7 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
 }
 
 #[derive(Debug)]
-pub(crate) struct DnsAddress {
+pub struct DnsAddress {
     pub(crate) record: DnsRecord,
     pub(crate) address: IpAddr,
 }
@@ -245,7 +245,7 @@ impl DnsRecordExt for DnsAddress {
     }
 
     fn matches(&self, other: &dyn DnsRecordExt) -> bool {
-        if let Some(other_a) = other.any().downcast_ref::<DnsAddress>() {
+        if let Some(other_a) = other.any().downcast_ref::<Self>() {
             return self.address == other_a.address && self.record.entry == other_a.record.entry;
         }
         false
@@ -254,7 +254,7 @@ impl DnsRecordExt for DnsAddress {
 
 /// A DNS pointer record
 #[derive(Debug)]
-pub(crate) struct DnsPointer {
+pub struct DnsPointer {
     record: DnsRecord,
     pub(crate) alias: String, // the full name of Service Instance
 }
@@ -284,7 +284,7 @@ impl DnsRecordExt for DnsPointer {
     }
 
     fn matches(&self, other: &dyn DnsRecordExt) -> bool {
-        if let Some(other_ptr) = other.any().downcast_ref::<DnsPointer>() {
+        if let Some(other_ptr) = other.any().downcast_ref::<Self>() {
             return self.alias == other_ptr.alias && self.record.entry == other_ptr.record.entry;
         }
         false
@@ -293,7 +293,7 @@ impl DnsRecordExt for DnsPointer {
 
 // In common cases, there is one and only one SRV record for a particular fullname.
 #[derive(Debug)]
-pub(crate) struct DnsSrv {
+pub struct DnsSrv {
     pub(crate) record: DnsRecord,
     pub(crate) priority: u16,
     // lower number means higher priority. Should be 0 in common cases.
@@ -345,7 +345,7 @@ impl DnsRecordExt for DnsSrv {
     }
 
     fn matches(&self, other: &dyn DnsRecordExt) -> bool {
-        if let Some(other_svc) = other.any().downcast_ref::<DnsSrv>() {
+        if let Some(other_svc) = other.any().downcast_ref::<Self>() {
             return self.host == other_svc.host
                 && self.port == other_svc.port
                 && self.weight == other_svc.weight
@@ -369,7 +369,7 @@ impl DnsRecordExt for DnsSrv {
 //    6.4).  Everything after the first '=' character to the end of the
 //    string (including subsequent '=' characters, if any) is the value
 #[derive(Debug)]
-pub(crate) struct DnsTxt {
+pub struct DnsTxt {
     pub(crate) record: DnsRecord,
     pub(crate) text: Vec<u8>,
 }
@@ -400,7 +400,7 @@ impl DnsRecordExt for DnsTxt {
     }
 
     fn matches(&self, other: &dyn DnsRecordExt) -> bool {
-        if let Some(other_txt) = other.any().downcast_ref::<DnsTxt>() {
+        if let Some(other_txt) = other.any().downcast_ref::<Self>() {
             return self.text == other_txt.text && self.record.entry == other_txt.record.entry;
         }
         false
@@ -442,7 +442,7 @@ impl DnsRecordExt for DnsHostInfo {
     }
 
     fn matches(&self, other: &dyn DnsRecordExt) -> bool {
-        if let Some(other_hinfo) = other.any().downcast_ref::<DnsHostInfo>() {
+        if let Some(other_hinfo) = other.any().downcast_ref::<Self>() {
             return self.cpu == other_hinfo.cpu
                 && self.os == other_hinfo.os
                 && self.record.entry == other_hinfo.record.entry;
@@ -457,7 +457,7 @@ impl DnsRecordExt for DnsHostInfo {
 /// and
 /// [RFC6762 section 6.1](https://datatracker.ietf.org/doc/html/rfc6762#section-6.1)
 #[derive(Debug)]
-pub(crate) struct DnsNSec {
+pub struct DnsNSec {
     record: DnsRecord,
     next_domain: String,
     type_bitmap: Vec<u8>,
@@ -521,7 +521,7 @@ impl DnsRecordExt for DnsNSec {
     }
 
     fn matches(&self, other: &dyn DnsRecordExt) -> bool {
-        if let Some(other_record) = other.any().downcast_ref::<DnsNSec>() {
+        if let Some(other_record) = other.any().downcast_ref::<Self>() {
             return self.next_domain == other_record.next_domain
                 && self.type_bitmap == other_record.type_bitmap
                 && self.record.entry == other_record.record.entry;
@@ -536,7 +536,7 @@ enum PacketState {
     Finished = 1,
 }
 
-pub(crate) struct DnsOutPacket {
+pub struct DnsOutPacket {
     pub(crate) data: Vec<Vec<u8>>,
     size: usize,
     state: PacketState,
@@ -664,10 +664,7 @@ impl DnsOutPacket {
                     // println!("set offset {} for {}", self.size, remaining);
 
                     // Find the current label to write into the packet
-                    let stop = match remaining.find('.') {
-                        Some(i) => here + i,
-                        None => end,
-                    };
+                    let stop = remaining.find('.').map_or(end, |i| here + i);
                     let label = &name[here..stop];
                     self.write_utf8(label);
 
@@ -710,7 +707,7 @@ impl DnsOutPacket {
 
 /// Representation of an outgoing packet. The actual encoded packet
 /// is [DnsOutPacket].
-pub(crate) struct DnsOutgoing {
+pub struct DnsOutgoing {
     flags: u16,
     pub(crate) id: u16,
     multicast: bool,
@@ -722,7 +719,7 @@ pub(crate) struct DnsOutgoing {
 
 impl DnsOutgoing {
     pub(crate) fn new(flags: u16) -> Self {
-        DnsOutgoing {
+        Self {
             flags,
             id: 0,
             multicast: true,
@@ -733,11 +730,11 @@ impl DnsOutgoing {
         }
     }
 
-    pub(crate) fn is_query(&self) -> bool {
+    pub(crate) const fn is_query(&self) -> bool {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_QUERY
     }
 
-    fn _is_response(&self) -> bool {
+    const fn _is_response(&self) -> bool {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_RESPONSE
     }
 
@@ -933,7 +930,7 @@ impl DnsOutgoing {
 }
 
 #[derive(Debug)]
-pub(crate) struct DnsIncoming {
+pub struct DnsIncoming {
     offset: usize,
     data: Vec<u8>,
     pub(crate) questions: Vec<DnsQuestion>,
@@ -971,11 +968,11 @@ impl DnsIncoming {
         Ok(incoming)
     }
 
-    pub(crate) fn is_query(&self) -> bool {
+    pub(crate) const fn is_query(&self) -> bool {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_QUERY
     }
 
-    pub(crate) fn is_response(&self) -> bool {
+    pub(crate) const fn is_response(&self) -> bool {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_RESPONSE
     }
 
@@ -1329,26 +1326,26 @@ impl DnsIncoming {
 }
 
 /// Returns UNIX time in millis
-pub(crate) fn current_time_millis() -> u64 {
+pub fn current_time_millis() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .expect("failed to get current UNIX time")
         .as_millis() as u64
 }
 
-fn u16_from_be_slice(bytes: &[u8]) -> u16 {
+const fn u16_from_be_slice(bytes: &[u8]) -> u16 {
     let u8_array: [u8; 2] = [bytes[0], bytes[1]];
     u16::from_be_bytes(u8_array)
 }
 
-fn u32_from_be_slice(s: &[u8]) -> u32 {
+const fn u32_from_be_slice(s: &[u8]) -> u32 {
     let u8_array: [u8; 4] = [s[0], s[1], s[2], s[3]];
     u32::from_be_bytes(u8_array)
 }
 
 /// Returns the time in millis at which this record will have expired
 /// by a certain percentage.
-fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
+const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
     created + (ttl * percent * 10) as u64
 }
 
