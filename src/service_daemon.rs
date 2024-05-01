@@ -1473,13 +1473,7 @@ impl Zeroconf {
         if let Some(sub) = info.get_subtype() {
             debug!("Adding subdomain {}", sub);
             out.add_answer_at_time(
-                DnsPointer::new(
-                    sub,
-                    TYPE_PTR,
-                    CLASS_IN,
-                    0,
-                    info.get_fullname().to_string(),
-                ),
+                DnsPointer::new(sub, TYPE_PTR, CLASS_IN, 0, info.get_fullname().to_string()),
                 0,
             );
         }
