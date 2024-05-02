@@ -97,7 +97,7 @@ pub enum DaemonStatus {
 
 /// Different counters included in the metrics.
 /// Currently all counters are for outgoing packets.
-#[derive(Hash, Eq, PartialEq, Clone)]
+#[derive(Hash, Eq, PartialEq)]
 enum Counter {
     Register,
     RegisterResend,
