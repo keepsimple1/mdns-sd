@@ -50,7 +50,7 @@ pub const FLAGS_QR_QUERY: u16 = 0x0000;
 pub const FLAGS_QR_RESPONSE: u16 = 0x8000;
 pub const FLAGS_AA: u16 = 0x0400; // mask for Authoritative answer bit
 
-pub type DnsRecordBox = Box<dyn DnsRecordExt + Send>;
+pub type DnsRecordBox = Box<dyn DnsRecordExt>;
 
 #[inline]
 pub const fn ip_address_to_type(address: &IpAddr) -> u16 {
@@ -166,7 +166,7 @@ impl PartialEq for DnsRecord {
     }
 }
 
-pub trait DnsRecordExt: fmt::Debug {
+pub trait DnsRecordExt: fmt::Debug + Send {
     fn get_record(&self) -> &DnsRecord;
     fn get_record_mut(&mut self) -> &mut DnsRecord;
     fn write(&self, packet: &mut DnsOutPacket);
@@ -786,7 +786,7 @@ impl DnsOutgoing {
 
     /// Returns true if `answer` is added to the outgoing msg.
     /// Returns false if `answer` was not added as it expired or suppressed by the incoming `msg`.
-    pub(crate) fn add_answer(&mut self, msg: &DnsIncoming, answer: impl DnsRecordExt + Send + 'static) -> bool {
+    pub(crate) fn add_answer(&mut self, msg: &DnsIncoming, answer: impl DnsRecordExt + 'static) -> bool {
         debug!("Check for add_answer");
         if !answer.suppressed_by(msg) {
             return self.add_answer_at_time(answer, 0);
@@ -797,7 +797,7 @@ impl DnsOutgoing {
     /// Returns true if `answer` is added to the outgoing msg.
     /// Returns false if the answer is expired `now` hence not added.
     /// If `now` is 0, do not check if the answer expires.
-    pub(crate) fn add_answer_at_time(&mut self, answer: impl DnsRecordExt + Send + 'static, now: u64) -> bool {
+    pub(crate) fn add_answer_at_time(&mut self, answer: impl DnsRecordExt + 'static, now: u64) -> bool {
         debug!("Check for add_answer_at_time");
         if now == 0 || !answer.get_record().is_expired(now) {
             debug!("add_answer push: {:?}", &answer);
