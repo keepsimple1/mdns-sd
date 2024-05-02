@@ -851,18 +851,18 @@ impl DnsOutgoing {
 
         if let Some(sub) = service.get_subtype() {
             debug!("Adding subdomain {}", sub);
-            self.add_additional_answer(Box::new(DnsPointer::new(
+            self.add_additional_answer(DnsPointer::new(
                 sub,
                 TYPE_PTR,
                 CLASS_IN,
                 service.get_other_ttl(),
                 service.get_fullname().to_string(),
-            )));
+            ));
         }
 
         // Add recommended additional answers according to
         // https://tools.ietf.org/html/rfc6763#section-12.1.
-        self.add_additional_answer(Box::new(DnsSrv::new(
+        self.add_additional_answer(DnsSrv::new(
             service.get_fullname(),
             CLASS_IN | CLASS_CACHE_FLUSH,
             service.get_host_ttl(),
@@ -870,24 +870,24 @@ impl DnsOutgoing {
             service.get_weight(),
             service.get_port(),
             service.get_hostname().to_string(),
-        )));
+        ));
 
-        self.add_additional_answer(Box::new(DnsTxt::new(
+        self.add_additional_answer(DnsTxt::new(
             service.get_fullname(),
             TYPE_TXT,
             CLASS_IN | CLASS_CACHE_FLUSH,
             service.get_host_ttl(),
             service.generate_txt(),
-        )));
+        ));
 
         for address in intf_addrs {
-            self.add_additional_answer(Box::new(DnsAddress::new(
+            self.add_additional_answer(DnsAddress::new(
                 service.get_hostname(),
                 ip_address_to_type(&address),
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 service.get_host_ttl(),
                 address,
-            )));
+            ));
         }
     }
 

@@ -1388,32 +1388,32 @@ impl Zeroconf {
         debug!("broadcast service {}", service_fullname);
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         out.add_answer_at_time(
-            Box::new(DnsPointer::new(
+            DnsPointer::new(
                 info.get_type(),
                 TYPE_PTR,
                 CLASS_IN,
                 info.get_other_ttl(),
                 info.get_fullname().to_string(),
-            )),
+            ),
             0,
         );
 
         if let Some(sub) = info.get_subtype() {
             debug!("Adding subdomain {}", sub);
             out.add_answer_at_time(
-                Box::new(DnsPointer::new(
+                DnsPointer::new(
                     sub,
                     TYPE_PTR,
                     CLASS_IN,
                     info.get_other_ttl(),
                     info.get_fullname().to_string(),
-                )),
+                ),
                 0,
             );
         }
 
         out.add_answer_at_time(
-            Box::new(DnsSrv::new(
+            DnsSrv::new(
                 info.get_fullname(),
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 info.get_host_ttl(),
@@ -1421,17 +1421,17 @@ impl Zeroconf {
                 info.get_weight(),
                 info.get_port(),
                 info.get_hostname().to_string(),
-            )),
+            ),
             0,
         );
         out.add_answer_at_time(
-            Box::new(DnsTxt::new(
+            DnsTxt::new(
                 info.get_fullname(),
                 TYPE_TXT,
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 info.get_other_ttl(),
                 info.generate_txt(),
-            )),
+            ),
             0,
         );
 
@@ -1977,13 +1977,13 @@ impl Zeroconf {
                     } else if question.entry.name == META_QUERY {
                         let ptr_added = out.add_answer(
                             &msg,
-                            Box::new(DnsPointer::new(
+                            DnsPointer::new(
                                 &question.entry.name,
                                 TYPE_PTR,
                                 CLASS_IN,
                                 service.get_other_ttl(),
                                 service.get_type().to_string(),
-                            )),
+                            ),
                         );
                         if !ptr_added {
                             debug!("answer was not added for meta-query {:?}", &question);
@@ -2069,13 +2069,13 @@ impl Zeroconf {
                         return;
                     }
                     for address in intf_addrs {
-                        out.add_additional_answer(Box::new(DnsAddress::new(
+                        out.add_additional_answer(DnsAddress::new(
                             service.get_hostname(),
                             ip_address_to_type(&address),
                             CLASS_IN | CLASS_CACHE_FLUSH,
                             service.get_host_ttl(),
                             address,
-                        )));
+                        ));
                     }
                 }
             }
@@ -2906,7 +2906,7 @@ mod tests {
             new_service.generate_txt(),
         );
         let mut packet_buffer = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
-        packet_buffer.add_answer_at_time(Box::new(txt_with_cache_flush), 0);
+        packet_buffer.add_answer_at_time(txt_with_cache_flush, 0);
 
         for intf in intfs {
             let intf_sock = IntfSock {
