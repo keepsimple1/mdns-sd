@@ -565,7 +565,7 @@ impl ServiceDaemon {
                 for (hostname, ip_addr) in
                     zc.cache.refresh_due_hostname_resolutions(hostname).iter()
                 {
-                    zc.send_query(hostname, ip_address_to_type(*ip_addr));
+                    zc.send_query(hostname, ip_address_to_type(ip_addr));
                     query_count += 1;
                 }
             }
@@ -1444,7 +1444,7 @@ impl Zeroconf {
             out.add_answer_at_time(
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
-                    ip_address_to_type(address),
+                    ip_address_to_type(&address),
                     CLASS_IN | CLASS_CACHE_FLUSH,
                     info.get_host_ttl(),
                     address,
@@ -1511,7 +1511,7 @@ impl Zeroconf {
             out.add_answer_at_time(
                 Box::new(DnsAddress::new(
                     info.get_hostname(),
-                    ip_address_to_type(address),
+                    ip_address_to_type(&address),
                     CLASS_IN | CLASS_CACHE_FLUSH,
                     0,
                     address,
@@ -2020,7 +2020,7 @@ impl Zeroconf {
                                     &msg,
                                     Box::new(DnsAddress::new(
                                         &question.entry.name,
-                                        ip_address_to_type(address),
+                                        ip_address_to_type(&address),
                                         CLASS_IN | CLASS_CACHE_FLUSH,
                                         service.get_host_ttl(),
                                         address,
@@ -2077,7 +2077,7 @@ impl Zeroconf {
                     for address in intf_addrs {
                         out.add_additional_answer(Box::new(DnsAddress::new(
                             service.get_hostname(),
-                            ip_address_to_type(address),
+                            ip_address_to_type(&address),
                             CLASS_IN | CLASS_CACHE_FLUSH,
                             service.get_host_ttl(),
                             address,
