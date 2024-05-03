@@ -52,6 +52,14 @@ pub const FLAGS_AA: u16 = 0x0400; // mask for Authoritative answer bit
 
 pub type DnsRecordBox = Box<dyn DnsRecordExt + Send>;
 
+#[inline]
+pub const fn ip_address_to_type(address: &IpAddr) -> u16 {
+    match address {
+        IpAddr::V4(_) => TYPE_A,
+        IpAddr::V6(_) => TYPE_AAAA,
+    }
+}
+
 #[derive(Eq, PartialEq, Debug)]
 pub struct DnsEntry {
     pub(crate) name: String, // always lower case.
@@ -865,14 +873,9 @@ impl DnsOutgoing {
         )));
 
         for address in intf_addrs {
-            let t = match address {
-                IpAddr::V4(_) => TYPE_A,
-                IpAddr::V6(_) => TYPE_AAAA,
-            };
-
             self.add_additional_answer(Box::new(DnsAddress::new(
                 service.get_hostname(),
-                t,
+                ip_address_to_type(&address),
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 service.get_host_ttl(),
                 address,
