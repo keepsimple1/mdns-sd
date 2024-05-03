@@ -1509,7 +1509,7 @@ impl Zeroconf {
                     CLASS_IN | CLASS_CACHE_FLUSH,
                     0,
                     address,
-                )),
+                ),
                 0,
             );
         }
@@ -2775,7 +2775,7 @@ mod tests {
         );
 
         let mut packet_buffer = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
-        packet_buffer.add_additional_answer(Box::new(invalidate_ptr_packet));
+        packet_buffer.add_additional_answer(invalidate_ptr_packet);
 
         for intf in intfs {
             let intf_sock = IntfSock {
