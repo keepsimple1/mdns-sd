@@ -50,7 +50,7 @@ pub const FLAGS_QR_QUERY: u16 = 0x0000;
 pub const FLAGS_QR_RESPONSE: u16 = 0x8000;
 pub const FLAGS_AA: u16 = 0x0400; // mask for Authoritative answer bit
 
-pub type DnsRecordBox = Box<dyn DnsRecordExt>;
+pub type DnsRecordBox = Box<dyn DnsRecordExt + Send>;
 
 #[inline]
 pub const fn ip_address_to_type(address: &IpAddr) -> u16 {
@@ -779,9 +779,9 @@ impl DnsOutgoing {
     //    server/responder SHOULD include the following additional records:
 
     //    o  All address records (type "A" and "AAAA") named in the SRV rdata.
-    pub(crate) fn add_additional_answer(&mut self, answer: DnsRecordBox) {
+    pub(crate) fn add_additional_answer(&mut self, answer: impl DnsRecordExt + Send + 'static) {
         debug!("add_additional_answer: {:?}", &answer);
-        self.additionals.push(answer);
+        self.additionals.push(Box::new(answer));
     }
 
     /// Returns true if `answer` is added to the outgoing msg.
@@ -789,7 +789,7 @@ impl DnsOutgoing {
     pub(crate) fn add_answer(
         &mut self,
         msg: &DnsIncoming,
-        answer: impl DnsRecordExt + 'static,
+        answer: impl DnsRecordExt + Send + 'static,
     ) -> bool {
         debug!("Check for add_answer");
         if !answer.suppressed_by(msg) {
@@ -1411,7 +1411,7 @@ mod tests {
     fn test_rr_too_short_after_name() {
         let name = "test_rr_too_short._udp.local.";
         let mut response = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        response.add_additional_answer(Box::new(DnsSrv::new(
+        response.add_additional_answer(DnsSrv::new(
             name,
             CLASS_IN | CLASS_CACHE_FLUSH,
             1,
@@ -1419,7 +1419,7 @@ mod tests {
             1,
             9000,
             "instance1".to_string(),
-        )));
+        ));
         let data = response.to_packet_data();
         let mut data_too_short = data.clone();
 
