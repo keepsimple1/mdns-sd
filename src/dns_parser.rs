@@ -166,7 +166,7 @@ impl PartialEq for DnsRecord {
     }
 }
 
-pub trait DnsRecordExt: fmt::Debug + Send {
+pub trait DnsRecordExt: fmt::Debug {
     fn get_record(&self) -> &DnsRecord;
     fn get_record_mut(&mut self) -> &mut DnsRecord;
     fn write(&self, packet: &mut DnsOutPacket);
@@ -803,7 +803,7 @@ impl DnsOutgoing {
     /// If `now` is 0, do not check if the answer expires.
     pub(crate) fn add_answer_at_time(
         &mut self,
-        answer: impl DnsRecordExt + 'static,
+        answer: impl DnsRecordExt + Send + 'static,
         now: u64,
     ) -> bool {
         debug!("Check for add_answer_at_time");
