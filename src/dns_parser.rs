@@ -779,14 +779,18 @@ impl DnsOutgoing {
     //    server/responder SHOULD include the following additional records:
 
     //    o  All address records (type "A" and "AAAA") named in the SRV rdata.
-    pub(crate) fn add_additional_answer(&mut self, answer: DnsRecordBox) {
+    pub(crate) fn add_additional_answer(&mut self, answer: impl DnsRecordExt + Send + 'static) {
         debug!("add_additional_answer: {:?}", &answer);
-        self.additionals.push(answer);
+        self.additionals.push(Box::new(answer));
     }
 
     /// Returns true if `answer` is added to the outgoing msg.
     /// Returns false if `answer` was not added as it expired or suppressed by the incoming `msg`.
-    pub(crate) fn add_answer(&mut self, msg: &DnsIncoming, answer: DnsRecordBox) -> bool {
+    pub(crate) fn add_answer(
+        &mut self,
+        msg: &DnsIncoming,
+        answer: impl DnsRecordExt + Send + 'static,
+    ) -> bool {
         debug!("Check for add_answer");
         if !answer.suppressed_by(msg) {
             return self.add_answer_at_time(answer, 0);
@@ -797,11 +801,15 @@ impl DnsOutgoing {
     /// Returns true if `answer` is added to the outgoing msg.
     /// Returns false if the answer is expired `now` hence not added.
     /// If `now` is 0, do not check if the answer expires.
-    pub(crate) fn add_answer_at_time(&mut self, answer: DnsRecordBox, now: u64) -> bool {
+    pub(crate) fn add_answer_at_time(
+        &mut self,
+        answer: impl DnsRecordExt + Send + 'static,
+        now: u64,
+    ) -> bool {
         debug!("Check for add_answer_at_time");
         if now == 0 || !answer.get_record().is_expired(now) {
             debug!("add_answer push: {:?}", &answer);
-            self.answers.push((answer, now));
+            self.answers.push((Box::new(answer), now));
             return true;
         }
         false
@@ -827,13 +835,13 @@ impl DnsOutgoing {
 
         let ptr_added = self.add_answer(
             msg,
-            Box::new(DnsPointer::new(
+            DnsPointer::new(
                 service.get_type(),
                 TYPE_PTR,
                 CLASS_IN,
                 service.get_other_ttl(),
                 service.get_fullname().to_string(),
-            )),
+            ),
         );
 
         if !ptr_added {
@@ -843,18 +851,18 @@ impl DnsOutgoing {
 
         if let Some(sub) = service.get_subtype() {
             debug!("Adding subdomain {}", sub);
-            self.add_additional_answer(Box::new(DnsPointer::new(
+            self.add_additional_answer(DnsPointer::new(
                 sub,
                 TYPE_PTR,
                 CLASS_IN,
                 service.get_other_ttl(),
                 service.get_fullname().to_string(),
-            )));
+            ));
         }
 
         // Add recommended additional answers according to
         // https://tools.ietf.org/html/rfc6763#section-12.1.
-        self.add_additional_answer(Box::new(DnsSrv::new(
+        self.add_additional_answer(DnsSrv::new(
             service.get_fullname(),
             CLASS_IN | CLASS_CACHE_FLUSH,
             service.get_host_ttl(),
@@ -862,24 +870,24 @@ impl DnsOutgoing {
             service.get_weight(),
             service.get_port(),
             service.get_hostname().to_string(),
-        )));
+        ));
 
-        self.add_additional_answer(Box::new(DnsTxt::new(
+        self.add_additional_answer(DnsTxt::new(
             service.get_fullname(),
             TYPE_TXT,
             CLASS_IN | CLASS_CACHE_FLUSH,
             service.get_host_ttl(),
             service.generate_txt(),
-        )));
+        ));
 
         for address in intf_addrs {
-            self.add_additional_answer(Box::new(DnsAddress::new(
+            self.add_additional_answer(DnsAddress::new(
                 service.get_hostname(),
                 ip_address_to_type(&address),
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 service.get_host_ttl(),
                 address,
-            )));
+            ));
         }
     }
 
@@ -1403,7 +1411,7 @@ mod tests {
     fn test_rr_too_short_after_name() {
         let name = "test_rr_too_short._udp.local.";
         let mut response = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        response.add_additional_answer(Box::new(DnsSrv::new(
+        response.add_additional_answer(DnsSrv::new(
             name,
             CLASS_IN | CLASS_CACHE_FLUSH,
             1,
@@ -1411,7 +1419,7 @@ mod tests {
             1,
             9000,
             "instance1".to_string(),
-        )));
+        ));
         let data = response.to_packet_data();
         let mut data_too_short = data.clone();
 
