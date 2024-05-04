@@ -2325,8 +2325,7 @@ impl DnsCache {
             TYPE_PTR => self.ptr.entry(entry_name).or_default(),
             TYPE_SRV => self.srv.entry(entry_name).or_default(),
             TYPE_TXT => self.txt.entry(entry_name).or_default(),
-            TYPE_A => self.addr.entry(entry_name).or_default(),
-            TYPE_AAAA => self.addr.entry(entry_name).or_default(),
+            TYPE_A | TYPE_AAAA => self.addr.entry(entry_name).or_default(),
             TYPE_NSEC => self.nsec.entry(entry_name).or_default(),
             _ => return None,
         };
@@ -2372,8 +2371,7 @@ impl DnsCache {
             TYPE_PTR => self.ptr.get_mut(record_name),
             TYPE_SRV => self.srv.get_mut(record_name),
             TYPE_TXT => self.txt.get_mut(record_name),
-            TYPE_A => self.addr.get_mut(record_name),
-            TYPE_AAAA => self.addr.get_mut(record_name),
+            TYPE_A | TYPE_AAAA => self.addr.get_mut(record_name),
             _ => return found,
         };
         if let Some(record_vec) = record_vec {
