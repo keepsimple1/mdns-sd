@@ -2435,7 +2435,7 @@ impl DnsCache {
                                 debug!("expired SRV: {}: {}", ty_domain, srv.get_name());
                                 expired_instances
                                     .entry(ty_domain.to_string())
-                                    .or_insert(HashSet::new())
+                                    .or_insert_with(HashSet::new)
                                     .insert(srv.get_name().to_string());
                             }
                             !expired
@@ -2457,7 +2457,7 @@ impl DnsCache {
                         debug!("expired PTR: {}: {}", ty_domain, dns_ptr.alias);
                         expired_instances
                             .entry(ty_domain.to_string())
-                            .or_insert(HashSet::new())
+                            .or_insert_with(HashSet::new)
                             .insert(dns_ptr.alias.clone());
                     }
                 }
