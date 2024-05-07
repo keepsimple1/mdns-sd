@@ -27,6 +27,6 @@ jobs:
       - name: Build
         run: cargo build
       - name: Run clippy and fail if any warnings
-        run: cargo clippy -- -W clippy::all -D warnings
+        run: cargo clippy -- -D warnings
       - name: Run tests
         run: cargo test

@@ -302,6 +302,12 @@ impl ServiceInfo {
     pub(crate) fn set_subtype(&mut self, subtype: String) {
         self.sub_domain = Some(subtype);
     }
+
+    /// host_ttl is for SRV and address records
+    /// currently only used for testing.
+    pub(crate) fn _set_host_ttl(&mut self, ttl: u32) {
+        self.host_ttl = ttl;
+    }
 }
 
 /// Removes potentially duplicated ".local." at the end of "hostname".
