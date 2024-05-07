@@ -581,20 +581,16 @@ impl ServiceDaemon {
 
             // Notify hostname listeners about the expired records.
             let expired_addrs = zc.cache.evict_expired_addr(now);
-            expired_addrs.iter().for_each(|hostname| {
+            for (hostname, addrs) in expired_addrs {
                 call_hostname_resolution_listener(
                     &zc.hostname_resolvers,
-                    hostname,
-                    HostnameResolutionEvent::AddressesRemoved(
-                        hostname.to_string(),
-                        zc.cache.get_addresses_for_host(hostname),
-                    ),
+                    &hostname,
+                    HostnameResolutionEvent::AddressesRemoved(hostname.clone(), addrs),
                 );
-
-                let instances = zc.cache.get_instances_on_host(hostname);
+                let instances = zc.cache.get_instances_on_host(&hostname);
                 let instance_set: HashSet<String> = instances.into_iter().collect();
                 zc.resolve_updated_instances(instance_set);
-            });
+            }
 
             // check IP changes.
             if now > next_ip_check {
@@ -2422,15 +2418,20 @@ impl DnsCache {
     }
 
     /// Iterates all ADDR records and remove ones that expired.
-    /// Returns the record names expired and removed from the cache.
-    fn evict_expired_addr(&mut self, now: u64) -> Vec<String> {
-        let mut removed = Vec::new();
+    /// Returns the expired ones in a map of names and addresses.
+    fn evict_expired_addr(&mut self, now: u64) -> HashMap<String, HashSet<IpAddr>> {
+        let mut removed = HashMap::new();
 
         for records in self.addr.values_mut() {
             records.retain(|addr| {
                 let expired = addr.get_record().is_expired(now);
                 if expired {
-                    removed.push(addr.get_name().to_string());
+                    if let Some(addr_record) = addr.any().downcast_ref::<DnsAddress>() {
+                        removed
+                            .entry(addr.get_name().to_string())
+                            .or_insert_with(HashSet::new)
+                            .insert(addr_record.address);
+                    }
                 }
                 !expired
             })
@@ -2731,8 +2732,8 @@ fn valid_instance_name(name: &str) -> bool {
 mod tests {
     use super::{
         broadcast_dns_on_intf, check_service_name_length, my_ip_interfaces, new_socket_bind,
-        valid_instance_name, IntfSock, ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4,
-        MDNS_PORT,
+        valid_instance_name, HostnameResolutionEvent, IntfSock, ServiceDaemon, ServiceEvent,
+        ServiceInfo, GROUP_ADDR_V4, MDNS_PORT,
     };
     use crate::{
         dns_parser::{DnsOutgoing, DnsPointer, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE, TYPE_PTR},
@@ -3162,5 +3163,80 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    #[test]
+    fn test_hostname_resolution_address_removed() {
+        // Create a mDNS server
+        let server = ServiceDaemon::new().expect("Failed to create server");
+        let hostname = "addr_remove_host._tcp.local.";
+        let service_ip_addr = my_ip_interfaces()
+            .iter()
+            .find(|iface| iface.ip().is_ipv4())
+            .map(|iface| iface.ip())
+            .unwrap();
+
+        let mut my_service = ServiceInfo::new(
+            "_host_res_test._tcp.local.",
+            "my_instance",
+            hostname,
+            &service_ip_addr,
+            1234,
+            None,
+        )
+        .expect("invalid service info");
+
+        // Set a short TTL for addresses for testing.
+        let addr_ttl = 2;
+        my_service._set_host_ttl(addr_ttl); // Expire soon
+
+        server.register(my_service).unwrap();
+
+        // Create a mDNS client for resolving the hostname.
+        let client = ServiceDaemon::new().expect("Failed to create client");
+        let event_receiver = client.resolve_hostname(hostname, None).unwrap();
+        let resolved = loop {
+            match event_receiver.recv() {
+                Ok(HostnameResolutionEvent::AddressesFound(found_hostname, addresses)) => {
+                    assert!(found_hostname == hostname);
+                    assert!(addresses.contains(&service_ip_addr));
+                    println!("address found: {:?}", &addresses);
+                    break true;
+                }
+                Ok(HostnameResolutionEvent::SearchStopped(_)) => break false,
+                Ok(_event) => {}
+                Err(_) => break false,
+            }
+        };
+
+        assert!(resolved);
+
+        // Shutdown the server so no more responses / refreshes for addresses.
+        server.shutdown().unwrap();
+
+        // Wait till hostname address record expires.
+        let timeout = Duration::from_secs(addr_ttl as u64);
+        let removed = loop {
+            match event_receiver.recv_timeout(timeout) {
+                Ok(HostnameResolutionEvent::AddressesRemoved(removed_host, addresses)) => {
+                    assert!(removed_host == hostname);
+                    assert!(addresses.contains(&service_ip_addr));
+
+                    println!(
+                        "address removed: hostname: {} addresses: {:?}",
+                        &hostname, &addresses
+                    );
+                    break true;
+                }
+                Ok(_event) => {}
+                Err(_) => {
+                    break false;
+                }
+            }
+        };
+
+        assert!(removed);
+
+        client.shutdown().unwrap();
     }
 }
