@@ -34,6 +34,34 @@ fn main() {
     let receiver = mdns.browse(&service_type).expect("Failed to browse");
 
     let now = std::time::Instant::now();
+    let mut ctr = 0;
+    while let Ok(event) = receiver.recv() {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                println!(
+                    "At {:?}: Resolved a new service: {}\n host: {}\n port: {}",
+                    now.elapsed(),
+                    info.get_fullname(),
+                    info.get_hostname(),
+                    info.get_port(),
+                );
+                for addr in info.get_addresses().iter() {
+                    println!(" Address: {}", addr);
+                }
+                for prop in info.get_properties().iter() {
+                    println!(" Property: {}", prop);
+                }
+            }
+            other_event => {
+                println!("At {:?} : {:?}", now.elapsed(), &other_event);
+            }
+        }
+        if ctr > 5 {
+            break;
+        }
+        ctr += 1;
+    }
+    let receiver = mdns.browse(&service_type).expect("Failed to browse");
     while let Ok(event) = receiver.recv() {
         match event {
             ServiceEvent::ServiceResolved(info) => {
