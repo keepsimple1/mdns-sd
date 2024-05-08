@@ -517,7 +517,7 @@ impl ServiceDaemon {
                 .filter(|(_, (_, timeout))| timeout.map(|t| now >= t).unwrap_or(false))
                 .map(|(hostname, _)| hostname)
             {
-                log::debug!("hostname resolver timeout for {}", &hostname);
+                debug!("hostname resolver timeout for {}", &hostname);
                 call_hostname_resolution_listener(
                     &zc.hostname_resolvers,
                     &hostname,

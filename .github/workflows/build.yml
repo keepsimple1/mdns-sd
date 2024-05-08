@@ -24,6 +24,8 @@ jobs:
           components: rustfmt, clippy
       - name: Run rustfmt and fail if any warnings
         run: cargo fmt -- --check
+      - name: Build with feature configuration
+        run: cargo build --no-default-features --features async
       - name: Build
         run: cargo build
       - name: Run clippy and fail if any warnings
