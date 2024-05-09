@@ -589,7 +589,11 @@ impl ServiceDaemon {
                         hostname.to_string(),
                         zc.cache.get_addresses_for_host(hostname),
                     ),
-                )
+                );
+
+                let instances = zc.cache.get_instances_on_host(hostname);
+                let instance_set: HashSet<String> = instances.into_iter().collect();
+                zc.resolve_updated_instances(instance_set);
             });
 
             // check IP changes.
@@ -1728,6 +1732,7 @@ impl Zeroconf {
             name.strip_suffix('.').unwrap_or(name).to_string()
         };
 
+        let now = current_time_millis();
         let mut info = ServiceInfo::new(ty_domain, &my_name, "", (), 0, None)?;
 
         // Be sure setting `subtype` if available even when querying for the parent domain.
@@ -1764,7 +1769,11 @@ impl Zeroconf {
         if let Some(records) = self.cache.addr.get(info.get_hostname()) {
             for answer in records.iter() {
                 if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {
-                    info.insert_ipaddr(dns_a.address);
+                    if dns_a.get_record().is_expired(now) {
+                        debug!("Addr expired: {}", &dns_a.address);
+                    } else {
+                        info.insert_ipaddr(dns_a.address);
+                    }
                 }
             }
         }
@@ -1895,12 +1904,16 @@ impl Zeroconf {
             }
         }
 
-        // Resolve the updated (including new) instances.
-        //
-        // Note: it is possible that more than 1 PTR pointing to the same
-        // instance. For example, a regular service type PTR and a sub-type
-        // service type PTR can both point to the same service instance.
-        // This loop automatically handles the sub-type PTRs.
+        self.resolve_updated_instances(updated_instances);
+    }
+
+    /// Resolve the updated (including new) instances.
+    ///
+    /// Note: it is possible that more than 1 PTR pointing to the same
+    /// instance. For example, a regular service type PTR and a sub-type
+    /// service type PTR can both point to the same service instance.
+    /// This loop automatically handles the sub-type PTRs.
+    fn resolve_updated_instances(&mut self, updated_instances: HashSet<String>) {
         let mut resolved: HashSet<String> = HashSet::new();
         let mut unresolved: HashSet<String> = HashSet::new();
 
@@ -2340,6 +2353,30 @@ impl DnsCache {
             _ => return None,
         };
 
+        if incoming.get_cache_flush() {
+            let now = current_time_millis();
+            let class = incoming.get_class();
+            let rtype = incoming.get_type();
+
+            record_vec.iter_mut().for_each(|r| {
+                // When cache flush is asked, we set expire date to 1 second in the future if:
+                // - The record has the same rclass
+                // - The record was created more than 1 second ago.
+                // - The record expire is more than 1 second away.
+                // Ref: RFC 6762 Section 10.2
+                //
+                // Note: when the updated record actually expires, it will trigger events properly.
+                if class == r.get_class()
+                    && rtype == r.get_type()
+                    && now > r.get_created() + 1000
+                    && r.get_expire() > now + 1000
+                {
+                    debug!("FLUSH one record: {:?}", &r);
+                    r.set_expire(now + 1000);
+                }
+            });
+        }
+
         // update TTL for existing record or create a new record.
         let (idx, updated) = match record_vec
             .iter_mut()
@@ -2347,28 +2384,17 @@ impl DnsCache {
             .find(|(_idx, r)| r.matches(incoming.as_ref()))
         {
             Some((i, r)) => {
+                // It is possible that this record was just updated in cache_flush
+                // processing. That's okay. We can still reset here.
                 r.reset_ttl(incoming.as_ref());
                 (i, false)
             }
             None => {
-                // Only apply CACHE_FLUSH bit if the record data has changed, i.e. a new record.
-                if incoming.get_cache_flush() {
-                    // Mark all existing records of this type as expired, and prepend the new record.
-                    let now = current_time_millis();
-
-                    record_vec.iter_mut().for_each(|r| {
-                        // When cache flush is asked, we set expire date to 1 second in the future
-                        // only if created more than 1 second ago.
-                        // Ref: RFC 6762 Section 10.2
-                        if incoming.get_class() == r.get_class() && now > r.get_created() + 1000 {
-                            r.set_expire(now + 1000);
-                        }
-                    });
-                }
                 record_vec.insert(0, incoming); // A new record.
                 (0, true)
             }
         };
+
         Some((record_vec.get(idx).unwrap(), updated))
     }
 
@@ -2709,14 +2735,14 @@ mod tests {
         MDNS_PORT,
     };
     use crate::{
-        dns_parser::{
-            DnsOutgoing, DnsPointer, DnsTxt, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA,
-            FLAGS_QR_RESPONSE, TYPE_PTR, TYPE_TXT,
-        },
+        dns_parser::{DnsOutgoing, DnsPointer, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE, TYPE_PTR},
         service_daemon::check_hostname,
-        service_info::IntoTxtProperties,
     };
-    use std::{collections::HashMap, net::SocketAddr, net::SocketAddrV4, time::Duration};
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+        thread,
+        time::Duration,
+    };
     use test_log::test;
 
     #[test]
@@ -2881,29 +2907,34 @@ mod tests {
     #[test]
     fn service_with_cache_flush_record() {
         // Create a daemon
-        let d = ServiceDaemon::new().expect("Failed to create daemon");
-
+        let server = ServiceDaemon::new().expect("Failed to create server");
         let service = "_test_cache_ptr._udp.local.";
         let host_name = "my_host_tmp_cache_flush.local.";
-        let intfs: Vec<_> = my_ip_interfaces();
-        let intf_ips: Vec<_> = intfs.iter().map(|intf| intf.ip()).collect();
+
+        // use a single IPv4 addr
+        let mut service_ip_addr = my_ip_interfaces()
+            .iter()
+            .find(|iface| iface.ip().is_ipv4())
+            .map(|iface| iface.ip())
+            .unwrap();
+
         let port = 5201;
         let properties = vec![("key", "value")];
-        let my_service = ServiceInfo::new(
+        let mut my_service = ServiceInfo::new(
             service,
             "my_instance",
             host_name,
-            &intf_ips[..],
+            &service_ip_addr,
             port,
             &properties[..],
         )
-        .expect("invalid service info")
-        .enable_addr_auto();
-        let result = d.register(my_service.clone());
+        .expect("invalid service info");
+        let result = server.register(my_service.clone());
         assert!(result.is_ok());
 
         // Browse for a service
-        let browse_chan = d.browse(service).unwrap();
+        let client = ServiceDaemon::new().expect("Failed to create client");
+        let browse_chan = client.browse(service).unwrap();
         let timeout = Duration::from_secs(2);
         let mut resolved = false;
 
@@ -2923,80 +2954,111 @@ mod tests {
 
         assert!(resolved);
 
-        println!("Stopping browse of {}", service);
-        // Pause browsing so restarting will cause a new immediate query.
-        // Unregistering will not work here, it will invalidate all the records.
-        d.stop_browse(service).unwrap();
+        // Stop browsing for a moment.
+        client.stop_browse(service).unwrap();
+        thread::sleep(Duration::from_secs(1));
 
-        // Ensure the search is stopped.
-        // Reduces the chance of receiving an answer adding the ptr back to the
-        // cache causing the later browse to return directly from the cache.
-        // (which invalidates what this test is trying to test for.)
-        let mut stopped = false;
+        // Modify the IPv4 address for the service.
+        if let IpAddr::V4(ipv4) = service_ip_addr {
+            let bytes = ipv4.octets();
+            service_ip_addr = IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 1));
+        } else {
+            assert!(false);
+        }
+
+        // Re-register the service to update the IPv4 addr.
+        my_service = ServiceInfo::new(
+            service,
+            "my_instance",
+            host_name,
+            &service_ip_addr,
+            port,
+            &properties[..],
+        )
+        .unwrap();
+        let result = server.register(my_service.clone());
+        assert!(result.is_ok());
+
+        println!("Re-registered with updated IPv4 addr");
+
+        // Wait for the new registration sent out and cache flushed.
+        thread::sleep(Duration::from_secs(2));
+
+        // Browse for the updated IPv4 address.
+        let browse_chan = client.browse(service).unwrap();
+        resolved = false;
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
             match event {
-                ServiceEvent::SearchStopped(_) => {
-                    stopped = true;
-                    println!("Stopped browsing service");
-                    break;
+                ServiceEvent::ServiceResolved(info) => {
+                    // Verify the address flushed and updated.
+                    let new_addrs = info.get_addresses();
+                    if new_addrs.len() == 1 {
+                        let first_addr = new_addrs.iter().next().unwrap();
+                        assert_eq!(first_addr, &service_ip_addr);
+                        resolved = true;
+                        break;
+                    }
                 }
-                // Other `ServiceResolved` messages may be received
-                // here as they come from different interfaces.
-                // That's fine for this test.
                 e => {
                     println!("Received event {:?}", e);
                 }
             }
         }
 
-        assert!(stopped);
+        assert!(resolved);
+        server.shutdown().unwrap();
+        client.shutdown().unwrap();
+    }
 
-        // Change the TXT properties with the cache flush bit set
-        // - use a new Service for this, which holds the calls for converting the properties
-        let new_properties: HashMap<String, String> =
-            HashMap::from([("cache".to_string(), "flush".to_string())]);
-        let new_service = ServiceInfo::new(
+    #[test]
+    fn test_cache_flush_remove_one_addr() {
+        // Create a daemon
+        let server = ServiceDaemon::new().expect("Failed to create server");
+        let service = "_remove_one_addr._udp.local.";
+        let host_name = "remove_one_addr_host.local.";
+
+        // Get a single IPv4 address
+        let ip_addr1 = my_ip_interfaces()
+            .iter()
+            .find(|iface| iface.ip().is_ipv4())
+            .map(|iface| iface.ip())
+            .unwrap();
+
+        // Make 2nd IPv4 address for the service.
+        let ip_addr2 = match ip_addr1 {
+            IpAddr::V4(ipv4) => {
+                let bytes = ipv4.octets();
+                IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 1))
+            }
+            _ => {
+                panic!()
+            }
+        };
+
+        let port = 5201;
+        let mut my_service = ServiceInfo::new(
             service,
-            "my_instance_2",
+            "my_instance",
             host_name,
-            &intf_ips[..],
+            &[ip_addr1, ip_addr2][..],
             port,
-            new_properties.clone(),
+            None,
         )
-        .unwrap();
-        // Announce the new service with cache flush
-        let txt_with_cache_flush = DnsTxt::new(
-            my_service.get_fullname(),
-            TYPE_TXT,
-            CLASS_IN | CLASS_CACHE_FLUSH,
-            my_service.get_other_ttl(),
-            new_service.generate_txt(),
-        );
-        let mut packet_buffer = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
-        packet_buffer.add_answer_at_time(txt_with_cache_flush, 0);
+        .expect("invalid service info");
+        let result = server.register(my_service.clone());
+        assert!(result.is_ok());
 
-        for intf in intfs {
-            let intf_sock = IntfSock {
-                intf: intf.clone(),
-                sock: new_socket_bind(&intf).unwrap(),
-            };
-            broadcast_dns_on_intf(&packet_buffer, &intf_sock);
-        }
+        // Browse for a service
+        let client = ServiceDaemon::new().expect("Failed to create client");
+        let browse_chan = client.browse(service).unwrap();
+        let timeout = Duration::from_secs(2);
+        let mut resolved = false;
 
-        println!("Sent txt record with cache flush as service {}", service);
-
-        // Restart the browse to force the sender to re-send the announcements.
-        let browse_chan = d.browse(service).unwrap();
-
-        resolved = false;
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
             match event {
                 ServiceEvent::ServiceResolved(info) => {
                     resolved = true;
                     println!("Resolved a service of {}", &info.get_fullname());
-                    // Ensure that only the new property remains after cache flush, and it's the
-                    // newly defined txt record from `new_service`
-                    assert_eq!(new_properties.into_txt_properties(), *info.get_properties());
                     break;
                 }
                 e => {
@@ -3006,7 +3068,46 @@ mod tests {
         }
 
         assert!(resolved);
-        d.shutdown().unwrap();
+
+        // Stop browsing for a moment.
+        client.stop_browse(service).unwrap();
+        thread::sleep(Duration::from_secs(1));
+
+        // Re-register the service to have only 1 addr.
+        my_service =
+            ServiceInfo::new(service, "my_instance", host_name, &ip_addr1, port, None).unwrap();
+        let result = server.register(my_service.clone());
+        assert!(result.is_ok());
+
+        println!("Re-registered with updated IPv4 addr");
+
+        // Wait for the new registration sent out and cache flushed.
+        thread::sleep(Duration::from_secs(2));
+
+        // Browse for the updated IPv4 address.
+        let browse_chan = client.browse(service).unwrap();
+        resolved = false;
+        while let Ok(event) = browse_chan.recv_timeout(timeout) {
+            match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    // Verify the address flushed and updated.
+                    let new_addrs = info.get_addresses();
+                    if new_addrs.len() == 1 {
+                        let first_addr = new_addrs.iter().next().unwrap();
+                        assert_eq!(first_addr, &ip_addr1);
+                        resolved = true;
+                        break;
+                    }
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            }
+        }
+
+        assert!(resolved);
+        server.shutdown().unwrap();
+        client.shutdown().unwrap();
     }
 
     #[test]

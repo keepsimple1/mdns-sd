@@ -5,7 +5,6 @@ use mdns_sd::{
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
 use test_log::test;
@@ -32,7 +31,7 @@ fn integration_success() {
         println!("{}", &item);
     }
 
-    let host_name = "my_host.local.";
+    let host_name = "integration_host.local.";
     let port = 5200;
     let mut properties = HashMap::new();
     properties.insert("property_1".to_string(), "test".to_string());
@@ -53,117 +52,111 @@ fn integration_success() {
         .expect("Failed to register our service");
 
     // Browse for a service
-    let resolved_ips: Arc<Mutex<HashSet<IpAddr>>> = Arc::new(Mutex::new(HashSet::new()));
-    let resolved_ips_clone = Arc::clone(&resolved_ips);
-    let remove_count = Arc::new(Mutex::new(0));
-    let remove_count_clone = remove_count.clone();
-    let stopped_count = Arc::new(Mutex::new(0));
-    let stopped_count_clone = stopped_count.clone();
-    let addr_count = Arc::new(Mutex::new(0));
-    let addr_count_clone = addr_count.clone();
+    let mut resolved_ips: HashSet<IpAddr> = HashSet::new();
+    let mut addr_count = 0;
 
     let browse_chan = d.browse(ty_domain).unwrap();
-    std::thread::spawn(move || {
-        while let Ok(event) = browse_chan.recv() {
-            match event {
-                ServiceEvent::SearchStarted(ty_domain) => {
-                    println!("Search started for {}", &ty_domain);
-                }
-                ServiceEvent::ServiceFound(_ty_domain, fullname) => {
-                    println!("Found a new service: {}", &fullname);
-                }
-                ServiceEvent::ServiceResolved(info) => {
-                    let addrs = info.get_addresses();
-                    println!(
-                        "Resolved a new service: {} with {} addr(s)",
-                        info.get_fullname(),
-                        addrs.len()
-                    );
-                    for a in addrs.iter() {
-                        println!("{}", a);
-                    }
-                    if info.get_fullname().contains(&instance_name) {
-                        let mut ip_map = resolved_ips_clone.lock().unwrap();
-                        ip_map.extend(addrs);
-                    }
-                    let hostname = info.get_hostname();
-                    assert_eq!(hostname, host_name);
-
-                    let addr_set = info.get_addresses();
-                    let mut count = addr_count_clone.lock().unwrap();
-                    *count = addr_set.len();
-
-                    let service_port = info.get_port();
-                    assert_eq!(service_port, port);
-
-                    let properties = info.get_properties();
-                    assert!(properties.get("property_1").is_some());
-                    assert!(properties.get("property_2").is_some());
-                    assert_eq!(properties.len(), 3);
-                    assert!(info.get_property("property_1").is_some());
-                    assert!(info.get_property("property_2").is_some());
-                    assert_eq!(info.get_property_val_str("property_1"), Some("test"));
-                    assert_eq!(info.get_property_val_str("property_2"), Some("1"));
-                    assert_eq!(
-                        info.get_property_val("property_1").unwrap(),
-                        Some("test".as_bytes())
-                    );
-
-                    let host_ttl = info.get_host_ttl();
-                    assert_eq!(host_ttl, 120); // default value.
-
-                    let other_ttl = info.get_other_ttl();
-                    assert_eq!(other_ttl, 4500); // default value.
-                }
-                ServiceEvent::ServiceRemoved(_ty_domain, fullname) => {
-                    println!("Removed service: {}", &fullname);
-                    if fullname.contains(&instance_name) {
-                        let mut num = remove_count_clone.lock().unwrap();
-                        *num += 1;
-                    }
-                }
-                ServiceEvent::SearchStopped(ty) => {
-                    println!("Search stopped for {}", &ty);
-                    let mut num = stopped_count_clone.lock().unwrap();
-                    *num += 1;
-                    break;
-                }
+    let timeout = Duration::from_secs(2);
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::SearchStarted(ty_domain) => {
+                println!("Search started for {}", &ty_domain);
             }
-        }
-    });
+            ServiceEvent::ServiceFound(_ty_domain, fullname) => {
+                println!("Found a new service: {}", &fullname);
+            }
+            ServiceEvent::ServiceResolved(info) => {
+                let addrs = info.get_addresses();
+                println!(
+                    "Resolved a new service: {} with {} addr(s)",
+                    info.get_fullname(),
+                    addrs.len()
+                );
+                for a in addrs.iter() {
+                    println!("{}", a);
+                }
+                if info.get_fullname().contains(&instance_name) {
+                    resolved_ips.extend(addrs);
+                }
+                let hostname = info.get_hostname();
+                assert_eq!(hostname, host_name);
 
-    // Wait a bit to let the daemon process commands in the channel.
-    sleep(Duration::from_secs(2));
+                let addr_set = info.get_addresses();
+                addr_count = addr_set.len();
+
+                let service_port = info.get_port();
+                assert_eq!(service_port, port);
+
+                let properties = info.get_properties();
+                assert!(properties.get("property_1").is_some());
+                assert!(properties.get("property_2").is_some());
+                assert_eq!(properties.len(), 3);
+                assert!(info.get_property("property_1").is_some());
+                assert!(info.get_property("property_2").is_some());
+                assert_eq!(info.get_property_val_str("property_1"), Some("test"));
+                assert_eq!(info.get_property_val_str("property_2"), Some("1"));
+                assert_eq!(
+                    info.get_property_val("property_1").unwrap(),
+                    Some("test".as_bytes())
+                );
+
+                let host_ttl = info.get_host_ttl();
+                assert_eq!(host_ttl, 120); // default value.
+
+                let other_ttl = info.get_other_ttl();
+                assert_eq!(other_ttl, 4500); // default value.
+            }
+            _ => {}
+        }
+    }
+
+    // All addrs should have been resolved.
+    assert_eq!(addr_count, my_addrs_count);
+
+    // IP's can get resolved more than once if fx a cache-flush is asked from the sender of the
+    // MDNS records, so we look at unique IP addresses to see if they match the number of the
+    // network interfaces.
+    assert_eq!(resolved_ips.len(), my_addrs_count);
+    assert!(resolved_ips.len() >= 1);
 
     // Unregister the service
     let receiver = d.unregister(&fullname).unwrap();
     let response = receiver.recv().unwrap();
     assert!(matches!(response, UnregisterStatus::OK));
 
-    sleep(Duration::from_secs(2));
+    let mut remove_count = 0;
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceRemoved(_ty_domain, fullname) => {
+                println!("Removed service: {}", &fullname);
+                if fullname.contains(&instance_name) {
+                    remove_count += 1;
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
 
-    // All addrs should have been resolved.
-    let count = addr_count.lock().unwrap();
-    assert_eq!(*count, my_addrs_count);
-
-    // IP's can get resolved more than once if fx a cache-flush is asked from the sender of the
-    // MDNS records, so we look at unique IP addresses to see if they match the number of the
-    // network interfaces.
-    let unique_ip_count = resolved_ips.lock().unwrap();
-    assert_eq!(unique_ip_count.len(), my_addrs_count);
-    assert!(unique_ip_count.len() >= 1);
-    assert!(unique_ip_count.len() <= my_addrs_count);
-
-    let count = remove_count.lock().unwrap();
-    assert_eq!(*count, 1);
+    assert_eq!(remove_count, 1);
 
     // Stop browsing the service.
     d.stop_browse(ty_domain).expect("Failed to stop browsing");
 
-    sleep(Duration::from_secs(1));
+    let mut stopped_count = 0;
 
-    let count = stopped_count.lock().unwrap();
-    assert_eq!(*count, 1);
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::SearchStopped(ty) => {
+                println!("Search stopped for {}", &ty);
+                stopped_count += 1;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(stopped_count, 1);
 
     // Verify metrics.
     let metrics_receiver = d.get_metrics().unwrap();
@@ -459,7 +452,7 @@ fn service_with_named_interface_only() {
 
     // Register a service with a name len > 15.
     let my_ty_domain = "_named_intf_only._udp.local.";
-    let host_name = "my_host.local.";
+    let host_name = "named_intf_host.local.";
     let host_ipv4 = "";
     let port = 5202;
     let my_service = ServiceInfo::new(
@@ -612,7 +605,7 @@ fn service_with_invalid_addr_v4() {
         .filter(|iface| iface.addr.ip().is_ipv4())
         .collect();
     let alter_ip = ipv4_alter_net(&if_addrs);
-    let host_name = "my_host.local.";
+    let host_name = "invalid_ipv4_host.local.";
     let port = 5201;
     let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, alter_ip, port, None)
         .expect("valid service info");

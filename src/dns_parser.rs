@@ -236,6 +236,10 @@ pub trait DnsRecordExt: fmt::Debug {
         self.get_record().get_created()
     }
 
+    fn get_expire(&self) -> u64 {
+        self.get_record().get_expire_time()
+    }
+
     fn set_expire(&mut self, expire_at: u64) {
         self.get_record_mut().set_expire(expire_at);
     }
