@@ -607,71 +607,13 @@ impl ServiceDaemon {
     fn exec_command(zc: &mut Zeroconf, command: Command, repeating: bool) {
         match command {
             Command::Browse(ty, next_delay, listener) => {
-                let addr_list: Vec<_> = zc.intf_socks.keys().collect();
-                if let Err(e) = listener.send(ServiceEvent::SearchStarted(format!(
-                    "{} on addrs {:?}",
-                    &ty, &addr_list
-                ))) {
-                    error!(
-                        "Failed to send SearchStarted({})(repeating:{}): {}",
-                        &ty, repeating, e
-                    );
-                    return;
-                }
-                if !repeating {
-                    zc.add_service_querier(ty.clone(), listener.clone());
-                    // if we already have the records in our cache, just send them
-                    zc.query_cache_for_service(&ty, listener.clone());
-                }
-
-                zc.send_query(&ty, TYPE_PTR);
-                zc.increase_counter(Counter::Browse, 1);
-
-                let next_time = current_time_millis() + (next_delay * 1000) as u64;
-                let max_delay = 60 * 60;
-                let delay = cmp::min(next_delay * 2, max_delay);
-                zc.add_retransmission(next_time, Command::Browse(ty, delay, listener));
+                zc.exec_command_browse(repeating, ty, next_delay, listener);
             }
 
             Command::ResolveHostname(hostname, next_delay, listener, timeout) => {
-                let addr_list: Vec<_> = zc.intf_socks.keys().collect();
-                if let Err(e) = listener.send(HostnameResolutionEvent::SearchStarted(format!(
-                    "{} on addrs {:?}",
-                    &hostname, &addr_list
-                ))) {
-                    error!(
-                        "Failed to send ResolveStarted({})(repeating:{}): {}",
-                        &hostname, repeating, e
-                    );
-                    return;
-                }
-                if !repeating {
-                    zc.add_hostname_resolver(hostname.to_owned(), listener.clone(), timeout);
-                    // if we already have the records in our cache, just send them
-                    zc.query_cache_for_hostname(&hostname, listener.clone());
-                }
-
-                zc.send_query_vec(&[(&hostname, TYPE_A), (&hostname, TYPE_AAAA)]);
-                zc.increase_counter(Counter::ResolveHostname, 1);
-
-                let now = current_time_millis();
-                let next_time = now + u64::from(next_delay) * 1000;
-                let max_delay = 60 * 60;
-                let delay = cmp::min(next_delay * 2, max_delay);
-
-                // Only add retransmission if it does not exceed the hostname resolver timeout, if any.
-                if zc
-                    .hostname_resolvers
-                    .get(&hostname)
-                    .and_then(|(_sender, timeout)| *timeout)
-                    .map(|timeout| next_time < timeout)
-                    .unwrap_or(true)
-                {
-                    zc.add_retransmission(
-                        next_time,
-                        Command::ResolveHostname(hostname, delay, listener, None),
-                    );
-                }
+                zc.exec_command_resolve_hostname(
+                    repeating, hostname, next_delay, listener, timeout,
+                );
             }
 
             Command::Register(service_info) => {
@@ -682,125 +624,25 @@ impl ServiceDaemon {
 
             Command::RegisterResend(fullname) => {
                 debug!("announce service: {}", &fullname);
-                match zc.my_services.get(&fullname) {
-                    Some(info) => {
-                        let outgoing_addrs = zc.send_unsolicited_response(info);
-                        if !outgoing_addrs.is_empty() {
-                            zc.notify_monitors(DaemonEvent::Announce(
-                                fullname,
-                                format!("{:?}", &outgoing_addrs),
-                            ));
-                        }
-                        zc.increase_counter(Counter::RegisterResend, 1);
-                    }
-                    None => debug!("announce: cannot find such service {}", &fullname),
-                }
+                zc.exec_command_register_resend(fullname);
             }
 
             Command::Unregister(fullname, resp_s) => {
                 debug!("unregister service {} repeat {}", &fullname, &repeating);
-                let response = match zc.my_services.remove_entry(&fullname) {
-                    None => {
-                        error!("unregister: cannot find such service {}", &fullname);
-                        UnregisterStatus::NotFound
-                    }
-                    Some((_k, info)) => {
-                        let mut timers = Vec::new();
-                        for (ip, intf_sock) in zc.intf_socks.iter() {
-                            let packet = zc.unregister_service(&info, intf_sock);
-                            // repeat for one time just in case some peers miss the message
-                            if !repeating && !packet.is_empty() {
-                                let next_time = current_time_millis() + 120;
-                                zc.retransmissions.push(ReRun {
-                                    next_time,
-                                    command: Command::UnregisterResend(packet, *ip),
-                                });
-                                timers.push(next_time);
-                            }
-                        }
-
-                        for t in timers {
-                            zc.add_timer(t);
-                        }
-
-                        zc.increase_counter(Counter::Unregister, 1);
-                        UnregisterStatus::OK
-                    }
-                };
-                if let Err(e) = resp_s.send(response) {
-                    error!("unregister: failed to send response: {}", e);
-                }
+                zc.exec_command_unregister(repeating, fullname, resp_s);
             }
 
             Command::UnregisterResend(packet, ip) => {
-                if let Some(intf_sock) = zc.intf_socks.get(&ip) {
-                    debug!("UnregisterResend from {}", &ip);
-                    broadcast_on_intf(&packet[..], intf_sock);
-                    zc.increase_counter(Counter::UnregisterResend, 1);
-                }
+                zc.exec_command_unregister_resend(packet, ip);
             }
 
-            Command::StopBrowse(ty_domain) => match zc.service_queriers.remove_entry(&ty_domain) {
-                None => error!("StopBrowse: cannot find querier for {}", &ty_domain),
-                Some((ty, sender)) => {
-                    // Remove pending browse commands in the reruns.
-                    debug!("StopBrowse: removed queryer for {}", &ty);
-                    let mut i = 0;
-                    while i < zc.retransmissions.len() {
-                        if let Command::Browse(t, _, _) = &zc.retransmissions[i].command {
-                            if t == &ty {
-                                zc.retransmissions.remove(i);
-                                debug!("StopBrowse: removed retransmission for {}", &ty);
-                                continue;
-                            }
-                        }
-                        i += 1;
-                    }
-
-                    // Notify the client.
-                    match sender.send(ServiceEvent::SearchStopped(ty_domain)) {
-                        Ok(()) => debug!("Sent SearchStopped to the listener"),
-                        Err(e) => warn!("Failed to send SearchStopped: {}", e),
-                    }
-                }
-            },
+            Command::StopBrowse(ty_domain) => zc.exec_command_stop_browse(ty_domain),
 
             Command::StopResolveHostname(hostname) => {
-                if let Some((host, (sender, _timeout))) =
-                    zc.hostname_resolvers.remove_entry(&hostname)
-                {
-                    // Remove pending resolve commands in the reruns.
-                    debug!("StopResolve: removed queryer for {}", &host);
-                    let mut i = 0;
-                    while i < zc.retransmissions.len() {
-                        if let Command::Resolve(t, _) = &zc.retransmissions[i].command {
-                            if t == &host {
-                                zc.retransmissions.remove(i);
-                                debug!("StopResolve: removed retransmission for {}", &host);
-                                continue;
-                            }
-                        }
-                        i += 1;
-                    }
-
-                    // Notify the client.
-                    match sender.send(HostnameResolutionEvent::SearchStopped(hostname)) {
-                        Ok(()) => debug!("Sent SearchStopped to the listener"),
-                        Err(e) => warn!("Failed to send SearchStopped: {}", e),
-                    }
-                }
+                zc.exec_command_stop_resolve_hostname(hostname)
             }
 
-            Command::Resolve(instance, try_count) => {
-                let pending_query = zc.query_unresolved(&instance);
-                let max_try = 3;
-                if pending_query && try_count < max_try {
-                    // Note that if the current try already succeeds, the next retransmission
-                    // will be no-op as the cache has been updated.
-                    let next_time = current_time_millis() + RESOLVE_WAIT_IN_MILLIS;
-                    zc.add_retransmission(next_time, Command::Resolve(instance, try_count + 1));
-                }
-            }
+            Command::Resolve(instance, try_count) => zc.exec_command_resolve(instance, try_count),
 
             Command::GetMetrics(resp_s) => match resp_s.send(zc.counters.clone()) {
                 Ok(()) => debug!("Sent metrics to the client"),
@@ -2133,6 +1975,212 @@ impl Zeroconf {
                     }
                 }
             }
+        }
+    }
+
+    fn exec_command_browse(
+        &mut self,
+        repeating: bool,
+        ty: String,
+        next_delay: u32,
+        listener: Sender<ServiceEvent>,
+    ) {
+        let addr_list: Vec<_> = self.intf_socks.keys().collect();
+        if let Err(e) = listener.send(ServiceEvent::SearchStarted(format!(
+            "{} on addrs {:?}",
+            &ty, &addr_list
+        ))) {
+            error!(
+                "Failed to send SearchStarted({})(repeating:{}): {}",
+                &ty, repeating, e
+            );
+            return;
+        }
+        if !repeating {
+            self.add_service_querier(ty.clone(), listener.clone());
+            // if we already have the records in our cache, just send them
+            self.query_cache_for_service(&ty, listener.clone());
+        }
+
+        self.send_query(&ty, TYPE_PTR);
+        self.increase_counter(Counter::Browse, 1);
+
+        let next_time = current_time_millis() + (next_delay * 1000) as u64;
+        let max_delay = 60 * 60;
+        let delay = cmp::min(next_delay * 2, max_delay);
+        self.add_retransmission(next_time, Command::Browse(ty, delay, listener));
+    }
+
+    fn exec_command_resolve_hostname(
+        &mut self,
+        repeating: bool,
+        hostname: String,
+        next_delay: u32,
+        listener: Sender<HostnameResolutionEvent>,
+        timeout: Option<u64>,
+    ) {
+        let addr_list: Vec<_> = self.intf_socks.keys().collect();
+        if let Err(e) = listener.send(HostnameResolutionEvent::SearchStarted(format!(
+            "{} on addrs {:?}",
+            &hostname, &addr_list
+        ))) {
+            error!(
+                "Failed to send ResolveStarted({})(repeating:{}): {}",
+                &hostname, repeating, e
+            );
+            return;
+        }
+        if !repeating {
+            self.add_hostname_resolver(hostname.to_owned(), listener.clone(), timeout);
+            // if we already have the records in our cache, just send them
+            self.query_cache_for_hostname(&hostname, listener.clone());
+        }
+
+        self.send_query_vec(&[(&hostname, TYPE_A), (&hostname, TYPE_AAAA)]);
+        self.increase_counter(Counter::ResolveHostname, 1);
+
+        let now = current_time_millis();
+        let next_time = now + u64::from(next_delay) * 1000;
+        let max_delay = 60 * 60;
+        let delay = cmp::min(next_delay * 2, max_delay);
+
+        // Only add retransmission if it does not exceed the hostname resolver timeout, if any.
+        if self
+            .hostname_resolvers
+            .get(&hostname)
+            .and_then(|(_sender, timeout)| *timeout)
+            .map(|timeout| next_time < timeout)
+            .unwrap_or(true)
+        {
+            self.add_retransmission(
+                next_time,
+                Command::ResolveHostname(hostname, delay, listener, None),
+            );
+        }
+    }
+
+    fn exec_command_resolve(&mut self, instance: String, try_count: u16) {
+        let pending_query = self.query_unresolved(&instance);
+        let max_try = 3;
+        if pending_query && try_count < max_try {
+            // Note that if the current try already succeeds, the next retransmission
+            // will be no-op as the cache has been updated.
+            let next_time = current_time_millis() + RESOLVE_WAIT_IN_MILLIS;
+            self.add_retransmission(next_time, Command::Resolve(instance, try_count + 1));
+        }
+    }
+
+    fn exec_command_unregister(
+        &mut self,
+        repeating: bool,
+        fullname: String,
+        resp_s: Sender<UnregisterStatus>,
+    ) {
+        let response = match self.my_services.remove_entry(&fullname) {
+            None => {
+                error!("unregister: cannot find such service {}", &fullname);
+                UnregisterStatus::NotFound
+            }
+            Some((_k, info)) => {
+                let mut timers = Vec::new();
+                for (ip, intf_sock) in self.intf_socks.iter() {
+                    let packet = self.unregister_service(&info, intf_sock);
+                    // repeat for one time just in case some peers miss the message
+                    if !repeating && !packet.is_empty() {
+                        let next_time = current_time_millis() + 120;
+                        self.retransmissions.push(ReRun {
+                            next_time,
+                            command: Command::UnregisterResend(packet, *ip),
+                        });
+                        timers.push(next_time);
+                    }
+                }
+
+                for t in timers {
+                    self.add_timer(t);
+                }
+
+                self.increase_counter(Counter::Unregister, 1);
+                UnregisterStatus::OK
+            }
+        };
+        if let Err(e) = resp_s.send(response) {
+            error!("unregister: failed to send response: {}", e);
+        }
+    }
+
+    fn exec_command_unregister_resend(&mut self, packet: Vec<u8>, ip: IpAddr) {
+        if let Some(intf_sock) = self.intf_socks.get(&ip) {
+            debug!("UnregisterResend from {}", &ip);
+            broadcast_on_intf(&packet[..], intf_sock);
+            self.increase_counter(Counter::UnregisterResend, 1);
+        }
+    }
+
+    fn exec_command_stop_browse(&mut self, ty_domain: String) {
+        match self.service_queriers.remove_entry(&ty_domain) {
+            None => error!("StopBrowse: cannot find querier for {}", &ty_domain),
+            Some((ty, sender)) => {
+                // Remove pending browse commands in the reruns.
+                debug!("StopBrowse: removed queryer for {}", &ty);
+                let mut i = 0;
+                while i < self.retransmissions.len() {
+                    if let Command::Browse(t, _, _) = &self.retransmissions[i].command {
+                        if t == &ty {
+                            self.retransmissions.remove(i);
+                            debug!("StopBrowse: removed retransmission for {}", &ty);
+                            continue;
+                        }
+                    }
+                    i += 1;
+                }
+
+                // Notify the client.
+                match sender.send(ServiceEvent::SearchStopped(ty_domain)) {
+                    Ok(()) => debug!("Sent SearchStopped to the listener"),
+                    Err(e) => warn!("Failed to send SearchStopped: {}", e),
+                }
+            }
+        }
+    }
+
+    fn exec_command_stop_resolve_hostname(&mut self, hostname: String) {
+        if let Some((host, (sender, _timeout))) = self.hostname_resolvers.remove_entry(&hostname) {
+            // Remove pending resolve commands in the reruns.
+            debug!("StopResolve: removed queryer for {}", &host);
+            let mut i = 0;
+            while i < self.retransmissions.len() {
+                if let Command::Resolve(t, _) = &self.retransmissions[i].command {
+                    if t == &host {
+                        self.retransmissions.remove(i);
+                        debug!("StopResolve: removed retransmission for {}", &host);
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+
+            // Notify the client.
+            match sender.send(HostnameResolutionEvent::SearchStopped(hostname)) {
+                Ok(()) => debug!("Sent SearchStopped to the listener"),
+                Err(e) => warn!("Failed to send SearchStopped: {}", e),
+            }
+        }
+    }
+
+    fn exec_command_register_resend(&mut self, fullname: String) {
+        match self.my_services.get(&fullname) {
+            Some(info) => {
+                let outgoing_addrs = self.send_unsolicited_response(info);
+                if !outgoing_addrs.is_empty() {
+                    self.notify_monitors(DaemonEvent::Announce(
+                        fullname,
+                        format!("{:?}", &outgoing_addrs),
+                    ));
+                }
+                self.increase_counter(Counter::RegisterResend, 1);
+            }
+            None => debug!("announce: cannot find such service {}", &fullname),
         }
     }
 }
