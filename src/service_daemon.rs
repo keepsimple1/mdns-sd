@@ -552,13 +552,7 @@ impl ServiceDaemon {
             }
 
             // Refresh cached service records with active queriers
-            let mut query_count = 0;
-            for (ty_domain, _sender) in zc.service_queriers.iter() {
-                for instance in zc.cache.refresh_due_services(ty_domain).iter() {
-                    zc.send_query(instance, TYPE_ANY);
-                    query_count += 1;
-                }
-            }
+            let mut query_count = zc.refresh_active_services();
 
             // Refresh cached A/AAAA records with active queriers
             for (hostname, _sender) in zc.hostname_resolvers.iter() {
@@ -1672,6 +1666,7 @@ impl Zeroconf {
             match self.cache.add_or_update(record) {
                 Some((dns_record, true)) => {
                     timers.push(dns_record.get_record().get_expire_time());
+                    timers.push(dns_record.get_record().get_refresh_time());
 
                     let ty = dns_record.get_type();
                     let name = dns_record.get_name();
@@ -1701,6 +1696,7 @@ impl Zeroconf {
                 }
                 Some((dns_record, false)) => {
                     timers.push(dns_record.get_record().get_expire_time());
+                    timers.push(dns_record.get_record().get_refresh_time());
                 }
                 _ => {}
             }
@@ -2183,6 +2179,26 @@ impl Zeroconf {
             None => debug!("announce: cannot find such service {}", &fullname),
         }
     }
+
+    /// Refresh cached service records with active queriers
+    fn refresh_active_services(&mut self) -> i64 {
+        let mut query_count = 0;
+
+        for (ty_domain, _sender) in self.service_queriers.iter() {
+            if self.cache.refresh_due_ptr(ty_domain) {
+                debug!("sending refresh query for PTR: {}", ty_domain);
+                self.send_query(ty_domain, TYPE_PTR);
+            }
+
+            for instance in self.cache.refresh_due_srv(ty_domain).iter() {
+                debug!("sending refresh query for SRV: {}", instance);
+                self.send_query(instance, TYPE_ANY);
+                query_count += 1;
+            }
+        }
+
+        query_count
+    }
 }
 
 /// All possible events sent to the client from the daemon
@@ -2529,7 +2545,7 @@ impl DnsCache {
                 let expired = x.get_record().is_expired(now);
                 if expired {
                     if let Some(dns_ptr) = x.any().downcast_ref::<DnsPointer>() {
-                        debug!("expired PTR: {}: {}", ty_domain, dns_ptr.alias);
+                        error!("expired PTR: {:?}", dns_ptr);
                         expired_instances
                             .entry(ty_domain.to_string())
                             .or_insert_with(HashSet::new)
@@ -2543,33 +2559,43 @@ impl DnsCache {
         expired_instances
     }
 
-    /// Returns the set of instance names that are due for refresh
+    /// Checks refresh due for PTR records of `ty_domain`.
+    /// Returns true if any PTR records need to be refreshed.
+    fn refresh_due_ptr(&mut self, ty_domain: &str) -> bool {
+        let now = current_time_millis();
+        let mut is_due = false;
+
+        // Check all PTR records for this ty_domain.
+        for record in self.ptr.get_mut(ty_domain).into_iter().flatten() {
+            if record.get_record_mut().refresh_maybe(now) {
+                is_due = true;
+            }
+        }
+
+        is_due
+    }
+
+    /// Returns the set of SRV instance names that are due for refresh
     /// for a `ty_domain`.
-    ///
-    /// For these instances, their refresh time will be updated so that
-    /// they will not refresh again.
-    fn refresh_due_services(&mut self, ty_domain: &str) -> HashSet<String> {
+    fn refresh_due_srv(&mut self, ty_domain: &str) -> HashSet<String> {
         let now = current_time_millis();
 
-        let mut refresh_due = HashSet::new();
-        let mut ptr_not_due = vec![];
+        let mut instances = vec![];
 
-        // find PTR records that are due for refresh.
+        // find instance names for ty_domain.
         for record in self.ptr.get_mut(ty_domain).into_iter().flatten() {
-            let is_due = record.get_record_mut().refresh_maybe(now);
+            if record.get_record().is_expired(now) {
+                continue;
+            }
 
             if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
-                let instance = ptr.alias.clone();
-                if is_due {
-                    refresh_due.insert(instance);
-                } else {
-                    ptr_not_due.push(instance);
-                }
+                instances.push(ptr.alias.clone());
             }
         }
 
         // Check SRV records.
-        for instance in ptr_not_due {
+        let mut refresh_due = HashSet::new();
+        for instance in instances {
             for record in self.srv.get_mut(&instance).into_iter().flatten() {
                 if record.get_record_mut().refresh_maybe(now) {
                     refresh_due.insert(instance);
