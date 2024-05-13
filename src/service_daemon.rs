@@ -2188,7 +2188,7 @@ impl Zeroconf {
         for (ty_domain, _sender) in self.service_queriers.iter() {
             let refreshed_timers = self.cache.refresh_due_ptr(ty_domain);
             if !refreshed_timers.is_empty() {
-                error!("sending refresh query for PTR: {}", ty_domain);
+                debug!("sending refresh query for PTR: {}", ty_domain);
                 self.send_query(ty_domain, TYPE_PTR);
                 query_count += 1;
                 new_timers.extend(refreshed_timers);
@@ -2196,7 +2196,7 @@ impl Zeroconf {
 
             let (instances, timers) = self.cache.refresh_due_srv(ty_domain);
             for instance in instances.iter() {
-                error!("sending refresh query for SRV: {}", instance);
+                debug!("sending refresh query for SRV: {}", instance);
                 self.send_query(instance, TYPE_ANY);
                 query_count += 1;
             }
@@ -2555,7 +2555,7 @@ impl DnsCache {
                 let expired = x.get_record().is_expired(now);
                 if expired {
                     if let Some(dns_ptr) = x.any().downcast_ref::<DnsPointer>() {
-                        error!("expired PTR: {:?}", dns_ptr);
+                        debug!("expired PTR: {:?}", dns_ptr);
                         expired_instances
                             .entry(ty_domain.to_string())
                             .or_insert_with(HashSet::new)
