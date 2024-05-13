@@ -2183,18 +2183,28 @@ impl Zeroconf {
     /// Refresh cached service records with active queriers
     fn refresh_active_services(&mut self) -> i64 {
         let mut query_count = 0;
+        let mut new_timers = HashSet::new();
 
         for (ty_domain, _sender) in self.service_queriers.iter() {
-            if self.cache.refresh_due_ptr(ty_domain) {
-                debug!("sending refresh query for PTR: {}", ty_domain);
+            let refreshed_timers = self.cache.refresh_due_ptr(ty_domain);
+            if !refreshed_timers.is_empty() {
+                error!("sending refresh query for PTR: {}", ty_domain);
                 self.send_query(ty_domain, TYPE_PTR);
+                query_count += 1;
+                new_timers.extend(refreshed_timers);
             }
 
-            for instance in self.cache.refresh_due_srv(ty_domain).iter() {
-                debug!("sending refresh query for SRV: {}", instance);
+            let (instances, timers) = self.cache.refresh_due_srv(ty_domain);
+            for instance in instances.iter() {
+                error!("sending refresh query for SRV: {}", instance);
                 self.send_query(instance, TYPE_ANY);
                 query_count += 1;
             }
+            new_timers.extend(timers);
+        }
+
+        for timer in new_timers {
+            self.add_timer(timer);
         }
 
         query_count
@@ -2560,24 +2570,28 @@ impl DnsCache {
     }
 
     /// Checks refresh due for PTR records of `ty_domain`.
-    /// Returns true if any PTR records need to be refreshed.
-    fn refresh_due_ptr(&mut self, ty_domain: &str) -> bool {
+    /// Returns all updated refresh time.
+    fn refresh_due_ptr(&mut self, ty_domain: &str) -> HashSet<u64> {
         let now = current_time_millis();
-        let mut is_due = false;
 
         // Check all PTR records for this ty_domain.
-        for record in self.ptr.get_mut(ty_domain).into_iter().flatten() {
-            if record.get_record_mut().refresh_maybe(now) {
-                is_due = true;
-            }
-        }
-
-        is_due
+        self.ptr
+            .get_mut(ty_domain)
+            .into_iter()
+            .flatten()
+            .filter_map(|record| {
+                if record.get_record_mut().refresh_maybe(now) {
+                    Some(record.get_record().get_refresh_time())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Returns the set of SRV instance names that are due for refresh
     /// for a `ty_domain`.
-    fn refresh_due_srv(&mut self, ty_domain: &str) -> HashSet<String> {
+    fn refresh_due_srv(&mut self, ty_domain: &str) -> (HashSet<String>, HashSet<u64>) {
         let now = current_time_millis();
 
         let mut instances = vec![];
@@ -2595,16 +2609,29 @@ impl DnsCache {
 
         // Check SRV records.
         let mut refresh_due = HashSet::new();
+        let mut new_timers = HashSet::new();
         for instance in instances {
-            for record in self.srv.get_mut(&instance).into_iter().flatten() {
-                if record.get_record_mut().refresh_maybe(now) {
-                    refresh_due.insert(instance);
-                    break;
-                }
+            let refresh_timers: HashSet<u64> = self
+                .srv
+                .get_mut(&instance)
+                .into_iter()
+                .flatten()
+                .filter_map(|record| {
+                    if record.get_record_mut().refresh_maybe(now) {
+                        Some(record.get_record().get_refresh_time())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !refresh_timers.is_empty() {
+                refresh_due.insert(instance);
+                new_timers.extend(refresh_timers);
             }
         }
 
-        refresh_due
+        (refresh_due, new_timers)
     }
 
     /// Returns the set of A/AAAA records that are due for refresh for a `hostname`.
