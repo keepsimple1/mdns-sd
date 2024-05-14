@@ -106,7 +106,9 @@ enum Counter {
     Browse,
     ResolveHostname,
     Respond,
-    CacheRefreshQuery,
+    CacheRefreshPTR,
+    CacheRefreshSRV,
+    CacheRefreshAddr,
 }
 
 impl fmt::Display for Counter {
@@ -119,7 +121,9 @@ impl fmt::Display for Counter {
             Self::Browse => write!(f, "browse"),
             Self::ResolveHostname => write!(f, "resolve-hostname"),
             Self::Respond => write!(f, "respond"),
-            Self::CacheRefreshQuery => write!(f, "cache-refresh"),
+            Self::CacheRefreshPTR => write!(f, "cache-refresh-ptr"),
+            Self::CacheRefreshSRV => write!(f, "cache-refresh-srv"),
+            Self::CacheRefreshAddr => write!(f, "cache-refresh-addr"),
         }
     }
 }
@@ -552,15 +556,10 @@ impl ServiceDaemon {
             }
 
             // Refresh cached service records with active queriers
-            let mut query_count = 0;
-            for (ty_domain, _sender) in zc.service_queriers.iter() {
-                for instance in zc.cache.refresh_due_services(ty_domain).iter() {
-                    zc.send_query(instance, TYPE_ANY);
-                    query_count += 1;
-                }
-            }
+            zc.refresh_active_services();
 
             // Refresh cached A/AAAA records with active queriers
+            let mut query_count = 0;
             for (hostname, _sender) in zc.hostname_resolvers.iter() {
                 for (hostname, ip_addr) in
                     zc.cache.refresh_due_hostname_resolutions(hostname).iter()
@@ -570,7 +569,7 @@ impl ServiceDaemon {
                 }
             }
 
-            zc.increase_counter(Counter::CacheRefreshQuery, query_count);
+            zc.increase_counter(Counter::CacheRefreshAddr, query_count);
 
             // check and evict expired records in our cache
             let now = current_time_millis();
@@ -1672,6 +1671,7 @@ impl Zeroconf {
             match self.cache.add_or_update(record) {
                 Some((dns_record, true)) => {
                     timers.push(dns_record.get_record().get_expire_time());
+                    timers.push(dns_record.get_record().get_refresh_time());
 
                     let ty = dns_record.get_type();
                     let name = dns_record.get_name();
@@ -1701,6 +1701,7 @@ impl Zeroconf {
                 }
                 Some((dns_record, false)) => {
                     timers.push(dns_record.get_record().get_expire_time());
+                    timers.push(dns_record.get_record().get_refresh_time());
                 }
                 _ => {}
             }
@@ -2183,6 +2184,38 @@ impl Zeroconf {
             None => debug!("announce: cannot find such service {}", &fullname),
         }
     }
+
+    /// Refresh cached service records with active queriers
+    fn refresh_active_services(&mut self) {
+        let mut query_ptr_count = 0;
+        let mut query_srv_count = 0;
+        let mut new_timers = HashSet::new();
+
+        for (ty_domain, _sender) in self.service_queriers.iter() {
+            let refreshed_timers = self.cache.refresh_due_ptr(ty_domain);
+            if !refreshed_timers.is_empty() {
+                debug!("sending refresh query for PTR: {}", ty_domain);
+                self.send_query(ty_domain, TYPE_PTR);
+                query_ptr_count += 1;
+                new_timers.extend(refreshed_timers);
+            }
+
+            let (instances, timers) = self.cache.refresh_due_srv(ty_domain);
+            for instance in instances.iter() {
+                debug!("sending refresh query for SRV: {}", instance);
+                self.send_query(instance, TYPE_ANY);
+                query_srv_count += 1;
+            }
+            new_timers.extend(timers);
+        }
+
+        for timer in new_timers {
+            self.add_timer(timer);
+        }
+
+        self.increase_counter(Counter::CacheRefreshPTR, query_ptr_count);
+        self.increase_counter(Counter::CacheRefreshSRV, query_srv_count);
+    }
 }
 
 /// All possible events sent to the client from the daemon
@@ -2529,7 +2562,7 @@ impl DnsCache {
                 let expired = x.get_record().is_expired(now);
                 if expired {
                     if let Some(dns_ptr) = x.any().downcast_ref::<DnsPointer>() {
-                        debug!("expired PTR: {}: {}", ty_domain, dns_ptr.alias);
+                        debug!("expired PTR: {:?}", dns_ptr);
                         expired_instances
                             .entry(ty_domain.to_string())
                             .or_insert_with(HashSet::new)
@@ -2543,42 +2576,69 @@ impl DnsCache {
         expired_instances
     }
 
-    /// Returns the set of instance names that are due for refresh
-    /// for a `ty_domain`.
-    ///
-    /// For these instances, their refresh time will be updated so that
-    /// they will not refresh again.
-    fn refresh_due_services(&mut self, ty_domain: &str) -> HashSet<String> {
+    /// Checks refresh due for PTR records of `ty_domain`.
+    /// Returns all updated refresh time.
+    fn refresh_due_ptr(&mut self, ty_domain: &str) -> HashSet<u64> {
         let now = current_time_millis();
 
-        let mut refresh_due = HashSet::new();
-        let mut ptr_not_due = vec![];
+        // Check all PTR records for this ty_domain.
+        self.ptr
+            .get_mut(ty_domain)
+            .into_iter()
+            .flatten()
+            .filter_map(|record| {
+                if record.get_record_mut().refresh_maybe(now) {
+                    Some(record.get_record().get_refresh_time())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
 
-        // find PTR records that are due for refresh.
+    /// Returns the set of SRV instance names that are due for refresh
+    /// for a `ty_domain`.
+    fn refresh_due_srv(&mut self, ty_domain: &str) -> (HashSet<String>, HashSet<u64>) {
+        let now = current_time_millis();
+
+        let mut instances = vec![];
+
+        // find instance names for ty_domain.
         for record in self.ptr.get_mut(ty_domain).into_iter().flatten() {
-            let is_due = record.get_record_mut().refresh_maybe(now);
+            if record.get_record().is_expired(now) {
+                continue;
+            }
 
             if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
-                let instance = ptr.alias.clone();
-                if is_due {
-                    refresh_due.insert(instance);
-                } else {
-                    ptr_not_due.push(instance);
-                }
+                instances.push(ptr.alias.clone());
             }
         }
 
         // Check SRV records.
-        for instance in ptr_not_due {
-            for record in self.srv.get_mut(&instance).into_iter().flatten() {
-                if record.get_record_mut().refresh_maybe(now) {
-                    refresh_due.insert(instance);
-                    break;
-                }
+        let mut refresh_due = HashSet::new();
+        let mut new_timers = HashSet::new();
+        for instance in instances {
+            let refresh_timers: HashSet<u64> = self
+                .srv
+                .get_mut(&instance)
+                .into_iter()
+                .flatten()
+                .filter_map(|record| {
+                    if record.get_record_mut().refresh_maybe(now) {
+                        Some(record.get_record().get_refresh_time())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !refresh_timers.is_empty() {
+                refresh_due.insert(instance);
+                new_timers.extend(refresh_timers);
             }
         }
 
-        refresh_due
+        (refresh_due, new_timers)
     }
 
     /// Returns the set of A/AAAA records that are due for refresh for a `hostname`.
@@ -3286,5 +3346,71 @@ mod tests {
         assert!(removed);
 
         client.shutdown().unwrap();
+    }
+
+    #[test]
+    fn test_refresh_ptr() {
+        // construct service info
+        let service_type = "_refresh-ptr._udp.local.";
+        let instance = "test_instance";
+        let host_name = "refresh_ptr_host.local.";
+        let service_ip_addr = my_ip_interfaces()
+            .iter()
+            .find(|iface| iface.ip().is_ipv4())
+            .map(|iface| iface.ip())
+            .unwrap();
+
+        let mut my_service = ServiceInfo::new(
+            service_type,
+            instance,
+            host_name,
+            &service_ip_addr,
+            5023,
+            None,
+        )
+        .unwrap();
+
+        let new_ttl = 2; // for testing only.
+        my_service._set_other_ttl(new_ttl);
+
+        // register my service
+        let mdns_server = ServiceDaemon::new().expect("Failed to create mdns server");
+        let result = mdns_server.register(my_service);
+        assert!(result.is_ok());
+
+        let mdns_client = ServiceDaemon::new().expect("Failed to create mdns client");
+        let browse_chan = mdns_client.browse(service_type).unwrap();
+        let timeout = Duration::from_secs(1);
+        let mut resolved = false;
+
+        // resolve the service first.
+        while let Ok(event) = browse_chan.recv_timeout(timeout) {
+            match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    resolved = true;
+                    println!("Resolved a service of {}", &info.get_fullname());
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(resolved);
+
+        // wait over 80% of TTL, and refresh PTR should be sent out.
+        let timeout = Duration::from_millis(1800);
+        while let Ok(event) = browse_chan.recv_timeout(timeout) {
+            println!("event: {:?}", &event);
+        }
+
+        // verify refresh counter.
+        let metrics_chan = mdns_client.get_metrics().unwrap();
+        let metrics = metrics_chan.recv_timeout(timeout).unwrap();
+        let refresh_counter = metrics["cache-refresh-ptr"];
+        assert_eq!(refresh_counter, 1);
+
+        // Exit the server so that no more responses.
+        mdns_server.shutdown().unwrap();
+        mdns_client.shutdown().unwrap();
     }
 }

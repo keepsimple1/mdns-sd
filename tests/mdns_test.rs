@@ -263,6 +263,9 @@ fn service_without_properties_with_alter_net_v4() {
                         info.get_addresses()
                     );
                     // match only our service and not v6 one
+                    if info.get_addresses_v4().is_empty() {
+                        continue;
+                    }
                     if fullname.as_str() == info.get_fullname() {
                         let addrs = info.get_addresses_v4();
                         assert_eq!(addrs.len(), 1); // first_ipv4 but no alter_ipv.
