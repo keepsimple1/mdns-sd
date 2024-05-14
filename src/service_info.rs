@@ -308,6 +308,11 @@ impl ServiceInfo {
     pub(crate) fn _set_host_ttl(&mut self, ttl: u32) {
         self.host_ttl = ttl;
     }
+
+    /// other_ttl is for PTR and TXT records.
+    pub(crate) fn _set_other_ttl(&mut self, ttl: u32) {
+        self.other_ttl = ttl;
+    }
 }
 
 /// Removes potentially duplicated ".local." at the end of "hostname".
