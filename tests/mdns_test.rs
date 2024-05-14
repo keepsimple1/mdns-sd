@@ -1125,3 +1125,209 @@ fn hostname_resolution_timeout() {
 
     d.shutdown().unwrap();
 }
+
+#[test]
+fn test_cache_flush_record() {
+    // Create a daemon
+    let server = ServiceDaemon::new().expect("Failed to create server");
+    let service = "_test_cache_ptr._udp.local.";
+    let host_name = "my_host_tmp_cache_flush.local.";
+
+    // use a single IPv4 addr
+    let mut service_ip_addr = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv4())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    let port = 5201;
+    let properties = vec![("key", "value")];
+    let mut my_service = ServiceInfo::new(
+        service,
+        "my_instance",
+        host_name,
+        &service_ip_addr,
+        port,
+        &properties[..],
+    )
+    .expect("invalid service info");
+    let result = server.register(my_service.clone());
+    assert!(result.is_ok());
+
+    // Browse for a service
+    let client = ServiceDaemon::new().expect("Failed to create client");
+    let browse_chan = client.browse(service).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                resolved = true;
+                println!("Resolved a service of {}", &info.get_fullname());
+                println!("JLN service: {:?}", info);
+                break;
+            }
+            e => {
+                println!("Received event {:?}", e);
+            }
+        }
+    }
+
+    assert!(resolved);
+
+    // Stop browsing for a moment.
+    client.stop_browse(service).unwrap();
+    sleep(Duration::from_secs(1));
+
+    // Modify the IPv4 address for the service.
+    if let IpAddr::V4(ipv4) = service_ip_addr {
+        let bytes = ipv4.octets();
+        service_ip_addr = IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 1));
+    } else {
+        assert!(false);
+    }
+
+    // Re-register the service to update the IPv4 addr.
+    my_service = ServiceInfo::new(
+        service,
+        "my_instance",
+        host_name,
+        &service_ip_addr,
+        port,
+        &properties[..],
+    )
+    .unwrap();
+    let result = server.register(my_service.clone());
+    assert!(result.is_ok());
+
+    println!("Re-registered with updated IPv4 addr");
+
+    // Wait for the new registration sent out and cache flushed.
+    sleep(Duration::from_secs(2));
+
+    // Browse for the updated IPv4 address.
+    let browse_chan = client.browse(service).unwrap();
+    resolved = false;
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                // Verify the address flushed and updated.
+                let new_addrs = info.get_addresses();
+                if new_addrs.len() == 1 {
+                    let first_addr = new_addrs.iter().next().unwrap();
+                    assert_eq!(first_addr, &service_ip_addr);
+                    resolved = true;
+                    break;
+                }
+            }
+            e => {
+                println!("Received event {:?}", e);
+            }
+        }
+    }
+
+    assert!(resolved);
+    server.shutdown().unwrap();
+    client.shutdown().unwrap();
+}
+
+#[test]
+fn test_cache_flush_remove_one_addr() {
+    // Create a daemon
+    let server = ServiceDaemon::new().expect("Failed to create server");
+    let service = "_remove_one_addr._udp.local.";
+    let host_name = "remove_one_addr_host.local.";
+
+    // Get a single IPv4 address
+    let ip_addr1 = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv4())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    // Make 2nd IPv4 address for the service.
+    let ip_addr2 = match ip_addr1 {
+        IpAddr::V4(ipv4) => {
+            let bytes = ipv4.octets();
+            IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 1))
+        }
+        _ => {
+            panic!()
+        }
+    };
+
+    let port = 5201;
+    let mut my_service = ServiceInfo::new(
+        service,
+        "my_instance",
+        host_name,
+        &[ip_addr1, ip_addr2][..],
+        port,
+        None,
+    )
+    .expect("invalid service info");
+    let result = server.register(my_service.clone());
+    assert!(result.is_ok());
+
+    // Browse for a service
+    let client = ServiceDaemon::new().expect("Failed to create client");
+    let browse_chan = client.browse(service).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                resolved = true;
+                println!("Resolved a service of {}", &info.get_fullname());
+                break;
+            }
+            e => {
+                println!("Received event {:?}", e);
+            }
+        }
+    }
+
+    assert!(resolved);
+
+    // Stop browsing for a moment.
+    client.stop_browse(service).unwrap();
+    sleep(Duration::from_secs(1));
+
+    // Re-register the service to have only 1 addr.
+    my_service =
+        ServiceInfo::new(service, "my_instance", host_name, &ip_addr1, port, None).unwrap();
+    let result = server.register(my_service.clone());
+    assert!(result.is_ok());
+
+    println!("Re-registered with updated IPv4 addr");
+
+    // Wait for the new registration sent out and cache flushed.
+    sleep(Duration::from_secs(2));
+
+    // Browse for the updated IPv4 address.
+    let browse_chan = client.browse(service).unwrap();
+    resolved = false;
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                // Verify the address flushed and updated.
+                let new_addrs = info.get_addresses();
+                if new_addrs.len() == 1 {
+                    let first_addr = new_addrs.iter().next().unwrap();
+                    assert_eq!(first_addr, &ip_addr1);
+                    resolved = true;
+                    break;
+                }
+            }
+            e => {
+                println!("Received event {:?}", e);
+            }
+        }
+    }
+
+    assert!(resolved);
+    server.shutdown().unwrap();
+    client.shutdown().unwrap();
+}
