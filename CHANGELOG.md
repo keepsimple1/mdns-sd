@@ -1,3 +1,29 @@
+# Version 0.11.1 (2024-05-13)
+
+## Highlights
+
+- Start to honor cache flush bit.
+- Improved cache refresh logic.
+- Code refactorings.
+- And a few bugfixes.
+
+## All changes
+
+* 098f2df move unit tests into integration test (#218)
+* 80291ba refresh PTR records (#217)
+* 5eb74b5 refactoring: extract details from exec_command into own functions (#215)
+* 551ed4d Bugfix: AddressesRemoved missing actual addrs (#210)
+* 3c924f4 Bugfix: cache flush properly (#211)
+* ccdae2d Bugfix: logging feature cannot be disabled (#212)
+* 626f9fa refresh SRV records and send out ServiceRemoved for expired SRV (#180)
+* 06e2cf7 feat: merge match same arms (#209)
+* bf5cea3 perf: in adding answers, use static dispatch instead of dynamic dispatch (#207)
+* 19d2161 feat: extract match addr to type as a function (#205)
+* 5bdcdd6 feat: remove clone derive from counter (#208)
+* e7fc0e0 feat: replace box dns with declared type (#206)
+* 5732665 feat: apply nursery lints (#202)
+* 16cb5cd feat: honor cache flush (#201)
+
 # Version 0.11.0 (2024-04-21)
 
 ## Breaking changes
