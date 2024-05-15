@@ -24,6 +24,8 @@
 * 5732665 feat: apply nursery lints (#202)
 * 16cb5cd feat: honor cache flush (#201)
 
+Welcome our new contributor: @lyager ! Thanks!
+
 # Version 0.11.0 (2024-04-21)
 
 ## Breaking changes
