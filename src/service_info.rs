@@ -1,6 +1,6 @@
 #[cfg(feature = "logging")]
 use crate::log::error;
-use crate::{Error, Result};
+use crate::{dns_parser::split_sub_domain, Error, Result};
 use if_addrs::{IfAddr, Interface};
 use std::{
     collections::{HashMap, HashSet},
@@ -703,15 +703,6 @@ fn decode_txt_unique(txt: &[u8]) -> Vec<TxtProperty> {
         keys.insert(key) // returns True if key is new.
     });
     properties
-}
-
-/// Returns a tuple of (service_type_domain, optional_sub_domain)
-pub fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
-    if let Some((_, ty_domain)) = domain.rsplit_once("._sub.") {
-        (ty_domain, Some(domain))
-    } else {
-        (domain, None)
-    }
 }
 
 /// Returns true if `addr` is in the same network of `intf`.

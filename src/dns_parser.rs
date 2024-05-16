@@ -1387,6 +1387,15 @@ impl DnsIncoming {
     }
 }
 
+/// Returns a tuple of (service_type_domain, optional_sub_domain)
+pub fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
+    if let Some((_, ty_domain)) = domain.rsplit_once("._sub.") {
+        (ty_domain, Some(domain))
+    } else {
+        (domain, None)
+    }
+}
+
 /// Returns UNIX time in millis
 pub fn current_time_millis() -> u64 {
     SystemTime::now()

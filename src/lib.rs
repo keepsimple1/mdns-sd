@@ -145,6 +145,7 @@ mod log {
     macro_rules! error    ( ($($tt:tt)*) => {{}} );
 }
 
+mod dns_cache;
 mod dns_parser;
 mod error;
 mod service_daemon;
