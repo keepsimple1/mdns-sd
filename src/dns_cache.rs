@@ -6,7 +6,8 @@ use crate::dns_parser::{
     current_time_millis, split_sub_domain, DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, TYPE_A,
     TYPE_AAAA, TYPE_NSEC, TYPE_PTR, TYPE_SRV, TYPE_TXT,
 };
-use log::debug;
+#[cfg(feature = "logging")]
+use crate::log::debug;
 use std::{
     collections::{HashMap, HashSet},
     net::IpAddr,
