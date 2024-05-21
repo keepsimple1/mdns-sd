@@ -953,7 +953,11 @@ fn my_ip_interfaces() -> Vec<Interface> {
                     // Use a 'bind' to check if this is a valid IPv6 addr.
                     {
                         let mut sock = std::net::SocketAddrV6::new(ifv6.ip, test_port, 0, 0);
-                        sock.set_scope_id(i.index.unwrap_or(0));
+                        if i.is_link_local() {
+                            // Only link local IPv6 address requires to specify scope_id
+                            sock.set_scope_id(i.index.unwrap_or(0));
+                        }
+
                         match std::net::UdpSocket::bind(sock) {
                             Ok(_) => Some(i),
                             Err(e) => {
