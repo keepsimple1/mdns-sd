@@ -1335,3 +1335,76 @@ fn test_cache_flush_remove_one_addr() {
     server.shutdown().unwrap();
     client.shutdown().unwrap();
 }
+
+#[test]
+fn test_known_answer_suppression() {
+    // Create a daemon
+    let mdns_server = ServiceDaemon::new().expect("Failed to create mdns server");
+
+    // Register a service
+    let ty_domain = "_known-answer._udp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string(); // Create a unique name.
+
+    // Get a single IPv4 address
+    let ip_addr1 = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv4())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    let host_name = "known_answer_server.local.";
+    let port = 5200;
+
+    let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
+        .expect("valid service info");
+    mdns_server
+        .register(my_service)
+        .expect("Failed to register my service");
+
+    // Browse the server
+    let client = ServiceDaemon::new().expect("Failed to create mdns client");
+    let browse_chan = client.browse(ty_domain).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                resolved = true;
+                println!("Resolved a service of {}", &info.get_fullname());
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(resolved);
+
+    // Verify the server respond counter is 1.
+    let metrics_receiver = mdns_server.get_metrics().unwrap();
+    let metrics = metrics_receiver.recv().unwrap();
+    assert_eq!(metrics["respond"], 1);
+
+    // Browse again
+    let browse_chan = client.browse(ty_domain).unwrap();
+    resolved = false;
+
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                resolved = true;
+                println!("Resolved a service of {}", &info.get_fullname());
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(resolved);
+
+    // Verify that no new response from the server due to known answer suppression.
+    let metrics_receiver = mdns_server.get_metrics().unwrap();
+    let metrics = metrics_receiver.recv().unwrap();
+    assert_eq!(metrics["respond"], 1);
+}

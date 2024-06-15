@@ -1375,12 +1375,21 @@ impl Zeroconf {
         self.send_query_vec(&[(name, qtype)]);
     }
 
-    /// Sends out a list of `queries` (i.e. DNS questions) via multicast.
-    fn send_query_vec(&self, queries: &[(&str, u16)]) {
-        debug!("Sending multicast queries: {:?}", queries);
+    /// Sends out a list of `questions` (i.e. DNS questions) via multicast.
+    fn send_query_vec(&self, questions: &[(&str, u16)]) {
+        debug!("Sending query questions: {:?}", questions);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
-        for (name, qtype) in queries {
+        let now = current_time_millis();
+
+        for (name, qtype) in questions {
             out.add_question(name, *qtype);
+
+            for record in self.cache.get_known_answers(name, *qtype, now) {
+                debug!("add known answer: {:?}", record);
+                let mut new_record = record.clone();
+                new_record.get_record_mut().update_ttl(now);
+                out.add_additional_answer_box(new_record);
+            }
         }
 
         let mut subnet_set: HashSet<u128> = HashSet::new();

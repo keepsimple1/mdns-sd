@@ -375,4 +375,28 @@ impl DnsCache {
             })
             .collect()
     }
+
+    pub(crate) fn get_known_answers<'a>(
+        &'a self,
+        name: &str,
+        qtype: u16,
+        now: u64,
+    ) -> Vec<&'a DnsRecordBox> {
+        let records_opt = match qtype {
+            TYPE_PTR => self.get_ptr(name),
+            TYPE_SRV => self.get_srv(name),
+            TYPE_A | TYPE_AAAA => self.get_addr(name),
+            TYPE_TXT => self.get_txt(name),
+            _ => None,
+        };
+
+        let Some(records) = records_opt else {
+            return Vec::new();
+        };
+
+        records
+            .iter()
+            .filter(move |r| !r.get_record().is_unique() && !r.get_record().halflife_passed(now))
+            .collect()
+    }
 }

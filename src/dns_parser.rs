@@ -60,7 +60,7 @@ pub const fn ip_address_to_type(address: &IpAddr) -> u16 {
     }
 }
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq, Debug, Clone)]
 pub struct DnsEntry {
     pub(crate) name: String, // always lower case.
     pub(crate) ty: u16,
@@ -88,7 +88,7 @@ pub struct DnsQuestion {
 /// A DNS Resource Record - like a DNS entry, but has a TTL.
 /// RFC: https://www.rfc-editor.org/rfc/rfc1035#section-3.2.1
 ///      https://www.rfc-editor.org/rfc/rfc1035#section-4.1.3
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DnsRecord {
     pub(crate) entry: DnsEntry,
     ttl: u32,     // in seconds, 0 means this record should not be cached
@@ -134,6 +134,16 @@ impl DnsRecord {
 
     pub(crate) const fn refresh_due(&self, now: u64) -> bool {
         now >= self.refresh
+    }
+
+    /// Returns whether `now` (in millis) has passed half of TTL.
+    pub(crate) fn halflife_passed(&self, now: u64) -> bool {
+        let halflife = get_expiration_time(self.created, self.ttl, 50);
+        now > halflife
+    }
+
+    pub(crate) fn is_unique(&self) -> bool {
+        self.entry.cache_flush
     }
 
     /// Updates the refresh time to be the same as the expire time so that
@@ -193,6 +203,14 @@ impl DnsRecord {
         self.created = other.created;
         self.refresh = get_expiration_time(self.created, self.ttl, 80);
         self.expires = get_expiration_time(self.created, self.ttl, 100);
+    }
+
+    /// Modify TTL to reflect the remaining life time from `now`.
+    pub(crate) fn update_ttl(&mut self, now: u64) {
+        if now > self.created {
+            let elapsed = now - self.created;
+            self.ttl -= (elapsed / 1000) as u32;
+        }
     }
 }
 
@@ -259,9 +277,17 @@ pub trait DnsRecordExt: fmt::Debug {
         }
         false
     }
+
+    fn clone_box(&self) -> Box<dyn DnsRecordExt>;
 }
 
-#[derive(Debug)]
+impl Clone for Box<dyn DnsRecordExt> {
+    fn clone(&self) -> Box<dyn DnsRecordExt> {
+        self.clone_box()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct DnsAddress {
     pub(crate) record: DnsRecord,
     pub(crate) address: IpAddr,
@@ -300,10 +326,14 @@ impl DnsRecordExt for DnsAddress {
         }
         false
     }
+
+    fn clone_box(&self) -> Box<dyn DnsRecordExt> {
+        Box::new(self.clone())
+    }
 }
 
 /// A DNS pointer record
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DnsPointer {
     record: DnsRecord,
     pub(crate) alias: String, // the full name of Service Instance
@@ -339,10 +369,14 @@ impl DnsRecordExt for DnsPointer {
         }
         false
     }
+
+    fn clone_box(&self) -> Box<dyn DnsRecordExt> {
+        Box::new(self.clone())
+    }
 }
 
 // In common cases, there is one and only one SRV record for a particular fullname.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DnsSrv {
     pub(crate) record: DnsRecord,
     pub(crate) priority: u16,
@@ -404,6 +438,10 @@ impl DnsRecordExt for DnsSrv {
         }
         false
     }
+
+    fn clone_box(&self) -> Box<dyn DnsRecordExt> {
+        Box::new(self.clone())
+    }
 }
 
 // From RFC 6763 section 6:
@@ -418,7 +456,7 @@ impl DnsRecordExt for DnsSrv {
 //    marks).  Everything up to the first '=' character is the key (Section
 //    6.4).  Everything after the first '=' character to the end of the
 //    string (including subsequent '=' characters, if any) is the value
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DnsTxt {
     pub(crate) record: DnsRecord,
     pub(crate) text: Vec<u8>,
@@ -455,10 +493,14 @@ impl DnsRecordExt for DnsTxt {
         }
         false
     }
+
+    fn clone_box(&self) -> Box<dyn DnsRecordExt> {
+        Box::new(self.clone())
+    }
 }
 
 /// A DNS host information record
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct DnsHostInfo {
     record: DnsRecord,
     cpu: String,
@@ -499,6 +541,10 @@ impl DnsRecordExt for DnsHostInfo {
         }
         false
     }
+
+    fn clone_box(&self) -> Box<dyn DnsRecordExt> {
+        Box::new(self.clone())
+    }
 }
 
 /// Record for negative responses
@@ -506,7 +552,7 @@ impl DnsRecordExt for DnsHostInfo {
 /// [RFC4034 section 4.1](https://datatracker.ietf.org/doc/html/rfc4034#section-4.1)
 /// and
 /// [RFC6762 section 6.1](https://datatracker.ietf.org/doc/html/rfc6762#section-6.1)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DnsNSec {
     record: DnsRecord,
     next_domain: String,
@@ -577,6 +623,10 @@ impl DnsRecordExt for DnsNSec {
                 && self.record.entry == other_record.record.entry;
         }
         false
+    }
+
+    fn clone_box(&self) -> Box<dyn DnsRecordExt> {
+        Box::new(self.clone())
     }
 }
 
@@ -826,6 +876,11 @@ impl DnsOutgoing {
         self.additionals.push(Box::new(answer));
     }
 
+    /// A workaround as Rust doesn't allow us to pass DnsRecordBox in as `impl DnsRecordExt`
+    pub(crate) fn add_additional_answer_box(&mut self, answer_box: DnsRecordBox) {
+        self.additionals.push(answer_box);
+    }
+
     /// Returns true if `answer` is added to the outgoing msg.
     /// Returns false if `answer` was not added as it expired or suppressed by the incoming `msg`.
     pub(crate) fn add_answer(
@@ -875,16 +930,15 @@ impl DnsOutgoing {
             return;
         }
 
-        let ptr_added = self.add_answer(
-            msg,
-            DnsPointer::new(
-                service.get_type(),
-                TYPE_PTR,
-                CLASS_IN,
-                service.get_other_ttl(),
-                service.get_fullname().to_string(),
-            ),
+        let dns_ptr = DnsPointer::new(
+            service.get_type(),
+            TYPE_PTR,
+            CLASS_IN,
+            service.get_other_ttl(),
+            service.get_fullname().to_string(),
         );
+
+        let ptr_added = self.add_answer(msg, dns_ptr);
 
         if !ptr_added {
             debug!("answer was not added for msg {:?}", msg);
