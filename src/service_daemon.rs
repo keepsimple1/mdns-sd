@@ -174,13 +174,14 @@ impl ServiceDaemon {
             .set_nonblocking(true)
             .map_err(|e| e_fmt!("failed to set nonblocking for signal socket: {}", e))?;
 
-        let zc = Zeroconf::new(signal_sock)?;
+        let poller = Poller::new().map_err(|e| e_fmt!("Failed to create Poller: {}", e))?;
+
         let (sender, receiver) = bounded(100);
 
         // Spawn the daemon thread
         thread::Builder::new()
             .name("mDNS_daemon".to_string())
-            .spawn(move || Self::daemon_thread(zc, receiver))
+            .spawn(move || Self::daemon_thread(signal_sock, poller, receiver))
             .map_err(|e| e_fmt!("thread builder failed to spawn: {}", e))?;
 
         Ok(Self {
@@ -397,7 +398,9 @@ impl ServiceDaemon {
         )))
     }
 
-    fn daemon_thread(zc: Zeroconf, receiver: Receiver<Command>) {
+    fn daemon_thread(signal_sock: UdpSocket, poller: Poller, receiver: Receiver<Command>) {
+        let zc = Zeroconf::new(signal_sock, poller);
+
         if let Some(cmd) = Self::run(zc, receiver) {
             match cmd {
                 Command::Exit(resp_s) => {
@@ -908,9 +911,7 @@ struct Zeroconf {
 }
 
 impl Zeroconf {
-    fn new(signal_sock: UdpSocket) -> Result<Self> {
-        let poller = Poller::new().map_err(|e| e_fmt!("create Poller: {}", e))?;
-
+    fn new(signal_sock: UdpSocket, poller: Poller) -> Self {
         // Get interfaces.
         let my_ifaddrs = my_ip_interfaces();
 
@@ -937,7 +938,7 @@ impl Zeroconf {
 
         let status = DaemonStatus::Running;
 
-        Ok(Self {
+        Self {
             intf_socks,
             poll_ids: HashMap::new(),
             poll_id_count: 0,
@@ -955,7 +956,7 @@ impl Zeroconf {
             timers,
             status,
             pending_resolves: HashSet::new(),
-        })
+        }
     }
 
     fn process_set_option(&mut self, daemon_opt: DaemonOption) {
@@ -1074,7 +1075,7 @@ impl Zeroconf {
 
             if intf_selections[idx] {
                 // Add the interface
-                if self.intf_socks.get(&ip_addr).is_none() {
+                if !self.intf_socks.contains_key(&ip_addr) {
                     self.add_new_interface(intf);
                 }
             } else {
