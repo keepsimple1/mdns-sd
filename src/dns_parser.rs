@@ -50,7 +50,7 @@ pub const FLAGS_QR_QUERY: u16 = 0x0000;
 pub const FLAGS_QR_RESPONSE: u16 = 0x8000;
 pub const FLAGS_AA: u16 = 0x0400; // mask for Authoritative answer bit
 
-pub type DnsRecordBox = Box<dyn DnsRecordExt + Send>;
+pub type DnsRecordBox = Box<dyn DnsRecordExt>;
 
 #[inline]
 pub const fn ip_address_to_type(address: &IpAddr) -> u16 {
@@ -821,7 +821,7 @@ impl DnsOutgoing {
     //    server/responder SHOULD include the following additional records:
 
     //    o  All address records (type "A" and "AAAA") named in the SRV rdata.
-    pub(crate) fn add_additional_answer(&mut self, answer: impl DnsRecordExt + Send + 'static) {
+    pub(crate) fn add_additional_answer(&mut self, answer: impl DnsRecordExt + 'static) {
         debug!("add_additional_answer: {:?}", &answer);
         self.additionals.push(Box::new(answer));
     }
