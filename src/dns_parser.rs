@@ -930,15 +930,16 @@ impl DnsOutgoing {
             return;
         }
 
-        let dns_ptr = DnsPointer::new(
-            service.get_type(),
-            TYPE_PTR,
-            CLASS_IN,
-            service.get_other_ttl(),
-            service.get_fullname().to_string(),
+        let ptr_added = self.add_answer(
+            msg,
+            DnsPointer::new(
+                service.get_type(),
+                TYPE_PTR,
+                CLASS_IN,
+                service.get_other_ttl(),
+                service.get_fullname().to_string(),
+            ),
         );
-
-        let ptr_added = self.add_answer(msg, dns_ptr);
 
         if !ptr_added {
             debug!("answer was not added for msg {:?}", msg);

@@ -376,6 +376,10 @@ impl DnsCache {
             .collect()
     }
 
+    /// Returns a list of Known Answer for a given question of `name` with `qtype`.
+    /// The timestamp `now` is passed in to check TTL.
+    ///
+    /// Reference:  RFC 6762 section 7.1
     pub(crate) fn get_known_answers<'a>(
         &'a self,
         name: &str,
@@ -394,6 +398,12 @@ impl DnsCache {
             return Vec::new();
         };
 
+        // From RFC 6762 section 7.1:
+        // ..Generally, this applies only to Shared records, not Unique records,..
+        //
+        // ..a Multicast DNS querier SHOULD NOT include
+        // records in the Known-Answer list whose remaining TTL is less than
+        // half of their original TTL.
         records
             .iter()
             .filter(move |r| !r.get_record().is_unique() && !r.get_record().halflife_passed(now))
