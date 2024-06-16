@@ -110,6 +110,7 @@ enum Counter {
     CacheRefreshPTR,
     CacheRefreshSRV,
     CacheRefreshAddr,
+    KnownAnswerSuppression,
 }
 
 impl fmt::Display for Counter {
@@ -125,6 +126,7 @@ impl fmt::Display for Counter {
             Self::CacheRefreshPTR => write!(f, "cache-refresh-ptr"),
             Self::CacheRefreshSRV => write!(f, "cache-refresh-srv"),
             Self::CacheRefreshAddr => write!(f, "cache-refresh-addr"),
+            Self::KnownAnswerSuppression => write!(f, "known-answer-suppression"),
         }
     }
 }
@@ -1817,7 +1819,7 @@ impl Zeroconf {
         const META_QUERY: &str = "_services._dns-sd._udp.local.";
 
         for question in msg.questions.iter() {
-            debug!("question: {:?}", &question);
+            debug!("query question: {:?}", &question);
             let qtype = question.entry.ty;
 
             if qtype == TYPE_PTR {
@@ -1942,6 +1944,8 @@ impl Zeroconf {
 
             self.increase_counter(Counter::Respond, 1);
         }
+
+        self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count);
     }
 
     /// Increases the value of `counter` by `count`.

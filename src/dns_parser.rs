@@ -807,7 +807,7 @@ impl DnsOutPacket {
 
 /// Representation of an outgoing packet. The actual encoded packet
 /// is [DnsOutPacket].
-pub struct DnsOutgoing {
+pub(crate) struct DnsOutgoing {
     flags: u16,
     pub(crate) id: u16,
     multicast: bool,
@@ -815,6 +815,7 @@ pub struct DnsOutgoing {
     pub(crate) answers: Vec<(DnsRecordBox, u64)>,
     pub(crate) authorities: Vec<DnsPointer>,
     pub(crate) additionals: Vec<DnsRecordBox>,
+    pub(crate) known_answer_count: i64,
 }
 
 impl DnsOutgoing {
@@ -827,6 +828,7 @@ impl DnsOutgoing {
             answers: Vec::new(),
             authorities: Vec::new(),
             additionals: Vec::new(),
+            known_answer_count: 0,
         }
     }
 
@@ -889,10 +891,13 @@ impl DnsOutgoing {
         answer: impl DnsRecordExt + Send + 'static,
     ) -> bool {
         debug!("Check for add_answer");
-        if !answer.suppressed_by(msg) {
-            return self.add_answer_at_time(answer, 0);
+        if answer.suppressed_by(msg) {
+            debug!("my answer is suppressed by incoming msg");
+            self.known_answer_count += 1;
+            return false;
         }
-        false
+
+        self.add_answer_at_time(answer, 0)
     }
 
     /// Returns true if `answer` is added to the outgoing msg.
