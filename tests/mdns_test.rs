@@ -1377,7 +1377,9 @@ fn test_known_answer_suppression() {
                 println!("Resolved a service of {}", &info.get_fullname());
                 break;
             }
-            _ => {}
+            other => {
+                println!("Received event {:?}", other);
+            }
         }
     }
     assert!(resolved);
