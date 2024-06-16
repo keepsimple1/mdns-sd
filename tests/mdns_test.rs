@@ -1358,17 +1358,18 @@ fn test_known_answer_suppression() {
     let host_name = "known_answer_server.local.";
     let port = 5200;
 
+    // Browse the service first, to avoid the possible publish packets already cached by the system.
+    let client = ServiceDaemon::new().expect("Failed to create mdns client");
+    let browse_chan = client.browse(ty_domain).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+
+    // Publish the service
     let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
         .expect("valid service info");
     mdns_server
         .register(my_service)
         .expect("Failed to register my service");
-
-    // Browse the server
-    let client = ServiceDaemon::new().expect("Failed to create mdns client");
-    let browse_chan = client.browse(ty_domain).unwrap();
-    let timeout = Duration::from_secs(2);
-    let mut resolved = false;
 
     while let Ok(event) = browse_chan.recv_timeout(timeout) {
         match event {
