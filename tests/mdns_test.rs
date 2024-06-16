@@ -1205,7 +1205,7 @@ fn test_cache_flush_record() {
     let result = server.register(my_service.clone());
     assert!(result.is_ok());
 
-    println!("Re-registered with updated IPv4 addr");
+    println!("Re-registered with updated IPv4 addr: {}", &service_ip_addr);
 
     // Wait for the new registration sent out and cache flushed.
     sleep(Duration::from_secs(2));
@@ -1218,6 +1218,7 @@ fn test_cache_flush_record() {
             ServiceEvent::ServiceResolved(info) => {
                 // Verify the address flushed and updated.
                 let new_addrs = info.get_addresses();
+                println!("new address resolved: {:?}", new_addrs);
                 if new_addrs.len() == 1 {
                     let first_addr = new_addrs.iter().next().unwrap();
                     assert_eq!(first_addr, &service_ip_addr);
