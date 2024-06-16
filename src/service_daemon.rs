@@ -110,6 +110,7 @@ enum Counter {
     CacheRefreshPTR,
     CacheRefreshSRV,
     CacheRefreshAddr,
+    KnownAnswerSuppression,
 }
 
 impl fmt::Display for Counter {
@@ -125,6 +126,7 @@ impl fmt::Display for Counter {
             Self::CacheRefreshPTR => write!(f, "cache-refresh-ptr"),
             Self::CacheRefreshSRV => write!(f, "cache-refresh-srv"),
             Self::CacheRefreshAddr => write!(f, "cache-refresh-addr"),
+            Self::KnownAnswerSuppression => write!(f, "known-answer-suppression"),
         }
     }
 }
@@ -1375,12 +1377,21 @@ impl Zeroconf {
         self.send_query_vec(&[(name, qtype)]);
     }
 
-    /// Sends out a list of `queries` (i.e. DNS questions) via multicast.
-    fn send_query_vec(&self, queries: &[(&str, u16)]) {
-        debug!("Sending multicast queries: {:?}", queries);
+    /// Sends out a list of `questions` (i.e. DNS questions) via multicast.
+    fn send_query_vec(&self, questions: &[(&str, u16)]) {
+        debug!("Sending query questions: {:?}", questions);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
-        for (name, qtype) in queries {
+        let now = current_time_millis();
+
+        for (name, qtype) in questions {
             out.add_question(name, *qtype);
+
+            for record in self.cache.get_known_answers(name, *qtype, now) {
+                debug!("add known answer: {:?}", record);
+                let mut new_record = record.clone();
+                new_record.get_record_mut().update_ttl(now);
+                out.add_additional_answer_box(new_record);
+            }
         }
 
         let mut subnet_set: HashSet<u128> = HashSet::new();
@@ -1808,7 +1819,7 @@ impl Zeroconf {
         const META_QUERY: &str = "_services._dns-sd._udp.local.";
 
         for question in msg.questions.iter() {
-            debug!("question: {:?}", &question);
+            debug!("query question: {:?}", &question);
             let qtype = question.entry.ty;
 
             if qtype == TYPE_PTR {
@@ -1933,6 +1944,8 @@ impl Zeroconf {
 
             self.increase_counter(Counter::Respond, 1);
         }
+
+        self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count);
     }
 
     /// Increases the value of `counter` by `count`.
