@@ -1385,6 +1385,7 @@ fn test_known_answer_suppression() {
     // Verify the server respond counter is 1.
     let metrics_receiver = mdns_server.get_metrics().unwrap();
     let metrics = metrics_receiver.recv().unwrap();
+    println!("metrics: {:?}", &metrics);
     assert_eq!(metrics["respond"], 1);
 
     // Browse again
