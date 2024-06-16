@@ -394,8 +394,9 @@ impl DnsCache {
             _ => None,
         };
 
-        let Some(records) = records_opt else {
-            return Vec::new();
+        let records = match records_opt {
+            Some(items) => items,
+            None => return Vec::new(),
         };
 
         // From RFC 6762 section 7.1:
