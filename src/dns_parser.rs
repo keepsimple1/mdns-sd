@@ -947,7 +947,7 @@ impl DnsOutgoing {
         );
 
         if !ptr_added {
-            debug!("answer was not added for msg {:?}", msg);
+            debug!("PTR answer was not added for ServiceInfo {:?}", service);
             return;
         }
 
@@ -1270,7 +1270,7 @@ impl DnsIncoming {
             }
 
             if let Some(record) = rec {
-                debug!("{:?}", &record);
+                debug!("DnsIncoming: read_others: {:?}", &record);
                 self.answers.push(record);
             }
         }
