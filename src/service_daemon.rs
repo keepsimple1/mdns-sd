@@ -1531,7 +1531,6 @@ impl Zeroconf {
                         }
                     } else {
                         unresolved.insert(ptr.alias.clone());
-                        debug!("ServiceInfo not ready: {:?}", &info);
                     }
                 }
             }

@@ -1133,9 +1133,22 @@ fn hostname_resolution_timeout() {
 #[test]
 fn test_cache_flush_record() {
     // For debugging a failure in CI only.
-    env_logger::Builder::new()
+    use std::io::Write;
+    let thread_id = std::thread::current().id();
+    env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
         .target(env_logger::Target::Stdout)
+        .format(move |buf, record| {
+            let ts = buf.timestamp_millis();
+            writeln!(
+                buf,
+                "{}: {:?}: {}: {}",
+                ts,
+                thread_id,
+                record.level(),
+                record.args()
+            )
+        })
         .init();
 
     // Create a daemon
