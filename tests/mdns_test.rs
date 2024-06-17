@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
-// use test_log::test; // commented out to debug a failure in GitHub CI only.
+use test_log::test;
 
 /// This test covers:
 /// register(announce), browse(query), response, unregister, shutdown.
@@ -1132,25 +1132,6 @@ fn hostname_resolution_timeout() {
 
 #[test]
 fn test_cache_flush_record() {
-    // For debugging a failure in CI only.
-    use std::io::Write;
-    let thread_id = std::thread::current().id();
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
-        .target(env_logger::Target::Stdout)
-        .format(move |buf, record| {
-            let ts = buf.timestamp_millis();
-            writeln!(
-                buf,
-                "{}: {:?}: {}: {}",
-                ts,
-                thread_id,
-                record.level(),
-                record.args()
-            )
-        })
-        .init();
-
     // Create a daemon
     let server = ServiceDaemon::new().expect("Failed to create server");
     let service = "_test_cache_ptr._udp.local.";
