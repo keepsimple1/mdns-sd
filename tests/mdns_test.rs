@@ -1135,6 +1135,7 @@ fn test_cache_flush_record() {
     // For debugging a failure in CI only.
     env_logger::Builder::new()
         .filter_level(log::LevelFilter::Debug)
+        .target(env_logger::Target::Stdout)
         .init();
 
     // Create a daemon
