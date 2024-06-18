@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
-use test_log::test;
+// use test_log::test; // commented out for debugging a flaky test in CI.
 
 /// This test covers:
 /// register(announce), browse(query), response, unregister, shutdown.
@@ -1130,7 +1130,7 @@ fn hostname_resolution_timeout() {
     d.shutdown().unwrap();
 }
 
-#[test]
+#[test_log::test]
 fn test_cache_flush_record() {
     // Create a daemon
     let server = ServiceDaemon::new().expect("Failed to create server");

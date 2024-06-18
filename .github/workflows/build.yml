@@ -30,8 +30,5 @@ jobs:
         run: cargo build
       - name: Run clippy and fail if any warnings
         run: cargo clippy -- -D warnings
-      - name: Run a flaky test
-        if: matrix.os == 'ubuntu-20.04' || matrix.os == 'macos-latest'
-        run: RUST_LOG=debug cargo test test_cache_flush_record
       - name: Run tests
-        run: cargo test
+        run: RUST_LOG=debug cargo test
