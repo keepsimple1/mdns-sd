@@ -30,5 +30,9 @@ jobs:
         run: cargo build
       - name: Run clippy and fail if any warnings
         run: cargo clippy -- -D warnings
-      - name: Run tests
+      - name: Run tests with debugs
+        if: matrix.os == 'ubuntu-20.04' || matrix.os == 'macos-latest'
         run: RUST_LOG=debug cargo test
+      - name: Run tests on Windows
+        if: matrix.os == 'windows-latest'
+        run: cargo test
