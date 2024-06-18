@@ -1526,7 +1526,7 @@ impl Zeroconf {
                     if info.is_ready() {
                         resolved.insert(ptr.alias.clone());
                         match sender.send(ServiceEvent::ServiceResolved(info)) {
-                            Ok(()) => debug!("sent service resolved"),
+                            Ok(()) => debug!("sent service resolved: {}", &ptr.alias),
                             Err(e) => error!("failed to send service resolved: {}", e),
                         }
                     } else {
