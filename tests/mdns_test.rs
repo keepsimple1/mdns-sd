@@ -1411,3 +1411,11 @@ fn test_known_answer_suppression() {
     println!("metrics: {:?}", &metrics);
     assert!(metrics["known-answer-suppression"] > 0);
 }
+
+#[test]
+fn test_domain_suffix_in_browse() {
+    let mdns_client = ServiceDaemon::new().expect("failed to create mDNS client");
+    assert!(mdns_client.browse("_service-name._tcp.local").is_err());
+    assert!(mdns_client.browse("_service-name._tcp.local.").is_ok());
+    mdns_client.shutdown().unwrap();
+}
