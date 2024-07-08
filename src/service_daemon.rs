@@ -698,9 +698,11 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
 
             // Test if we can send packets successfully.
             let multicast_addr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
-            let test_packet = DnsOutgoing::new(0).to_packet_data();
-            sock.send_to(&test_packet, &multicast_addr)
-                .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
+            let test_packets = DnsOutgoing::new(0).to_dns_messages();
+            for packet in test_packets {
+                sock.send_to(&packet, &multicast_addr)
+                    .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
+            }
             Ok(sock)
         }
         IpAddr::V6(ip) => {
@@ -1288,7 +1290,7 @@ impl Zeroconf {
             );
         }
 
-        broadcast_dns_on_intf(&out, intf_sock);
+        send_dns_outgoing(&out, intf_sock);
         true
     }
 
@@ -1349,7 +1351,7 @@ impl Zeroconf {
             );
         }
 
-        broadcast_dns_on_intf(&out, intf_sock)
+        send_dns_outgoing(&out, intf_sock).remove(0)
     }
 
     /// Binds a channel `listener` to querying mDNS domain type `ty`.
@@ -1398,6 +1400,7 @@ impl Zeroconf {
             }
         }
 
+        // Send the query on one interface per subnet.
         let mut subnet_set: HashSet<u128> = HashSet::new();
         for (_, intf_sock) in self.intf_socks.iter() {
             let subnet = ifaddr_subnet(&intf_sock.intf.addr);
@@ -1405,7 +1408,7 @@ impl Zeroconf {
                 continue; // no need to send query the same subnet again.
             }
             subnet_set.insert(subnet);
-            broadcast_dns_on_intf(&out, intf_sock);
+            send_dns_outgoing(&out, intf_sock);
         }
     }
 
@@ -1944,7 +1947,7 @@ impl Zeroconf {
 
         if !out.answers.is_empty() {
             out.id = msg.id;
-            broadcast_dns_on_intf(&out, intf_sock);
+            send_dns_outgoing(&out, intf_sock);
 
             self.increase_counter(Counter::Respond, 1);
         }
@@ -2132,7 +2135,7 @@ impl Zeroconf {
     fn exec_command_unregister_resend(&mut self, packet: Vec<u8>, ip: IpAddr) {
         if let Some(intf_sock) = self.intf_socks.get(&ip) {
             debug!("UnregisterResend from {}", &ip);
-            broadcast_on_intf(&packet[..], intf_sock);
+            multicast_on_intf(&packet[..], intf_sock);
             self.increase_counter(Counter::UnregisterResend, 1);
         }
     }
@@ -2482,8 +2485,8 @@ fn my_ip_interfaces() -> Vec<Interface> {
         .collect()
 }
 
-/// Send an outgoing broadcast DNS query or response, and returns the packet bytes.
-fn broadcast_dns_on_intf(out: &DnsOutgoing, intf: &IntfSock) -> Vec<u8> {
+/// Send an outgoing mDNS query or response, and returns the packet bytes.
+fn send_dns_outgoing(out: &DnsOutgoing, intf: &IntfSock) -> Vec<Vec<u8>> {
     let qtype = if out.is_query() { "query" } else { "response" };
     debug!(
         "Broadcasting {}: {} questions {} answers {} authorities {} additional",
@@ -2493,16 +2496,18 @@ fn broadcast_dns_on_intf(out: &DnsOutgoing, intf: &IntfSock) -> Vec<u8> {
         out.authorities.len(),
         out.additionals.len()
     );
-    let packet = out.to_packet_data();
-    broadcast_on_intf(&packet[..], intf);
-    packet
+    let packet_list = out.to_dns_messages();
+    for packet in packet_list.iter() {
+        multicast_on_intf(packet, intf);
+    }
+    packet_list
 }
 
-/// Sends an outgoing broadcast packet, and returns the packet bytes.
-fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock) -> &'a [u8] {
+/// Sends a multicast packet, and returns the packet bytes.
+fn multicast_on_intf(packet: &[u8], intf: &IntfSock) {
     if packet.len() > MAX_MSG_ABSOLUTE {
         error!("Drop over-sized packet ({})", packet.len());
-        return &[];
+        return;
     }
 
     let sock: SocketAddr = match intf.intf.addr {
@@ -2515,7 +2520,6 @@ fn broadcast_on_intf<'a>(packet: &'a [u8], intf: &IntfSock) -> &'a [u8] {
     };
 
     send_packet(packet, sock, intf);
-    packet
 }
 
 /// Sends out `packet` to `addr` on the socket in `intf_sock`.
@@ -2540,8 +2544,8 @@ fn valid_instance_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        broadcast_dns_on_intf, check_domain_suffix, check_service_name_length, my_ip_interfaces,
-        new_socket_bind, valid_instance_name, HostnameResolutionEvent, IntfSock, ServiceDaemon,
+        check_domain_suffix, check_service_name_length, my_ip_interfaces, new_socket_bind,
+        send_dns_outgoing, valid_instance_name, HostnameResolutionEvent, IntfSock, ServiceDaemon,
         ServiceEvent, ServiceInfo, GROUP_ADDR_V4, MDNS_PORT,
     };
     use crate::{
@@ -2694,7 +2698,7 @@ mod tests {
                 intf: intf.clone(),
                 sock: new_socket_bind(&intf).unwrap(),
             };
-            broadcast_dns_on_intf(&packet_buffer, &intf_sock);
+            send_dns_outgoing(&packet_buffer, &intf_sock);
         }
 
         println!(
