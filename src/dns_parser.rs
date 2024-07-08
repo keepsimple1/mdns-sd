@@ -50,7 +50,10 @@ const MSG_HEADER_LEN: usize = 12;
 pub const FLAGS_QR_MASK: u16 = 0x8000; // mask for query/response bit
 pub const FLAGS_QR_QUERY: u16 = 0x0000;
 pub const FLAGS_QR_RESPONSE: u16 = 0x8000;
-pub const FLAGS_AA: u16 = 0x0400; // mask for Authoritative answer bit
+
+/// mask for Authoritative answer bit
+pub const FLAGS_AA: u16 = 0x0400;
+
 pub const FLAGS_TC: u16 = 0x0200; // TC(Truncated) bit
 
 pub type DnsRecordBox = Box<dyn DnsRecordExt>;
@@ -640,17 +643,23 @@ enum PacketState {
 }
 
 pub struct DnsOutPacket {
-    pub(crate) data: Vec<Vec<u8>>,
+    /// All bytes in `data` concatenated is the actual DNS message on the wire.
+    data: Vec<Vec<u8>>,
+
+    /// Current logical size of the packet. It starts with the mandatory header size.
     size: usize,
+
     state: PacketState,
-    names: HashMap<String, u16>, // k: name, v: offset
+
+    /// k: name, v: offset
+    names: HashMap<String, u16>,
 }
 
 impl DnsOutPacket {
-    pub(crate) fn new() -> Self {
+    fn new() -> Self {
         Self {
             data: Vec::new(),
-            size: MSG_HEADER_LEN,
+            size: MSG_HEADER_LEN, // Header is mandatory.
             state: PacketState::Init,
             names: HashMap::new(),
         }
@@ -804,6 +813,27 @@ impl DnsOutPacket {
     }
 
     /// Writes the header fields and finish the packet.
+    /// This function should be only called when finishing a packet.
+    ///
+    /// The header format is based on RFC 1035 section 4.1.1:
+    /// https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.1
+    //
+    //                                  1  1  1  1  1  1
+    //    0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
+    //    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    //    |                      ID                       |
+    //    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    //    |QR|   Opcode  |AA|TC|RD|RA|   Z    |   RCODE   |
+    //    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    //    |                    QDCOUNT                    |
+    //    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    //    |                    ANCOUNT                    |
+    //    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    //    |                    NSCOUNT                    |
+    //    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    //    |                    ARCOUNT                    |
+    //    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    //
     fn write_header(
         &mut self,
         id: u16,
@@ -819,6 +849,9 @@ impl DnsOutPacket {
         self.insert_short(0, q_count);
         self.insert_short(0, flags);
         self.insert_short(0, id);
+
+        // Adjust the size as it was already initialized to include the header.
+        self.size -= MSG_HEADER_LEN;
 
         self.state = PacketState::Finished;
     }
@@ -855,7 +888,7 @@ impl DnsOutgoing {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_QUERY
     }
 
-    const fn _is_response(&self) -> bool {
+    const fn is_response(&self) -> bool {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_RESPONSE
     }
 
@@ -1019,8 +1052,14 @@ impl DnsOutgoing {
         self.questions.push(q);
     }
 
-    /// Encode self into one or more packets on the wire.
-    pub(crate) fn to_packet_bytes(&self) -> Vec<Vec<u8>> {
+    /// Returns actual DNS messages to be sent on the wire.
+    pub(crate) fn to_dns_messages(&self) -> Vec<Vec<u8>> {
+        let packet_list = self.to_packets();
+        packet_list.iter().map(|p| p.data.concat()).collect()
+    }
+
+    /// Encode self into one or more packets.
+    pub(crate) fn to_packets(&self) -> Vec<DnsOutPacket> {
         let mut packet_list = Vec::new();
         let mut packet = DnsOutPacket::new();
 
@@ -1047,28 +1086,37 @@ impl DnsOutgoing {
         for addi in self.additionals.iter() {
             if packet.write_record(addi.as_ref(), 0) {
                 addi_count += 1;
-            } else {
-                // finish the current packet first.
-                packet.write_header(
-                    id,
-                    self.flags | FLAGS_TC,
-                    question_count,
-                    answer_count,
-                    auth_count,
-                    addi_count,
-                );
-
-                packet_list.push(packet);
-
-                // create a new packet and reset counts.
-                packet = DnsOutPacket::new();
-                packet.write_record(addi.as_ref(), 0);
-
-                question_count = 0;
-                answer_count = 0;
-                auth_count = 0;
-                addi_count = 1;
+                continue;
             }
+
+            // No more processing for response packets.
+            if self.is_response() {
+                break;
+            }
+
+            // For query, the current packet exceeds its max size due to known answers,
+            // need to truncate.
+
+            // finish the current packet first.
+            packet.write_header(
+                id,
+                self.flags | FLAGS_TC,
+                question_count,
+                answer_count,
+                auth_count,
+                addi_count,
+            );
+
+            packet_list.push(packet);
+
+            // create a new packet and reset counts.
+            packet = DnsOutPacket::new();
+            packet.write_record(addi.as_ref(), 0);
+
+            question_count = 0;
+            answer_count = 0;
+            auth_count = 0;
+            addi_count = 1;
         }
 
         packet.write_header(
@@ -1081,8 +1129,7 @@ impl DnsOutgoing {
         );
 
         packet_list.push(packet);
-
-        packet_list.iter().map(|p| p.data.concat()).collect()
+        packet_list
     }
 }
 
@@ -1526,12 +1573,10 @@ const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::dns_parser::{get_expiration_time, MSG_HEADER_LEN};
-
     use super::{
-        current_time_millis, DnsIncoming, DnsNSec, DnsOutgoing, DnsRecordExt, DnsSrv,
-        CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, TYPE_A, TYPE_AAAA,
-        TYPE_PTR,
+        current_time_millis, get_expiration_time, DnsIncoming, DnsNSec, DnsOutgoing, DnsPointer,
+        DnsRecordExt, DnsSrv, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
+        MSG_HEADER_LEN, TYPE_A, TYPE_AAAA, TYPE_PTR,
     };
 
     #[test]
@@ -1539,7 +1584,7 @@ mod tests {
         let name = "test_read";
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         out.add_question(name, TYPE_PTR);
-        let data = out.to_packet_bytes().remove(0);
+        let data = out.to_dns_messages().remove(0);
 
         // construct invalid data.
         let max_len = data.len() as u8;
@@ -1585,7 +1630,7 @@ mod tests {
             9000,
             "instance1".to_string(),
         ));
-        let data = response.to_packet_bytes().remove(0);
+        let data = response.to_dns_messages().remove(0);
         let mut data_too_short = data.clone();
 
         // verify the original data is good.
@@ -1644,5 +1689,62 @@ mod tests {
         let dns_record = srv.get_record();
         let new_refresh = get_expiration_time(dns_record.get_created(), dns_record.ttl, 85);
         assert_eq!(new_refresh, dns_record.get_refresh_time());
+    }
+
+    #[test]
+    fn test_packet_size() {
+        let mut outgoing = DnsOutgoing::new(FLAGS_QR_QUERY);
+        outgoing.add_question("test_packet_size", TYPE_PTR);
+
+        let packet = outgoing.to_packets().remove(0);
+        println!("packet size: {}", packet.size);
+        let data = packet.data.concat();
+        println!("data size: {}", data.len());
+
+        assert_eq!(packet.size, data.len());
+    }
+
+    #[test]
+    fn test_multi_packet_known_answer() {
+        let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        let name = "test_multi_packet._udp.local.";
+        query.add_question(name, TYPE_PTR);
+
+        let known_answer_count = 400;
+        for i in 0..known_answer_count {
+            let alias = format!("instance{}.{}", i, name);
+            let answer = DnsPointer::new(name, TYPE_PTR, CLASS_IN, 0, alias);
+            query.add_additional_answer(answer);
+        }
+
+        let mut packets = query.to_dns_messages();
+        println!("packets count: {}", packets.len());
+        assert_eq!(packets.len(), 2);
+
+        let first_packet = packets.remove(0);
+        println!("first packet size: {}", first_packet.len());
+
+        let incoming1 = DnsIncoming::new(first_packet).unwrap();
+        println!(
+            "first packet know answer count: {}, question count: {}",
+            incoming1.num_additionals, incoming1.num_questions
+        );
+
+        let second_packet = packets.remove(0);
+        println!("second packet size: {}", second_packet.len());
+
+        let incoming2 = DnsIncoming::new(second_packet).unwrap();
+        println!(
+            "second packet known answer count: {}, question count: {}",
+            incoming2.num_additionals, incoming2.num_questions
+        );
+
+        assert_eq!(
+            incoming1.num_additionals + incoming2.num_additionals,
+            known_answer_count
+        );
+
+        assert_eq!(incoming1.num_questions, 1);
+        assert_eq!(incoming2.num_questions, 0);
     }
 }
