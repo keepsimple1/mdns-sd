@@ -37,6 +37,8 @@ pub const CLASS_CACHE_FLUSH: u16 = 0x8000;
 /// Reference: RFC6762: https://datatracker.ietf.org/doc/html/rfc6762#section-17
 pub const MAX_MSG_ABSOLUTE: usize = 8972;
 
+const MSG_HEADER_LEN: usize = 12;
+
 // Definitions for DNS message header "flags" field
 //
 // The "flags" field is 16-bit long, in this format:
@@ -49,6 +51,7 @@ pub const FLAGS_QR_MASK: u16 = 0x8000; // mask for query/response bit
 pub const FLAGS_QR_QUERY: u16 = 0x0000;
 pub const FLAGS_QR_RESPONSE: u16 = 0x8000;
 pub const FLAGS_AA: u16 = 0x0400; // mask for Authoritative answer bit
+pub const FLAGS_TC: u16 = 0x0200; // TC(Truncated) bit
 
 pub type DnsRecordBox = Box<dyn DnsRecordExt>;
 
@@ -647,7 +650,7 @@ impl DnsOutPacket {
     pub(crate) fn new() -> Self {
         Self {
             data: Vec::new(),
-            size: 12,
+            size: MSG_HEADER_LEN,
             state: PacketState::Init,
             names: HashMap::new(),
         }
@@ -660,12 +663,8 @@ impl DnsOutPacket {
     }
 
     /// Writes a record (answer, authoritative answer, additional)
-    /// Returns true if a record is written successfully, otherwise false.
+    /// Returns false only if the packet exceeds the max size, otherwise returns true.
     fn write_record(&mut self, record_ext: &dyn DnsRecordExt, now: u64) -> bool {
-        if self.state == PacketState::Finished {
-            return false;
-        }
-
         let start_data_length = self.data.len();
         let start_size = self.size;
 
@@ -802,6 +801,26 @@ impl DnsOutPacket {
     fn write_byte(&mut self, byte: u8) {
         self.data.push(vec![byte]);
         self.size += 1;
+    }
+
+    /// Writes the header fields and finish the packet.
+    fn write_header(
+        &mut self,
+        id: u16,
+        flags: u16,
+        q_count: u16,
+        a_count: u16,
+        auth_count: u16,
+        addi_count: u16,
+    ) {
+        self.insert_short(0, addi_count);
+        self.insert_short(0, auth_count);
+        self.insert_short(0, a_count);
+        self.insert_short(0, q_count);
+        self.insert_short(0, flags);
+        self.insert_short(0, id);
+
+        self.state = PacketState::Finished;
     }
 }
 
@@ -1000,45 +1019,70 @@ impl DnsOutgoing {
         self.questions.push(q);
     }
 
-    pub(crate) fn to_packet_data(&self) -> Vec<u8> {
+    /// Encode self into one or more packets on the wire.
+    pub(crate) fn to_packet_bytes(&self) -> Vec<Vec<u8>> {
+        let mut packet_list = Vec::new();
         let mut packet = DnsOutPacket::new();
-        if packet.state != PacketState::Finished {
-            for question in self.questions.iter() {
-                packet.write_question(question);
-            }
 
-            let mut answer_count = 0;
-            for (answer, time) in self.answers.iter() {
-                if packet.write_record(answer.as_ref(), *time) {
-                    answer_count += 1;
-                }
-            }
+        let mut question_count = self.questions.len() as u16;
+        let mut answer_count = 0;
+        let mut auth_count = 0;
+        let mut addi_count = 0;
+        let id = if self.multicast { 0 } else { self.id };
 
-            let mut auth_count = 0;
-            for auth in self.authorities.iter() {
-                auth_count += u16::from(packet.write_record(auth, 0));
-            }
+        for question in self.questions.iter() {
+            packet.write_question(question);
+        }
 
-            let mut addi_count = 0;
-            for addi in self.additionals.iter() {
-                addi_count += u16::from(packet.write_record(addi.as_ref(), 0));
-            }
-
-            packet.state = PacketState::Finished;
-
-            packet.insert_short(0, addi_count);
-            packet.insert_short(0, auth_count);
-            packet.insert_short(0, answer_count);
-            packet.insert_short(0, self.questions.len() as u16);
-            packet.insert_short(0, self.flags);
-            if self.multicast {
-                packet.insert_short(0, 0);
-            } else {
-                packet.insert_short(0, self.id);
+        for (answer, time) in self.answers.iter() {
+            if packet.write_record(answer.as_ref(), *time) {
+                answer_count += 1;
             }
         }
 
-        packet.data.concat()
+        for auth in self.authorities.iter() {
+            auth_count += u16::from(packet.write_record(auth, 0));
+        }
+
+        for addi in self.additionals.iter() {
+            if packet.write_record(addi.as_ref(), 0) {
+                addi_count += 1;
+            } else {
+                // finish the current packet first.
+                packet.write_header(
+                    id,
+                    self.flags | FLAGS_TC,
+                    question_count,
+                    answer_count,
+                    auth_count,
+                    addi_count,
+                );
+
+                packet_list.push(packet);
+
+                // create a new packet and reset counts.
+                packet = DnsOutPacket::new();
+                packet.write_record(addi.as_ref(), 0);
+
+                question_count = 0;
+                answer_count = 0;
+                auth_count = 0;
+                addi_count = 1;
+            }
+        }
+
+        packet.write_header(
+            id,
+            self.flags,
+            question_count,
+            answer_count,
+            auth_count,
+            addi_count,
+        );
+
+        packet_list.push(packet);
+
+        packet_list.iter().map(|p| p.data.concat()).collect()
     }
 }
 
@@ -1059,8 +1103,6 @@ pub struct DnsIncoming {
 }
 
 impl DnsIncoming {
-    const HEADER_LEN: usize = 12;
-
     pub(crate) fn new(data: Vec<u8>) -> Result<Self> {
         let mut incoming = Self {
             offset: 0,
@@ -1090,7 +1132,7 @@ impl DnsIncoming {
     }
 
     fn read_header(&mut self) -> Result<()> {
-        if self.data.len() < Self::HEADER_LEN {
+        if self.data.len() < MSG_HEADER_LEN {
             return Err(Error::Msg(format!(
                 "DNS incoming: header is too short: {} bytes",
                 self.data.len()
@@ -1105,7 +1147,7 @@ impl DnsIncoming {
         self.num_authorities = u16_from_be_slice(&data[8..10]);
         self.num_additionals = u16_from_be_slice(&data[10..12]);
 
-        self.offset = Self::HEADER_LEN;
+        self.offset = MSG_HEADER_LEN;
 
         debug!(
             "read_header: id {}, {} questions {} answers {} authorities {} additionals",
@@ -1484,7 +1526,7 @@ const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::dns_parser::get_expiration_time;
+    use crate::dns_parser::{get_expiration_time, MSG_HEADER_LEN};
 
     use super::{
         current_time_millis, DnsIncoming, DnsNSec, DnsOutgoing, DnsRecordExt, DnsSrv,
@@ -1497,7 +1539,7 @@ mod tests {
         let name = "test_read";
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         out.add_question(name, TYPE_PTR);
-        let data = out.to_packet_data();
+        let data = out.to_packet_bytes().remove(0);
 
         // construct invalid data.
         let max_len = data.len() as u8;
@@ -1543,7 +1585,7 @@ mod tests {
             9000,
             "instance1".to_string(),
         ));
-        let data = response.to_packet_data();
+        let data = response.to_packet_bytes().remove(0);
         let mut data_too_short = data.clone();
 
         // verify the original data is good.
@@ -1551,7 +1593,7 @@ mod tests {
         assert!(incoming.is_ok());
 
         // verify that truncated data will cause an error.
-        data_too_short.truncate(DnsIncoming::HEADER_LEN + name.len() + 2);
+        data_too_short.truncate(MSG_HEADER_LEN + name.len() + 2);
         let invalid = DnsIncoming::new(data_too_short);
         assert!(invalid.is_err());
         if let Err(e) = invalid {
