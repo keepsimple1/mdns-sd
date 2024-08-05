@@ -1220,9 +1220,9 @@ impl DnsIncoming {
                     &name,
                     class,
                     ttl,
-                    self.read_u16(),
-                    self.read_u16(),
-                    self.read_u16(),
+                    self.read_u16()?,
+                    self.read_u16()?,
+                    self.read_u16()?,
                     self.read_name()?,
                 ))),
                 TYPE_HINFO => Some(Box::new(DnsHostInfo::new(
@@ -1284,11 +1284,18 @@ impl DnsIncoming {
         self.read_string(length as usize)
     }
 
-    fn read_u16(&mut self) -> u16 {
+    fn read_u16(&mut self) -> Result<u16> {
+        const U16_SIZE: usize = 2;
         let slice = &self.data[self.offset..];
-        let num = u16_from_be_slice(&slice[..2]);
-        self.offset += 2;
-        num
+        if slice.len() < U16_SIZE {
+            return Err(Error::Msg(format!(
+                "read_u16: slice len is only {}",
+                slice.len()
+            )));
+        }
+        let num = u16_from_be_slice(&slice[..U16_SIZE]);
+        self.offset += U16_SIZE;
+        Ok(num)
     }
 
     /// Reads the "Type Bit Map" block for a DNS NSEC record.
@@ -1556,6 +1563,40 @@ mod tests {
         assert!(invalid.is_err());
         if let Err(e) = invalid {
             println!("error: {}", e);
+        }
+    }
+
+    #[test]
+    fn test_rr_read_u16_error() {
+        let name = "rr_read_u16_err._udp.local.";
+        let host = "read_u16_err_host";
+        let mut response = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+        response.add_additional_answer(DnsSrv::new(
+            name,
+            CLASS_IN | CLASS_CACHE_FLUSH,
+            1,
+            1,
+            1,
+            9000,
+            host.to_string(),
+        ));
+        let data = response.to_packet_data();
+        let data_len = data.len();
+        let mut data_too_short = data.clone();
+
+        // verify the original data is good.
+        let incoming = DnsIncoming::new(data);
+        assert!(incoming.is_ok());
+
+        // Truncate the 'host' and its associated bytes (length byte, ending null byte),
+        // and one more byte off to create an invalid u16.
+        data_too_short.truncate(data_len - host.len() - 3);
+        let invalid = DnsIncoming::new(data_too_short);
+
+        // Verify the error of decoding.
+        assert!(invalid.is_err());
+        if let Err(e) = invalid {
+            println!("error: {e}");
         }
     }
 
