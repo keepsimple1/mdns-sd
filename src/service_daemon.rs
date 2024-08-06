@@ -1205,11 +1205,13 @@ impl Zeroconf {
 
         for (_, intf_sock) in self.intf_socks.iter() {
             let subnet = ifaddr_subnet(&intf_sock.intf.addr);
-            if subnet_set.contains(&subnet) {
+            if !intf_sock.intf.is_link_local() && subnet_set.contains(&subnet) {
                 continue; // no need to send again in the same subnet.
             }
             if self.broadcast_service_on_intf(info, intf_sock) {
-                subnet_set.insert(subnet);
+                if !intf_sock.intf.is_link_local() {
+                    subnet_set.insert(subnet);
+                }
                 outgoing_addrs.push(intf_sock.intf.ip());
             }
         }
@@ -1400,11 +1402,13 @@ impl Zeroconf {
 
         let mut subnet_set: HashSet<u128> = HashSet::new();
         for (_, intf_sock) in self.intf_socks.iter() {
-            let subnet = ifaddr_subnet(&intf_sock.intf.addr);
-            if subnet_set.contains(&subnet) {
-                continue; // no need to send query the same subnet again.
+            if !intf_sock.intf.is_link_local() {
+                let subnet = ifaddr_subnet(&intf_sock.intf.addr);
+                if subnet_set.contains(&subnet) {
+                    continue; // no need to send query the same subnet again.
+                }
+                subnet_set.insert(subnet);
             }
-            subnet_set.insert(subnet);
             broadcast_dns_on_intf(&out, intf_sock);
         }
     }
