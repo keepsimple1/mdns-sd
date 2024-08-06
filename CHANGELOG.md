@@ -1,3 +1,20 @@
+# Version 0.11.2 (2024-08-06)
+
+Mostly a bugfix and refactoring release, with limited support added for Known Answer Suppression (single packet).
+
+## All changes
+
+* 8106d07 Skip link local addresses while checking for redundant announcements or query packets (#235) (hrzlgnm)
+* b1a173a check data length in read_u16 (#234) (keepsimple1)
+* d1c9157 Add sanity check for service type domain suffix in browse (#231) (keepsimple1)
+* 736bec6 enable DEBUG logging for a failed test in CI (#229) (keepsimple1)
+* fd00210 add logs in test to debug CI failure (#228) (keepsimple1)
+* 5e0f1d3 add support for Known Answer Suppression part 1 (#227) (keepsimple1)
+* 5ae18a6 refactoring: remove Send for DnsRecordBox (#226) (keepsimple1)
+* d7d4867 fix integration_success test (#223) (keepsimple1)
+* 6f34f1c move DnsCache into its own module (#221) (keepsimple1)
+* bcdc2f9 add welcome to our new contributor (#220) (keepsimple1)
+
 # Version 0.11.1 (2024-05-13)
 
 ## Highlights
