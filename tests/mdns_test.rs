@@ -167,7 +167,11 @@ fn integration_success() {
     assert_eq!(metrics["register-resend"], 1);
     assert_eq!(metrics["unregister-resend"], my_ifaddrs.len() as i64);
     assert!(metrics["browse"] >= 2); // browse has been retransmitted.
-    assert!(metrics["respond"] >= 2); // respond has been sent for every browse.
+
+    // respond has been sent for every browse, or they are suppressed by "known answer".
+    let respond_count = metrics.get("respond").unwrap_or(&0);
+    let known_answer_count = metrics.get("known-answer-suppression").unwrap_or(&0);
+    assert!(*respond_count >= 2 || *known_answer_count > 0);
 
     // Test the special meta-query of "_services._dns-sd._udp.local."
     let service2_type = "_my-service2._udp.local.";
