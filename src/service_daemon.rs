@@ -1412,7 +1412,6 @@ impl Zeroconf {
                 }
                 subnet_set.insert(subnet);
             }
-            subnet_set.insert(subnet);
             send_dns_outgoing(&out, intf_sock);
         }
     }
