@@ -56,7 +56,7 @@ pub const FLAGS_AA: u16 = 0x0400;
 
 pub const FLAGS_TC: u16 = 0x0200; // TC(Truncated) bit
 
-pub type DnsRecordBox = Box<dyn DnsRecordExt>;
+pub(crate) type DnsRecordBox = Box<dyn DnsRecordExt>;
 
 #[inline]
 pub const fn ip_address_to_type(address: &IpAddr) -> u16 {
