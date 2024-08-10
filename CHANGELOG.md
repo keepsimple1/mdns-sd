@@ -7,6 +7,8 @@ Mostly a bugfix and refactoring release, with limited support added for:
 
 ## All changes
 
+* 92eae74 add support for Known Answer Suppression part 2: multi-packet: querier side (#232) (keepsimple1)
+* ada3486 fix test integration_success: respond count or known answer suppression count (#237) (keepsimple1)
 * 8106d07 Skip link local addresses while checking for redundant announcements or query packets (#235) (hrzlgnm)
 * b1a173a check data length in read_u16 (#234) (keepsimple1)
 * d1c9157 Add sanity check for service type domain suffix in browse (#231) (keepsimple1)
