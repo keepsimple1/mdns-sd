@@ -1,8 +1,8 @@
 //! DNS parsing utility.
 //!
 //! [DnsIncoming] is the logic representation of an incoming DNS packet.
-//! [DnsOutgoing] is the logic representation of an outgoing DNS packet.
-//! [DnsOutPacket] is the encoded packet for [DnsOutgoing].
+//! [DnsOutgoing] is the logic representation of an outgoing DNS message of one or more packets.
+//! [DnsOutPacket] is the encoded one packet for [DnsOutgoing].
 
 #[cfg(feature = "logging")]
 use crate::log::debug;
@@ -54,7 +54,8 @@ pub const FLAGS_QR_RESPONSE: u16 = 0x8000;
 /// mask for Authoritative answer bit
 pub const FLAGS_AA: u16 = 0x0400;
 
-pub const FLAGS_TC: u16 = 0x0200; // TC(Truncated) bit
+/// mask for TC(Truncated) bit
+pub const FLAGS_TC: u16 = 0x0200;
 
 pub(crate) type DnsRecordBox = Box<dyn DnsRecordExt>;
 
@@ -642,8 +643,9 @@ enum PacketState {
     Finished = 1,
 }
 
+/// A single packet for outgoing DNS message.
 pub(crate) struct DnsOutPacket {
-    /// All bytes in `data` concatenated is the actual DNS message on the wire.
+    /// All bytes in `data` concatenated is the actual packet on the wire.
     data: Vec<Vec<u8>>,
 
     /// Current logical size of the packet. It starts with the size of the mandatory header.
@@ -1053,8 +1055,8 @@ impl DnsOutgoing {
         self.questions.push(q);
     }
 
-    /// Returns actual DNS messages to be sent on the wire.
-    pub(crate) fn to_dns_messages(&self) -> Vec<Vec<u8>> {
+    /// Returns a list of actual DNS packet data to be sent on the wire.
+    pub(crate) fn to_data_on_wire(&self) -> Vec<Vec<u8>> {
         let packet_list = self.to_packets();
         packet_list.iter().map(|p| p.data.concat()).collect()
     }
@@ -1592,7 +1594,7 @@ mod tests {
         let name = "test_read";
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         out.add_question(name, TYPE_PTR);
-        let data = out.to_dns_messages().remove(0);
+        let data = out.to_data_on_wire().remove(0);
 
         // construct invalid data.
         let max_len = data.len() as u8;
@@ -1638,7 +1640,7 @@ mod tests {
             9000,
             "instance1".to_string(),
         ));
-        let data = response.to_dns_messages().remove(0);
+        let data = response.to_data_on_wire().remove(0);
         let mut data_too_short = data.clone();
 
         // verify the original data is good.
@@ -1668,7 +1670,7 @@ mod tests {
             9000,
             host.to_string(),
         ));
-        let data = response.to_dns_messages().remove(0);
+        let data = response.to_data_on_wire().remove(0);
         let data_len = data.len();
         let mut data_too_short = data.clone();
 
@@ -1759,7 +1761,7 @@ mod tests {
             query.add_additional_answer(answer);
         }
 
-        let mut packets = query.to_dns_messages();
+        let mut packets = query.to_data_on_wire();
         println!("packets count: {}", packets.len());
         assert_eq!(packets.len(), 2);
 

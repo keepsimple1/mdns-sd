@@ -698,7 +698,7 @@ fn new_socket_bind(intf: &Interface) -> Result<Socket> {
 
             // Test if we can send packets successfully.
             let multicast_addr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
-            let test_packets = DnsOutgoing::new(0).to_dns_messages();
+            let test_packets = DnsOutgoing::new(0).to_data_on_wire();
             for packet in test_packets {
                 sock.send_to(&packet, &multicast_addr)
                     .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
@@ -2500,7 +2500,7 @@ fn send_dns_outgoing(out: &DnsOutgoing, intf: &IntfSock) -> Vec<Vec<u8>> {
         out.authorities.len(),
         out.additionals.len()
     );
-    let packet_list = out.to_dns_messages();
+    let packet_list = out.to_data_on_wire();
     for packet in packet_list.iter() {
         multicast_on_intf(packet, intf);
     }
