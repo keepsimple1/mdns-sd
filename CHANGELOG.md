@@ -1,6 +1,9 @@
 # Version 0.11.2 (2024-08-06)
 
-Mostly a bugfix and refactoring release, with limited support added for Known Answer Suppression (single packet).
+Mostly a bugfix and refactoring release, with limited support added for:
+- Known Answer Suppression (RFC 6762 section 7.1 and 7.2):
+    - single packet for querier and responder,
+    - multi-packet for querier.
 
 ## All changes
 
