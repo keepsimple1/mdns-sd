@@ -1668,7 +1668,7 @@ mod tests {
             9000,
             host.to_string(),
         ));
-        let data = response.to_packet_data();
+        let data = response.to_dns_messages().remove(0);
         let data_len = data.len();
         let mut data_too_short = data.clone();
 
