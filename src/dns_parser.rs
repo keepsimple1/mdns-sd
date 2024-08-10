@@ -55,6 +55,15 @@ pub const FLAGS_QR_RESPONSE: u16 = 0x8000;
 pub const FLAGS_AA: u16 = 0x0400;
 
 /// mask for TC(Truncated) bit
+///
+/// 2024-08-10: currently this flag is only supported on the querier side,
+///             not supported on the responder side. I.e. the responder only
+///             handles the first packet and ignore this bit. Since the
+///             additional packets have 0 questions, the processing of them
+///             is no-op.
+///             In practice, this means the responder supports Known-Answer
+///             only with single packet, not multi-packet. The querier supports
+///             both single packet and multi-packet.
 pub const FLAGS_TC: u16 = 0x0200;
 
 pub(crate) type DnsRecordBox = Box<dyn DnsRecordExt>;
