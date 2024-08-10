@@ -675,7 +675,8 @@ impl DnsOutPacket {
     }
 
     /// Writes a record (answer, authoritative answer, additional)
-    /// Returns false only if the packet exceeds the max size, otherwise returns true.
+    /// Returns false if the packet exceeds the max size with this record, nothing is written to the packet.
+    /// otherwise returns true.
     fn write_record(&mut self, record_ext: &dyn DnsRecordExt, now: u64) -> bool {
         let start_data_length = self.data.len();
         let start_size = self.size;
@@ -1749,7 +1750,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multi_packet_known_answer() {
+    fn test_querier_known_answer_multi_packet() {
         let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
         let name = "test_multi_packet._udp.local.";
         query.add_question(name, TYPE_PTR);

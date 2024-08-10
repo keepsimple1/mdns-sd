@@ -1353,6 +1353,7 @@ impl Zeroconf {
             );
         }
 
+        // `out` data is non-empty, hence we can do this.
         send_dns_outgoing(&out, intf_sock).remove(0)
     }
 
@@ -2493,7 +2494,7 @@ fn my_ip_interfaces() -> Vec<Interface> {
 fn send_dns_outgoing(out: &DnsOutgoing, intf: &IntfSock) -> Vec<Vec<u8>> {
     let qtype = if out.is_query() { "query" } else { "response" };
     debug!(
-        "Broadcasting {}: {} questions {} answers {} authorities {} additional",
+        "Multicasting {}: {} questions {} answers {} authorities {} additional",
         qtype,
         out.questions.len(),
         out.answers.len(),
