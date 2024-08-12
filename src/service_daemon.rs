@@ -111,8 +111,6 @@ enum Counter {
     CacheRefreshSRV,
     CacheRefreshAddr,
     KnownAnswerSuppression,
-    QuerySuppression,
-    AnnouncementSuppression,
 }
 
 impl fmt::Display for Counter {
@@ -129,8 +127,6 @@ impl fmt::Display for Counter {
             Self::CacheRefreshSRV => write!(f, "cache-refresh-srv"),
             Self::CacheRefreshAddr => write!(f, "cache-refresh-addr"),
             Self::KnownAnswerSuppression => write!(f, "known-answer-suppression"),
-            Self::QuerySuppression => write!(f, "query-suppression"),
-            Self::AnnouncementSuppression => write!(f, "announcement-suppression"),
         }
     }
 }
@@ -574,19 +570,16 @@ impl ServiceDaemon {
 
             // Refresh cached A/AAAA records with active queriers
             let mut query_count = 0;
-            let mut supress_count = 0i64;
             for (hostname, _sender) in zc.hostname_resolvers.iter() {
                 for (hostname, ip_addr) in
                     zc.cache.refresh_due_hostname_resolutions(hostname).iter()
                 {
-                    let sent = zc.send_query(hostname, ip_address_to_type(ip_addr));
+                    zc.send_query(hostname, ip_address_to_type(ip_addr));
                     query_count += 1;
-                    supress_count += zc.intf_socks.len() as i64 - sent;
                 }
             }
 
             zc.increase_counter(Counter::CacheRefreshAddr, query_count);
-            zc.increase_counter(Counter::QuerySuppression, supress_count);
 
             // check and evict expired records in our cache
             let now = current_time_millis();
@@ -1187,8 +1180,6 @@ impl Zeroconf {
         }
 
         let outgoing_addrs = self.send_unsolicited_response(&info);
-        let suppressed = (self.intf_socks.len() - outgoing_addrs.len()) as i64;
-        self.increase_counter(Counter::AnnouncementSuppression, suppressed);
         if !outgoing_addrs.is_empty() {
             self.notify_monitors(DaemonEvent::Announce(
                 info.get_fullname().to_string(),
@@ -1395,12 +1386,12 @@ impl Zeroconf {
     }
 
     /// Sends a multicast query for `name` with `qtype`.
-    fn send_query(&self, name: &str, qtype: u16) -> i64 {
+    fn send_query(&self, name: &str, qtype: u16) {
         self.send_query_vec(&[(name, qtype)])
     }
 
     /// Sends out a list of `questions` (i.e. DNS questions) via multicast.
-    fn send_query_vec(&self, questions: &[(&str, u16)]) -> i64 {
+    fn send_query_vec(&self, questions: &[(&str, u16)]) {
         debug!("Sending query questions: {:?}", questions);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         let now = current_time_millis();
@@ -1418,7 +1409,6 @@ impl Zeroconf {
 
         // Send the query on one interface per address family.
         let mut intf_af_set: HashSet<(u32, u8)> = HashSet::new();
-        let mut sent = 0i64;
         for (_, intf_sock) in self.intf_socks.iter() {
             let af = match intf_sock.intf.addr {
                 IfAddr::V4(_) => 4u8,
@@ -1431,10 +1421,7 @@ impl Zeroconf {
             }
             intf_af_set.insert(intf_af);
             send_dns_outgoing(&out, intf_sock);
-            sent += 1
         }
-
-        sent
     }
 
     /// Reads from the socket of `ip`.
@@ -1514,17 +1501,13 @@ impl Zeroconf {
             for record in records {
                 if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
                     if self.cache.get_addr(&srv.host).is_none() {
-                        let sent = self.send_query_vec(&[(&srv.host, TYPE_A), (&srv.host, TYPE_AAAA)]);
-                        let suppressed = self.intf_socks.len() as i64 - sent;
-                        self.increase_counter(Counter::QuerySuppression, suppressed);
+                        self.send_query_vec(&[(&srv.host, TYPE_A), (&srv.host, TYPE_AAAA)]);
                         return true;
                     }
                 }
             }
         } else {
-            let sent = self.send_query(instance, TYPE_ANY);
-            let suppressed = self.intf_socks.len() as i64 - sent;
-            self.increase_counter(Counter::QuerySuppression, suppressed);
+            self.send_query(instance, TYPE_ANY);
             return true;
         }
 
@@ -2054,9 +2037,7 @@ impl Zeroconf {
             self.query_cache_for_service(&ty, listener.clone());
         }
 
-        let sent = self.send_query(&ty, TYPE_PTR);
-        let suppressed = self.intf_socks.len() as i64 - sent;
-        self.increase_counter(Counter::QuerySuppression, suppressed);
+        self.send_query(&ty, TYPE_PTR);
         self.increase_counter(Counter::Browse, 1);
 
         let next_time = current_time_millis() + (next_delay * 1000) as u64;
@@ -2237,7 +2218,6 @@ impl Zeroconf {
         match self.my_services.get(&fullname) {
             Some(info) => {
                 let outgoing_addrs = self.send_unsolicited_response(info);
-                let supressed = (self.intf_socks.len() - outgoing_addrs.len()) as i64;
                 if !outgoing_addrs.is_empty() {
                     self.notify_monitors(DaemonEvent::Announce(
                         fullname,
@@ -2245,7 +2225,6 @@ impl Zeroconf {
                     ));
                 }
                 self.increase_counter(Counter::RegisterResend, 1);
-                self.increase_counter(Counter::AnnouncementSuppression, supressed);
             }
             None => debug!("announce: cannot find such service {}", &fullname),
         }
@@ -2255,24 +2234,21 @@ impl Zeroconf {
     fn refresh_active_services(&mut self) {
         let mut query_ptr_count = 0;
         let mut query_srv_count = 0;
-        let mut supressed_qry_count = 0;
         let mut new_timers = HashSet::new();
 
         for (ty_domain, _sender) in self.service_queriers.iter() {
             let refreshed_timers = self.cache.refresh_due_ptr(ty_domain);
             if !refreshed_timers.is_empty() {
                 debug!("sending refresh query for PTR: {}", ty_domain);
-                let sent = self.send_query(ty_domain, TYPE_PTR);
+                self.send_query(ty_domain, TYPE_PTR);
                 query_ptr_count += 1;
-                supressed_qry_count += self.intf_socks.len() as i64 - sent;
                 new_timers.extend(refreshed_timers);
             }
 
             let (instances, timers) = self.cache.refresh_due_srv(ty_domain);
             for instance in instances.iter() {
                 debug!("sending refresh query for SRV: {}", instance);
-                let sent = self.send_query(instance, TYPE_ANY);
-                supressed_qry_count += self.intf_socks.len() as i64 - sent;
+                self.send_query(instance, TYPE_ANY);
                 query_srv_count += 1;
             }
             new_timers.extend(timers);
@@ -2284,7 +2260,6 @@ impl Zeroconf {
 
         self.increase_counter(Counter::CacheRefreshPTR, query_ptr_count);
         self.increase_counter(Counter::CacheRefreshSRV, query_srv_count);
-        self.increase_counter(Counter::QuerySuppression, supressed_qry_count);
     }
 }
 
