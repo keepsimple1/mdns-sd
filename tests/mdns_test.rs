@@ -23,7 +23,7 @@ fn integration_success() {
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
 
-    let mut itf_af_set : HashSet<(u32, u8)> = HashSet::new();
+    let mut itf_af_set: HashSet<(u32, u8)> = HashSet::new();
     let mut all_itfs = my_ip_interfaces();
     all_itfs.retain(|itf| {
         let af = match itf.addr {

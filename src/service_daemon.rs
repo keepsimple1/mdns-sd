@@ -39,7 +39,7 @@ use crate::{
         TYPE_PTR, TYPE_SRV, TYPE_TXT,
     },
     error::{Error, Result},
-    service_info::{ServiceInfo},
+    service_info::ServiceInfo,
     Receiver,
 };
 use flume::{bounded, Sender, TrySendError};
@@ -2121,8 +2121,8 @@ impl Zeroconf {
 
                 let mut intf_af_set: HashSet<(u32, u8)> = HashSet::new();
                 for (ip, intf_sock) in self.intf_socks.iter() {
-                    let af=  match ip  {
-                        IpAddr::V4(_)  => 4u8,
+                    let af = match ip {
+                        IpAddr::V4(_) => 4u8,
                         IpAddr::V6(_) => 6u8,
                     };
                     let itf_af = (intf_sock.intf.index.unwrap_or(0), af);
