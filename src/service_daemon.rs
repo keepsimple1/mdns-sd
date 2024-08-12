@@ -39,11 +39,11 @@ use crate::{
         TYPE_PTR, TYPE_SRV, TYPE_TXT,
     },
     error::{Error, Result},
-    service_info::{ifaddr_subnet, ServiceInfo},
+    service_info::{ServiceInfo},
     Receiver,
 };
 use flume::{bounded, Sender, TrySendError};
-use if_addrs::Interface;
+use if_addrs::{IfAddr, Interface};
 use polling::Poller;
 use socket2::{SockAddr, Socket};
 use std::{
@@ -111,6 +111,8 @@ enum Counter {
     CacheRefreshSRV,
     CacheRefreshAddr,
     KnownAnswerSuppression,
+    QuerySuppression,
+    AnnouncementSuppression,
 }
 
 impl fmt::Display for Counter {
@@ -127,6 +129,8 @@ impl fmt::Display for Counter {
             Self::CacheRefreshSRV => write!(f, "cache-refresh-srv"),
             Self::CacheRefreshAddr => write!(f, "cache-refresh-addr"),
             Self::KnownAnswerSuppression => write!(f, "known-answer-suppression"),
+            Self::QuerySuppression => write!(f, "query-suppression"),
+            Self::AnnouncementSuppression => write!(f, "announcement-suppression"),
         }
     }
 }
@@ -570,16 +574,19 @@ impl ServiceDaemon {
 
             // Refresh cached A/AAAA records with active queriers
             let mut query_count = 0;
+            let mut supress_count = 0i64;
             for (hostname, _sender) in zc.hostname_resolvers.iter() {
                 for (hostname, ip_addr) in
                     zc.cache.refresh_due_hostname_resolutions(hostname).iter()
                 {
-                    zc.send_query(hostname, ip_address_to_type(ip_addr));
+                    let sent = zc.send_query(hostname, ip_address_to_type(ip_addr));
                     query_count += 1;
+                    supress_count += zc.intf_socks.len() as i64 - sent;
                 }
             }
 
             zc.increase_counter(Counter::CacheRefreshAddr, query_count);
+            zc.increase_counter(Counter::QuerySuppression, supress_count);
 
             // check and evict expired records in our cache
             let now = current_time_millis();
@@ -1180,6 +1187,8 @@ impl Zeroconf {
         }
 
         let outgoing_addrs = self.send_unsolicited_response(&info);
+        let suppressed = (self.intf_socks.len() - outgoing_addrs.len()) as i64;
+        self.increase_counter(Counter::AnnouncementSuppression, suppressed);
         if !outgoing_addrs.is_empty() {
             self.notify_monitors(DaemonEvent::Announce(
                 info.get_fullname().to_string(),
@@ -1199,21 +1208,25 @@ impl Zeroconf {
         self.my_services.insert(service_fullname, info);
     }
 
-    /// Sends out annoucement of `info` on every valid interface.
-    /// Returns the list of interface IPs that sent out the annoucement.
+    /// Sends out announcement of `info` on every valid interface.
+    /// Returns the list of interface IPs that sent out the announcement.
     fn send_unsolicited_response(&self, info: &ServiceInfo) -> Vec<IpAddr> {
         let mut outgoing_addrs = Vec::new();
-        let mut subnet_set: HashSet<u128> = HashSet::new();
+        // Send the announcement on one interface per address family.
+        let mut intf_af_set: HashSet<(u32, u8)> = HashSet::new();
 
         for (_, intf_sock) in self.intf_socks.iter() {
-            let subnet = ifaddr_subnet(&intf_sock.intf.addr);
-            if !intf_sock.intf.is_link_local() && subnet_set.contains(&subnet) {
-                continue; // no need to send again in the same subnet.
+            let af = match intf_sock.intf.addr {
+                IfAddr::V4(_) => 4u8,
+                IfAddr::V6(_) => 6u8,
+            };
+            let intf_af = (intf_sock.intf.index.unwrap_or(0), af);
+            if intf_af_set.contains(&intf_af) {
+                debug!("Already used {:#?}", intf_af);
+                continue; // no need to send again on the same interface with same address family.
             }
             if self.broadcast_service_on_intf(info, intf_sock) {
-                if !intf_sock.intf.is_link_local() {
-                    subnet_set.insert(subnet);
-                }
+                intf_af_set.insert(intf_af);
                 outgoing_addrs.push(intf_sock.intf.ip());
             }
         }
@@ -1382,12 +1395,12 @@ impl Zeroconf {
     }
 
     /// Sends a multicast query for `name` with `qtype`.
-    fn send_query(&self, name: &str, qtype: u16) {
-        self.send_query_vec(&[(name, qtype)]);
+    fn send_query(&self, name: &str, qtype: u16) -> i64 {
+        self.send_query_vec(&[(name, qtype)])
     }
 
     /// Sends out a list of `questions` (i.e. DNS questions) via multicast.
-    fn send_query_vec(&self, questions: &[(&str, u16)]) {
+    fn send_query_vec(&self, questions: &[(&str, u16)]) -> i64 {
         debug!("Sending query questions: {:?}", questions);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         let now = current_time_millis();
@@ -1403,18 +1416,25 @@ impl Zeroconf {
             }
         }
 
-        // Send the query on one interface per subnet.
-        let mut subnet_set: HashSet<u128> = HashSet::new();
+        // Send the query on one interface per address family.
+        let mut intf_af_set: HashSet<(u32, u8)> = HashSet::new();
+        let mut sent = 0i64;
         for (_, intf_sock) in self.intf_socks.iter() {
-            if !intf_sock.intf.is_link_local() {
-                let subnet = ifaddr_subnet(&intf_sock.intf.addr);
-                if subnet_set.contains(&subnet) {
-                    continue; // no need to send query the same subnet again.
-                }
-                subnet_set.insert(subnet);
+            let af = match intf_sock.intf.addr {
+                IfAddr::V4(_) => 4u8,
+                IfAddr::V6(_) => 6u8,
+            };
+            let intf_af = (intf_sock.intf.index.unwrap_or(0), af);
+            if intf_af_set.contains(&intf_af) {
+                debug!("Already used {:#?}", intf_af);
+                continue; // no need to send query the same interface with same address family.
             }
+            intf_af_set.insert(intf_af);
             send_dns_outgoing(&out, intf_sock);
+            sent += 1
         }
+
+        sent
     }
 
     /// Reads from the socket of `ip`.
@@ -1494,13 +1514,17 @@ impl Zeroconf {
             for record in records {
                 if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
                     if self.cache.get_addr(&srv.host).is_none() {
-                        self.send_query_vec(&[(&srv.host, TYPE_A), (&srv.host, TYPE_AAAA)]);
+                        let sent = self.send_query_vec(&[(&srv.host, TYPE_A), (&srv.host, TYPE_AAAA)]);
+                        let suppressed = self.intf_socks.len() as i64 - sent;
+                        self.increase_counter(Counter::QuerySuppression, suppressed);
                         return true;
                     }
                 }
             }
         } else {
-            self.send_query(instance, TYPE_ANY);
+            let sent = self.send_query(instance, TYPE_ANY);
+            let suppressed = self.intf_socks.len() as i64 - sent;
+            self.increase_counter(Counter::QuerySuppression, suppressed);
             return true;
         }
 
@@ -2030,7 +2054,9 @@ impl Zeroconf {
             self.query_cache_for_service(&ty, listener.clone());
         }
 
-        self.send_query(&ty, TYPE_PTR);
+        let sent = self.send_query(&ty, TYPE_PTR);
+        let suppressed = self.intf_socks.len() as i64 - sent;
+        self.increase_counter(Counter::QuerySuppression, suppressed);
         self.increase_counter(Counter::Browse, 1);
 
         let next_time = current_time_millis() + (next_delay * 1000) as u64;
@@ -2111,7 +2137,18 @@ impl Zeroconf {
             }
             Some((_k, info)) => {
                 let mut timers = Vec::new();
+
+                let mut intf_af_set: HashSet<(u32, u8)> = HashSet::new();
                 for (ip, intf_sock) in self.intf_socks.iter() {
+                    let af=  match ip  {
+                        IpAddr::V4(_)  => 4u8,
+                        IpAddr::V6(_) => 6u8,
+                    };
+                    let itf_af = (intf_sock.intf.index.unwrap_or(0), af);
+                    if intf_af_set.contains(&itf_af) {
+                        continue;
+                    }
+                    intf_af_set.insert(itf_af);
                     let packet = self.unregister_service(&info, intf_sock);
                     // repeat for one time just in case some peers miss the message
                     if !repeating && !packet.is_empty() {
@@ -2200,6 +2237,7 @@ impl Zeroconf {
         match self.my_services.get(&fullname) {
             Some(info) => {
                 let outgoing_addrs = self.send_unsolicited_response(info);
+                let supressed = (self.intf_socks.len() - outgoing_addrs.len()) as i64;
                 if !outgoing_addrs.is_empty() {
                     self.notify_monitors(DaemonEvent::Announce(
                         fullname,
@@ -2207,6 +2245,7 @@ impl Zeroconf {
                     ));
                 }
                 self.increase_counter(Counter::RegisterResend, 1);
+                self.increase_counter(Counter::AnnouncementSuppression, supressed);
             }
             None => debug!("announce: cannot find such service {}", &fullname),
         }
@@ -2216,21 +2255,24 @@ impl Zeroconf {
     fn refresh_active_services(&mut self) {
         let mut query_ptr_count = 0;
         let mut query_srv_count = 0;
+        let mut supressed_qry_count = 0;
         let mut new_timers = HashSet::new();
 
         for (ty_domain, _sender) in self.service_queriers.iter() {
             let refreshed_timers = self.cache.refresh_due_ptr(ty_domain);
             if !refreshed_timers.is_empty() {
                 debug!("sending refresh query for PTR: {}", ty_domain);
-                self.send_query(ty_domain, TYPE_PTR);
+                let sent = self.send_query(ty_domain, TYPE_PTR);
                 query_ptr_count += 1;
+                supressed_qry_count += self.intf_socks.len() as i64 - sent;
                 new_timers.extend(refreshed_timers);
             }
 
             let (instances, timers) = self.cache.refresh_due_srv(ty_domain);
             for instance in instances.iter() {
                 debug!("sending refresh query for SRV: {}", instance);
-                self.send_query(instance, TYPE_ANY);
+                let sent = self.send_query(instance, TYPE_ANY);
+                supressed_qry_count += self.intf_socks.len() as i64 - sent;
                 query_srv_count += 1;
             }
             new_timers.extend(timers);
@@ -2242,6 +2284,7 @@ impl Zeroconf {
 
         self.increase_counter(Counter::CacheRefreshPTR, query_ptr_count);
         self.increase_counter(Counter::CacheRefreshSRV, query_srv_count);
+        self.increase_counter(Counter::QuerySuppression, supressed_qry_count);
     }
 }
 

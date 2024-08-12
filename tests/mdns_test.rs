@@ -23,7 +23,23 @@ fn integration_success() {
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
 
-    let ifaddrs_set: HashSet<_> = my_ip_interfaces().iter().map(|intf| intf.ip()).collect();
+    let mut itf_af_set : HashSet<(u32, u8)> = HashSet::new();
+    let mut all_itfs = my_ip_interfaces();
+    all_itfs.retain(|itf| {
+        let af = match itf.addr {
+            IfAddr::V4(_) => 4u8,
+            IfAddr::V6(_) => 6u8,
+        };
+        let l = (itf.index.unwrap_or(0), af);
+        if itf_af_set.contains(&l) {
+            false
+        } else {
+            itf_af_set.insert(l);
+            true
+        }
+    });
+
+    let ifaddrs_set: HashSet<_> = all_itfs.iter().map(|intf| intf.ip()).collect();
     let my_ifaddrs: Vec<_> = ifaddrs_set.into_iter().collect();
     let my_addrs_count = my_ifaddrs.len();
     println!("My IP {} addr(s):", my_ifaddrs.len());
