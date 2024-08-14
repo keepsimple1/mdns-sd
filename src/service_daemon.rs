@@ -1393,7 +1393,7 @@ impl Zeroconf {
 
     /// Sends a multicast query for `name` with `qtype`.
     fn send_query(&self, name: &str, qtype: u16) {
-        self.send_query_vec(&[(name, qtype)])
+        self.send_query_vec(&[(name, qtype)]);
     }
 
     /// Sends out a list of `questions` (i.e. DNS questions) via multicast.
