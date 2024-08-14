@@ -1493,9 +1493,17 @@ impl Zeroconf {
         if let Some(records) = self.cache.get_srv(instance) {
             for record in records {
                 if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
-                    if self.cache.get_addr(&srv.host).is_none() {
-                        self.send_query_vec(&[(&srv.host, TYPE_A), (&srv.host, TYPE_AAAA)]);
-                        return true;
+                    match self.cache.get_addr(&srv.host) {
+                        Some(records) => {
+                            if records.is_empty() {
+                                self.send_query_vec(&[(&srv.host, TYPE_A), (&srv.host, TYPE_AAAA)]);
+                                return true;
+                            }
+                        }
+                        None => {
+                            self.send_query_vec(&[(&srv.host, TYPE_A), (&srv.host, TYPE_AAAA)]);
+                            return true;
+                        }
                     }
                 }
             }
