@@ -773,12 +773,12 @@ struct IntfSock {
 impl IntfSock {
     /// Returns the interface index and the associated ip version
     fn intf_idx_ip_ver(&self) -> (u32, u8) {
-        let af = match self.intf.addr {
+        let ip_ver = match self.intf.addr {
             IfAddr::V4(_) => 4u8,
             IfAddr::V6(_) => 6u8,
         };
 
-        (self.intf.index.unwrap_or(0), af)
+        (self.intf.index.unwrap_or(0), ip_ver)
     }
 }
 
