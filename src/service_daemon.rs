@@ -585,8 +585,8 @@ impl ServiceDaemon {
             let now = current_time_millis();
 
             // Notify service listeners about the expired records.
-            let expired_serives = zc.cache.evict_expired_services(now);
-            zc.notify_service_removal(expired_serives);
+            let expired_services = zc.cache.evict_expired_services(now);
+            zc.notify_service_removal(expired_services);
 
             // Notify hostname listeners about the expired records.
             let expired_addrs = zc.cache.evict_expired_addr(now);
@@ -768,6 +768,18 @@ struct ReRun {
 struct IntfSock {
     intf: Interface,
     sock: Socket,
+}
+
+impl IntfSock {
+    /// Returns the interface index and the associated ip version
+    fn intf_idx_ip_ver(&self) -> (u32, u8) {
+        let af = match self.intf.addr {
+            IfAddr::V4(_) => 4u8,
+            IfAddr::V6(_) => 6u8,
+        };
+
+        (self.intf.index.unwrap_or(0), af)
+    }
 }
 
 /// Specify kinds of interfaces. It is used to enable or to disable interfaces in the daemon.
@@ -1203,21 +1215,15 @@ impl Zeroconf {
     /// Returns the list of interface IPs that sent out the announcement.
     fn send_unsolicited_response(&self, info: &ServiceInfo) -> Vec<IpAddr> {
         let mut outgoing_addrs = Vec::new();
-        // Send the announcement on one interface per address family.
-        let mut intf_af_set: HashSet<(u32, u8)> = HashSet::new();
+        // Send the announcement on one interface per ip version.
+        let mut intf_idx_ip_ver_set: HashSet<(u32, u8)> = HashSet::new();
 
         for (_, intf_sock) in self.intf_socks.iter() {
-            let af = match intf_sock.intf.addr {
-                IfAddr::V4(_) => 4u8,
-                IfAddr::V6(_) => 6u8,
-            };
-            let intf_af = (intf_sock.intf.index.unwrap_or(0), af);
-            if intf_af_set.contains(&intf_af) {
-                debug!("Already used {:#?}", intf_af);
-                continue; // no need to send again on the same interface with same address family.
+            if intf_idx_ip_ver_set.contains(&intf_sock.intf_idx_ip_ver()) {
+                continue; // No need to send again on the same interface with same ip version.
             }
             if self.broadcast_service_on_intf(info, intf_sock) {
-                intf_af_set.insert(intf_af);
+                intf_idx_ip_ver_set.insert(intf_sock.intf_idx_ip_ver());
                 outgoing_addrs.push(intf_sock.intf.ip());
             }
         }
@@ -1407,19 +1413,13 @@ impl Zeroconf {
             }
         }
 
-        // Send the query on one interface per address family.
-        let mut intf_af_set: HashSet<(u32, u8)> = HashSet::new();
+        // Send the query on one interface per ip version.
+        let mut intf_idx_ip_ver_set: HashSet<(u32, u8)> = HashSet::new();
         for (_, intf_sock) in self.intf_socks.iter() {
-            let af = match intf_sock.intf.addr {
-                IfAddr::V4(_) => 4u8,
-                IfAddr::V6(_) => 6u8,
-            };
-            let intf_af = (intf_sock.intf.index.unwrap_or(0), af);
-            if intf_af_set.contains(&intf_af) {
-                debug!("Already used {:#?}", intf_af);
-                continue; // no need to send query the same interface with same address family.
+            if intf_idx_ip_ver_set.contains(&intf_sock.intf_idx_ip_ver()) {
+                continue; // no need to send query the same interface with same ip version.
             }
-            intf_af_set.insert(intf_af);
+            intf_idx_ip_ver_set.insert(intf_sock.intf_idx_ip_ver());
             send_dns_outgoing(&out, intf_sock);
         }
     }
@@ -2118,18 +2118,14 @@ impl Zeroconf {
             }
             Some((_k, info)) => {
                 let mut timers = Vec::new();
+                // Send one unregister per interface and ip version
+                let mut intf_idx_ip_ver_set: HashSet<(u32, u8)> = HashSet::new();
 
-                let mut intf_af_set: HashSet<(u32, u8)> = HashSet::new();
                 for (ip, intf_sock) in self.intf_socks.iter() {
-                    let af = match ip {
-                        IpAddr::V4(_) => 4u8,
-                        IpAddr::V6(_) => 6u8,
-                    };
-                    let itf_af = (intf_sock.intf.index.unwrap_or(0), af);
-                    if intf_af_set.contains(&itf_af) {
-                        continue;
+                    if intf_idx_ip_ver_set.contains(&intf_sock.intf_idx_ip_ver()) {
+                        continue; // no need to send unregister the same interface with same ip version.
                     }
-                    intf_af_set.insert(itf_af);
+                    intf_idx_ip_ver_set.insert(intf_sock.intf_idx_ip_ver());
                     let packet = self.unregister_service(&info, intf_sock);
                     // repeat for one time just in case some peers miss the message
                     if !repeating && !packet.is_empty() {
