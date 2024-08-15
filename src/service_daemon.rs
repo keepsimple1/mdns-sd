@@ -1,4 +1,4 @@
-///! Service daemon for mDNS Service Discovery.
+//! Service daemon for mDNS Service Discovery.
 
 // How DNS-based Service Discovery works in a nutshell:
 //
