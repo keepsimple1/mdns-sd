@@ -1493,17 +1493,9 @@ impl Zeroconf {
         if let Some(records) = self.cache.get_srv(instance) {
             for record in records {
                 if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
-                    match self.cache.get_addr(&srv.host) {
-                        Some(records) => {
-                            if records.is_empty() {
-                                self.send_query_vec(&[(&srv.host, TYPE_A), (&srv.host, TYPE_AAAA)]);
-                                return true;
-                            }
-                        }
-                        None => {
-                            self.send_query_vec(&[(&srv.host, TYPE_A), (&srv.host, TYPE_AAAA)]);
-                            return true;
-                        }
+                    if self.cache.get_addr(&srv.host).is_none() {
+                        self.send_query_vec(&[(&srv.host, TYPE_A), (&srv.host, TYPE_AAAA)]);
+                        return true;
                     }
                 }
             }
@@ -2225,6 +2217,7 @@ impl Zeroconf {
         let mut query_ptr_count = 0;
         let mut query_srv_count = 0;
         let mut new_timers = HashSet::new();
+        let mut query_addr_count = 0;
 
         for (ty_domain, _sender) in self.service_queriers.iter() {
             let refreshed_timers = self.cache.refresh_due_ptr(ty_domain);
@@ -2238,8 +2231,15 @@ impl Zeroconf {
             let (instances, timers) = self.cache.refresh_due_srv(ty_domain);
             for instance in instances.iter() {
                 debug!("sending refresh query for SRV: {}", instance);
-                self.send_query(instance, TYPE_ANY);
+                self.send_query(instance, TYPE_SRV);
                 query_srv_count += 1;
+            }
+            new_timers.extend(timers);
+            let (hostnames, timers) = self.cache.refresh_due_hosts(ty_domain);
+            for hostname in hostnames.iter() {
+                debug!("sending refresh queries for A and AAAA:  {}", hostname);
+                self.send_query_vec(&[(&hostname, TYPE_A), (&hostname, TYPE_AAAA)]);
+                query_addr_count += 2;
             }
             new_timers.extend(timers);
         }
@@ -2250,6 +2250,7 @@ impl Zeroconf {
 
         self.increase_counter(Counter::CacheRefreshPTR, query_ptr_count);
         self.increase_counter(Counter::CacheRefreshSRV, query_srv_count);
+        self.increase_counter(Counter::CacheRefreshAddr, query_addr_count);
     }
 }
 
