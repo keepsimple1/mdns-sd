@@ -377,11 +377,10 @@ impl DnsCache {
                 .into_iter()
                 .flatten()
                 .filter_map(|record| {
-                    if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
-                        Some(srv.host.clone())
-                    } else {
-                        None
-                    }
+                    record
+                        .any()
+                        .downcast_ref::<DnsSrv>()
+                        .map(|srv| srv.host.clone())
                 })
                 .collect();
 

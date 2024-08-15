@@ -2238,7 +2238,7 @@ impl Zeroconf {
             let (hostnames, timers) = self.cache.refresh_due_hosts(ty_domain);
             for hostname in hostnames.iter() {
                 debug!("sending refresh queries for A and AAAA:  {}", hostname);
-                self.send_query_vec(&[(&hostname, TYPE_A), (&hostname, TYPE_AAAA)]);
+                self.send_query_vec(&[(hostname, TYPE_A), (hostname, TYPE_AAAA)]);
                 query_addr_count += 2;
             }
             new_timers.extend(timers);
