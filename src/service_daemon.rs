@@ -1,4 +1,4 @@
-//! Service daemon for mDNS Service Discovery.
+///! Service daemon for mDNS Service Discovery.
 
 // How DNS-based Service Discovery works in a nutshell:
 //
@@ -770,15 +770,38 @@ struct IntfSock {
     sock: Socket,
 }
 
+/// Enum to represent the IP version.
+#[derive(Debug, Eq, Hash, PartialEq)]
+enum IpVersion {
+    V4,
+    V6,
+}
+
+/// A struct to track multicast notification status for a network interface.
+#[derive(Debug, Eq, Hash, PartialEq)]
+struct IntfIndexAndIpVer {
+    intf_index: u32,
+    ip_version: IpVersion,
+}
+
+impl IntfIndexAndIpVer {
+    fn is_valid(&self) -> bool {
+        self.intf_index > 0
+    }
+}
+
 impl IntfSock {
     /// Returns the interface index and the associated ip version
-    fn intf_idx_ip_ver(&self) -> (u32, u8) {
+    fn intf_idx_ip_ver(&self) -> IntfIndexAndIpVer {
         let ip_ver = match self.intf.addr {
-            IfAddr::V4(_) => 4u8,
-            IfAddr::V6(_) => 6u8,
+            IfAddr::V4(_) => IpVersion::V4,
+            IfAddr::V6(_) => IpVersion::V6,
         };
 
-        (self.intf.index.unwrap_or(0), ip_ver)
+        IntfIndexAndIpVer {
+            intf_index: self.intf.index.unwrap_or(0),
+            ip_version: ip_ver,
+        }
     }
 }
 
@@ -1216,14 +1239,18 @@ impl Zeroconf {
     fn send_unsolicited_response(&self, info: &ServiceInfo) -> Vec<IpAddr> {
         let mut outgoing_addrs = Vec::new();
         // Send the announcement on one interface per ip version.
-        let mut intf_idx_ip_ver_set: HashSet<(u32, u8)> = HashSet::new();
+        let mut intf_idx_ip_ver_set = HashSet::new();
 
         for (_, intf_sock) in self.intf_socks.iter() {
-            if intf_idx_ip_ver_set.contains(&intf_sock.intf_idx_ip_ver()) {
+            if intf_sock.intf_idx_ip_ver().is_valid()
+                && intf_idx_ip_ver_set.contains(&intf_sock.intf_idx_ip_ver())
+            {
                 continue; // No need to send again on the same interface with same ip version.
             }
             if self.broadcast_service_on_intf(info, intf_sock) {
-                intf_idx_ip_ver_set.insert(intf_sock.intf_idx_ip_ver());
+                if intf_sock.intf_idx_ip_ver().is_valid() {
+                    intf_idx_ip_ver_set.insert(intf_sock.intf_idx_ip_ver());
+                }
                 outgoing_addrs.push(intf_sock.intf.ip());
             }
         }
@@ -1414,12 +1441,14 @@ impl Zeroconf {
         }
 
         // Send the query on one interface per ip version.
-        let mut intf_idx_ip_ver_set: HashSet<(u32, u8)> = HashSet::new();
+        let mut intf_idx_ip_ver_set= HashSet::new();
         for (_, intf_sock) in self.intf_socks.iter() {
-            if intf_idx_ip_ver_set.contains(&intf_sock.intf_idx_ip_ver()) {
-                continue; // no need to send query the same interface with same ip version.
+            if intf_sock.intf_idx_ip_ver().is_valid() {
+                if intf_idx_ip_ver_set.contains(&intf_sock.intf_idx_ip_ver()) {
+                    continue; // no need to send query the same interface with same ip version.
+                }
+                intf_idx_ip_ver_set.insert(intf_sock.intf_idx_ip_ver());
             }
-            intf_idx_ip_ver_set.insert(intf_sock.intf_idx_ip_ver());
             send_dns_outgoing(&out, intf_sock);
         }
     }
@@ -2119,13 +2148,15 @@ impl Zeroconf {
             Some((_k, info)) => {
                 let mut timers = Vec::new();
                 // Send one unregister per interface and ip version
-                let mut intf_idx_ip_ver_set: HashSet<(u32, u8)> = HashSet::new();
+                let mut intf_idx_ip_ver_set= HashSet::new();
 
                 for (ip, intf_sock) in self.intf_socks.iter() {
-                    if intf_idx_ip_ver_set.contains(&intf_sock.intf_idx_ip_ver()) {
-                        continue; // no need to send unregister the same interface with same ip version.
+                    if intf_sock.intf_idx_ip_ver().is_valid() {
+                        if intf_idx_ip_ver_set.contains(&intf_sock.intf_idx_ip_ver()) {
+                            continue; // no need to send unregister the same interface with same ip version.
+                        }
+                        intf_idx_ip_ver_set.insert(intf_sock.intf_idx_ip_ver());
                     }
-                    intf_idx_ip_ver_set.insert(intf_sock.intf_idx_ip_ver());
                     let packet = self.unregister_service(&info, intf_sock);
                     // repeat for one time just in case some peers miss the message
                     if !repeating && !packet.is_empty() {
