@@ -779,28 +779,26 @@ enum IpVersion {
 
 /// A struct to track multicast notification status for a network interface.
 #[derive(Debug, Eq, Hash, PartialEq)]
-struct IntfIndexAndIpVer {
+struct MulticastNotificationTracker {
     intf_index: u32,
     ip_version: IpVersion,
 }
 
-impl IntfIndexAndIpVer {
-    fn is_valid(&self) -> bool {
-        self.intf_index > 0
-    }
-}
-
 impl IntfSock {
-    /// Returns the interface index and the associated ip version
-    fn intf_idx_ip_ver(&self) -> IntfIndexAndIpVer {
-        let ip_ver = match self.intf.addr {
-            IfAddr::V4(_) => IpVersion::V4,
-            IfAddr::V6(_) => IpVersion::V6,
-        };
-
-        IntfIndexAndIpVer {
-            intf_index: self.intf.index.unwrap_or(0),
-            ip_version: ip_ver,
+    /// Returns the multicast notification tracker if the interface index is 5valid
+    fn as_multicast_notification_tracker(&self) -> Option<MulticastNotificationTracker> {
+        match self.intf.index {
+            Some(index) => {
+                let ip_ver = match self.intf.addr {
+                    IfAddr::V4(_) => IpVersion::V4,
+                    IfAddr::V6(_) => IpVersion::V6,
+                };
+                Some(MulticastNotificationTracker {
+                    intf_index: index,
+                    ip_version: ip_ver,
+                })
+            }
+            None => None,
         }
     }
 }
@@ -1239,17 +1237,19 @@ impl Zeroconf {
     fn send_unsolicited_response(&self, info: &ServiceInfo) -> Vec<IpAddr> {
         let mut outgoing_addrs = Vec::new();
         // Send the announcement on one interface per ip version.
-        let mut intf_idx_ip_ver_set = HashSet::new();
+        let mut multicast_notification_trackers = HashSet::new();
 
         for (_, intf_sock) in self.intf_socks.iter() {
-            if intf_sock.intf_idx_ip_ver().is_valid()
-                && intf_idx_ip_ver_set.contains(&intf_sock.intf_idx_ip_ver())
+            if intf_sock.as_multicast_notification_tracker().is_some()
+                && multicast_notification_trackers
+                    .contains(&intf_sock.as_multicast_notification_tracker().unwrap())
             {
                 continue; // No need to send again on the same interface with same ip version.
             }
             if self.broadcast_service_on_intf(info, intf_sock) {
-                if intf_sock.intf_idx_ip_ver().is_valid() {
-                    intf_idx_ip_ver_set.insert(intf_sock.intf_idx_ip_ver());
+                if intf_sock.as_multicast_notification_tracker().is_some() {
+                    multicast_notification_trackers
+                        .insert(intf_sock.as_multicast_notification_tracker().unwrap());
                 }
                 outgoing_addrs.push(intf_sock.intf.ip());
             }
@@ -1441,13 +1441,16 @@ impl Zeroconf {
         }
 
         // Send the query on one interface per ip version.
-        let mut intf_idx_ip_ver_set = HashSet::new();
+        let mut multicast_notification_trackers = HashSet::new();
         for (_, intf_sock) in self.intf_socks.iter() {
-            if intf_sock.intf_idx_ip_ver().is_valid() {
-                if intf_idx_ip_ver_set.contains(&intf_sock.intf_idx_ip_ver()) {
+            if intf_sock.as_multicast_notification_tracker().is_some() {
+                if multicast_notification_trackers
+                    .contains(&intf_sock.as_multicast_notification_tracker().unwrap())
+                {
                     continue; // no need to send query the same interface with same ip version.
                 }
-                intf_idx_ip_ver_set.insert(intf_sock.intf_idx_ip_ver());
+                multicast_notification_trackers
+                    .insert(intf_sock.as_multicast_notification_tracker().unwrap());
             }
             send_dns_outgoing(&out, intf_sock);
         }
@@ -2148,14 +2151,17 @@ impl Zeroconf {
             Some((_k, info)) => {
                 let mut timers = Vec::new();
                 // Send one unregister per interface and ip version
-                let mut intf_idx_ip_ver_set = HashSet::new();
+                let mut multicast_notification_trackers = HashSet::new();
 
                 for (ip, intf_sock) in self.intf_socks.iter() {
-                    if intf_sock.intf_idx_ip_ver().is_valid() {
-                        if intf_idx_ip_ver_set.contains(&intf_sock.intf_idx_ip_ver()) {
+                    if intf_sock.as_multicast_notification_tracker().is_some() {
+                        if multicast_notification_trackers
+                            .contains(&intf_sock.as_multicast_notification_tracker().unwrap())
+                        {
                             continue; // no need to send unregister the same interface with same ip version.
                         }
-                        intf_idx_ip_ver_set.insert(intf_sock.intf_idx_ip_ver());
+                        multicast_notification_trackers
+                            .insert(intf_sock.as_multicast_notification_tracker().unwrap());
                     }
                     let packet = self.unregister_service(&info, intf_sock);
                     // repeat for one time just in case some peers miss the message
