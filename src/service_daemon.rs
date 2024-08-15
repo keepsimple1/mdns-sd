@@ -1441,7 +1441,7 @@ impl Zeroconf {
         }
 
         // Send the query on one interface per ip version.
-        let mut intf_idx_ip_ver_set= HashSet::new();
+        let mut intf_idx_ip_ver_set = HashSet::new();
         for (_, intf_sock) in self.intf_socks.iter() {
             if intf_sock.intf_idx_ip_ver().is_valid() {
                 if intf_idx_ip_ver_set.contains(&intf_sock.intf_idx_ip_ver()) {
@@ -2148,7 +2148,7 @@ impl Zeroconf {
             Some((_k, info)) => {
                 let mut timers = Vec::new();
                 // Send one unregister per interface and ip version
-                let mut intf_idx_ip_ver_set= HashSet::new();
+                let mut intf_idx_ip_ver_set = HashSet::new();
 
                 for (ip, intf_sock) in self.intf_socks.iter() {
                     if intf_sock.intf_idx_ip_ver().is_valid() {
