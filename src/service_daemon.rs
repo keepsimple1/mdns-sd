@@ -777,23 +777,23 @@ enum IpVersion {
     V6,
 }
 
-/// A struct to track multicast notification status for a network interface.
+/// A struct to track multicast send status for a network interface.
 #[derive(Debug, Eq, Hash, PartialEq)]
-struct MulticastNotificationTracker {
+struct MulticastSendTracker {
     intf_index: u32,
     ip_version: IpVersion,
 }
 
 impl IntfSock {
-    /// Returns the multicast notification tracker if the interface index is 5valid
-    fn as_multicast_notification_tracker(&self) -> Option<MulticastNotificationTracker> {
+    /// Returns the multicast send tracker if the interface index is valid
+    fn multicast_send_tracker(&self) -> Option<MulticastSendTracker> {
         match self.intf.index {
             Some(index) => {
                 let ip_ver = match self.intf.addr {
                     IfAddr::V4(_) => IpVersion::V4,
                     IfAddr::V6(_) => IpVersion::V6,
                 };
-                Some(MulticastNotificationTracker {
+                Some(MulticastSendTracker {
                     intf_index: index,
                     ip_version: ip_ver,
                 })
@@ -1237,23 +1237,25 @@ impl Zeroconf {
     fn send_unsolicited_response(&self, info: &ServiceInfo) -> Vec<IpAddr> {
         let mut outgoing_addrs = Vec::new();
         // Send the announcement on one interface per ip version.
-        let mut multicast_notification_trackers = HashSet::new();
+        let mut multicast_sent_trackers = HashSet::new();
 
         for (_, intf_sock) in self.intf_socks.iter() {
-            if intf_sock.as_multicast_notification_tracker().is_some()
-                && multicast_notification_trackers
-                    .contains(&intf_sock.as_multicast_notification_tracker().unwrap())
-            {
-                continue; // No need to send again on the same interface with same ip version.
+            if let Some(tracker) = intf_sock.multicast_send_tracker() {
+                if multicast_sent_trackers
+                    .contains(&tracker)
+                {
+                    continue; // No need to send again on the same interface with same ip version.
+                }
             }
             if self.broadcast_service_on_intf(info, intf_sock) {
-                if intf_sock.as_multicast_notification_tracker().is_some() {
-                    multicast_notification_trackers
-                        .insert(intf_sock.as_multicast_notification_tracker().unwrap());
+                if let Some(tracker) = intf_sock.multicast_send_tracker() {
+                    multicast_sent_trackers
+                        .insert(tracker);
                 }
                 outgoing_addrs.push(intf_sock.intf.ip());
             }
         }
+
         outgoing_addrs
     }
 
@@ -1441,16 +1443,16 @@ impl Zeroconf {
         }
 
         // Send the query on one interface per ip version.
-        let mut multicast_notification_trackers = HashSet::new();
+        let mut multicast_sent_trackers = HashSet::new();
         for (_, intf_sock) in self.intf_socks.iter() {
-            if intf_sock.as_multicast_notification_tracker().is_some() {
-                if multicast_notification_trackers
-                    .contains(&intf_sock.as_multicast_notification_tracker().unwrap())
+            if let Some(tracker) = intf_sock.multicast_send_tracker() {
+                if multicast_sent_trackers
+                    .contains(&tracker)
                 {
                     continue; // no need to send query the same interface with same ip version.
                 }
-                multicast_notification_trackers
-                    .insert(intf_sock.as_multicast_notification_tracker().unwrap());
+                multicast_sent_trackers
+                    .insert(tracker);
             }
             send_dns_outgoing(&out, intf_sock);
         }
@@ -1877,9 +1879,9 @@ impl Zeroconf {
                 for service in self.my_services.values() {
                     if question.entry.name == service.get_type()
                         || service
-                            .get_subtype()
-                            .as_ref()
-                            .map_or(false, |v| v == &question.entry.name)
+                        .get_subtype()
+                        .as_ref()
+                        .map_or(false, |v| v == &question.entry.name)
                     {
                         out.add_answer_with_additionals(&msg, service, &intf_sock.intf);
                     } else if question.entry.name == META_QUERY {
@@ -2151,17 +2153,17 @@ impl Zeroconf {
             Some((_k, info)) => {
                 let mut timers = Vec::new();
                 // Send one unregister per interface and ip version
-                let mut multicast_notification_trackers = HashSet::new();
+                let mut multicast_sent_trackers = HashSet::new();
 
                 for (ip, intf_sock) in self.intf_socks.iter() {
-                    if intf_sock.as_multicast_notification_tracker().is_some() {
-                        if multicast_notification_trackers
-                            .contains(&intf_sock.as_multicast_notification_tracker().unwrap())
+                    if let Some(tracker) = intf_sock.multicast_send_tracker() {
+                        if multicast_sent_trackers
+                            .contains(&tracker)
                         {
                             continue; // no need to send unregister the same interface with same ip version.
                         }
-                        multicast_notification_trackers
-                            .insert(intf_sock.as_multicast_notification_tracker().unwrap());
+                        multicast_sent_trackers
+                            .insert(tracker);
                     }
                     let packet = self.unregister_service(&info, intf_sock);
                     // repeat for one time just in case some peers miss the message
@@ -2856,7 +2858,7 @@ mod tests {
             1234,
             None,
         )
-        .expect("invalid service info");
+            .expect("invalid service info");
 
         // Set a short TTL for addresses for testing.
         let addr_ttl = 2;
@@ -2932,7 +2934,7 @@ mod tests {
             5023,
             None,
         )
-        .unwrap();
+            .unwrap();
 
         let new_ttl = 2; // for testing only.
         my_service._set_other_ttl(new_ttl);
