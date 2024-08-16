@@ -23,7 +23,20 @@ fn integration_success() {
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
 
-    let ifaddrs_set: HashSet<_> = my_ip_interfaces().iter().map(|intf| intf.ip()).collect();
+    let all_interfaces = my_ip_interfaces();
+    // as we send only once per interface and ip we need a count of unique addresses to verify number of sent unregisters later on
+    let unique_multicast_itf_idx_ip_ver_set = all_interfaces
+        .iter()
+        .map(|itf| {
+            let ip_ver = match itf.addr {
+                IfAddr::V4(_) => 4u8,
+                IfAddr::V6(_) => 6u8,
+            };
+            (itf.index.unwrap_or(0), ip_ver)
+        })
+        .collect::<HashSet<_>>();
+
+    let ifaddrs_set: HashSet<_> = all_interfaces.iter().map(|intf| intf.ip()).collect();
     let my_ifaddrs: Vec<_> = ifaddrs_set.into_iter().collect();
     let my_addrs_count = my_ifaddrs.len();
     println!("My IP {} addr(s):", my_ifaddrs.len());
@@ -165,7 +178,10 @@ fn integration_success() {
     assert_eq!(metrics["register"], 1);
     assert_eq!(metrics["unregister"], 1);
     assert_eq!(metrics["register-resend"], 1);
-    assert_eq!(metrics["unregister-resend"], my_ifaddrs.len() as i64);
+    assert_eq!(
+        metrics["unregister-resend"],
+        unique_multicast_itf_idx_ip_ver_set.len() as i64
+    );
     assert!(metrics["browse"] >= 2); // browse has been retransmitted.
 
     // respond has been sent for every browse, or they are suppressed by "known answer".

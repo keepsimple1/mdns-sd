@@ -39,11 +39,11 @@ use crate::{
         TYPE_PTR, TYPE_SRV, TYPE_TXT,
     },
     error::{Error, Result},
-    service_info::{ifaddr_subnet, ServiceInfo},
+    service_info::ServiceInfo,
     Receiver,
 };
 use flume::{bounded, Sender, TrySendError};
-use if_addrs::Interface;
+use if_addrs::{IfAddr, Interface};
 use polling::Poller;
 use socket2::{SockAddr, Socket};
 use std::{
@@ -585,8 +585,8 @@ impl ServiceDaemon {
             let now = current_time_millis();
 
             // Notify service listeners about the expired records.
-            let expired_serives = zc.cache.evict_expired_services(now);
-            zc.notify_service_removal(expired_serives);
+            let expired_services = zc.cache.evict_expired_services(now);
+            zc.notify_service_removal(expired_services);
 
             // Notify hostname listeners about the expired records.
             let expired_addrs = zc.cache.evict_expired_addr(now);
@@ -768,6 +768,39 @@ struct ReRun {
 struct IntfSock {
     intf: Interface,
     sock: Socket,
+}
+
+/// Enum to represent the IP version.
+#[derive(Debug, Eq, Hash, PartialEq)]
+enum IpVersion {
+    V4,
+    V6,
+}
+
+/// A struct to track multicast send status for a network interface.
+#[derive(Debug, Eq, Hash, PartialEq)]
+struct MulticastSendTracker {
+    intf_index: u32,
+    ip_version: IpVersion,
+}
+
+impl IntfSock {
+    /// Returns the multicast send tracker if the interface index is valid
+    fn multicast_send_tracker(&self) -> Option<MulticastSendTracker> {
+        match self.intf.index {
+            Some(index) => {
+                let ip_ver = match self.intf.addr {
+                    IfAddr::V4(_) => IpVersion::V4,
+                    IfAddr::V6(_) => IpVersion::V6,
+                };
+                Some(MulticastSendTracker {
+                    intf_index: index,
+                    ip_version: ip_ver,
+                })
+            }
+            None => None,
+        }
+    }
 }
 
 /// Specify kinds of interfaces. It is used to enable or to disable interfaces in the daemon.
@@ -1199,24 +1232,27 @@ impl Zeroconf {
         self.my_services.insert(service_fullname, info);
     }
 
-    /// Sends out annoucement of `info` on every valid interface.
-    /// Returns the list of interface IPs that sent out the annoucement.
+    /// Sends out announcement of `info` on every valid interface.
+    /// Returns the list of interface IPs that sent out the announcement.
     fn send_unsolicited_response(&self, info: &ServiceInfo) -> Vec<IpAddr> {
         let mut outgoing_addrs = Vec::new();
-        let mut subnet_set: HashSet<u128> = HashSet::new();
+        // Send the announcement on one interface per ip version.
+        let mut multicast_sent_trackers = HashSet::new();
 
         for (_, intf_sock) in self.intf_socks.iter() {
-            let subnet = ifaddr_subnet(&intf_sock.intf.addr);
-            if !intf_sock.intf.is_link_local() && subnet_set.contains(&subnet) {
-                continue; // no need to send again in the same subnet.
+            if let Some(tracker) = intf_sock.multicast_send_tracker() {
+                if multicast_sent_trackers.contains(&tracker) {
+                    continue; // No need to send again on the same interface with same ip version.
+                }
             }
             if self.broadcast_service_on_intf(info, intf_sock) {
-                if !intf_sock.intf.is_link_local() {
-                    subnet_set.insert(subnet);
+                if let Some(tracker) = intf_sock.multicast_send_tracker() {
+                    multicast_sent_trackers.insert(tracker);
                 }
                 outgoing_addrs.push(intf_sock.intf.ip());
             }
         }
+
         outgoing_addrs
     }
 
@@ -1403,15 +1439,14 @@ impl Zeroconf {
             }
         }
 
-        // Send the query on one interface per subnet.
-        let mut subnet_set: HashSet<u128> = HashSet::new();
+        // Send the query on one interface per ip version.
+        let mut multicast_sent_trackers = HashSet::new();
         for (_, intf_sock) in self.intf_socks.iter() {
-            if !intf_sock.intf.is_link_local() {
-                let subnet = ifaddr_subnet(&intf_sock.intf.addr);
-                if subnet_set.contains(&subnet) {
-                    continue; // no need to send query the same subnet again.
+            if let Some(tracker) = intf_sock.multicast_send_tracker() {
+                if multicast_sent_trackers.contains(&tracker) {
+                    continue; // no need to send query the same interface with same ip version.
                 }
-                subnet_set.insert(subnet);
+                multicast_sent_trackers.insert(tracker);
             }
             send_dns_outgoing(&out, intf_sock);
         }
@@ -2111,7 +2146,16 @@ impl Zeroconf {
             }
             Some((_k, info)) => {
                 let mut timers = Vec::new();
+                // Send one unregister per interface and ip version
+                let mut multicast_sent_trackers = HashSet::new();
+
                 for (ip, intf_sock) in self.intf_socks.iter() {
+                    if let Some(tracker) = intf_sock.multicast_send_tracker() {
+                        if multicast_sent_trackers.contains(&tracker) {
+                            continue; // no need to send unregister the same interface with same ip version.
+                        }
+                        multicast_sent_trackers.insert(tracker);
+                    }
                     let packet = self.unregister_service(&info, intf_sock);
                     // repeat for one time just in case some peers miss the message
                     if !repeating && !packet.is_empty() {
