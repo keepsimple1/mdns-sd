@@ -1241,16 +1241,13 @@ impl Zeroconf {
 
         for (_, intf_sock) in self.intf_socks.iter() {
             if let Some(tracker) = intf_sock.multicast_send_tracker() {
-                if multicast_sent_trackers
-                    .contains(&tracker)
-                {
+                if multicast_sent_trackers.contains(&tracker) {
                     continue; // No need to send again on the same interface with same ip version.
                 }
             }
             if self.broadcast_service_on_intf(info, intf_sock) {
                 if let Some(tracker) = intf_sock.multicast_send_tracker() {
-                    multicast_sent_trackers
-                        .insert(tracker);
+                    multicast_sent_trackers.insert(tracker);
                 }
                 outgoing_addrs.push(intf_sock.intf.ip());
             }
@@ -1446,13 +1443,10 @@ impl Zeroconf {
         let mut multicast_sent_trackers = HashSet::new();
         for (_, intf_sock) in self.intf_socks.iter() {
             if let Some(tracker) = intf_sock.multicast_send_tracker() {
-                if multicast_sent_trackers
-                    .contains(&tracker)
-                {
+                if multicast_sent_trackers.contains(&tracker) {
                     continue; // no need to send query the same interface with same ip version.
                 }
-                multicast_sent_trackers
-                    .insert(tracker);
+                multicast_sent_trackers.insert(tracker);
             }
             send_dns_outgoing(&out, intf_sock);
         }
@@ -1879,9 +1873,9 @@ impl Zeroconf {
                 for service in self.my_services.values() {
                     if question.entry.name == service.get_type()
                         || service
-                        .get_subtype()
-                        .as_ref()
-                        .map_or(false, |v| v == &question.entry.name)
+                            .get_subtype()
+                            .as_ref()
+                            .map_or(false, |v| v == &question.entry.name)
                     {
                         out.add_answer_with_additionals(&msg, service, &intf_sock.intf);
                     } else if question.entry.name == META_QUERY {
@@ -2157,13 +2151,10 @@ impl Zeroconf {
 
                 for (ip, intf_sock) in self.intf_socks.iter() {
                     if let Some(tracker) = intf_sock.multicast_send_tracker() {
-                        if multicast_sent_trackers
-                            .contains(&tracker)
-                        {
+                        if multicast_sent_trackers.contains(&tracker) {
                             continue; // no need to send unregister the same interface with same ip version.
                         }
-                        multicast_sent_trackers
-                            .insert(tracker);
+                        multicast_sent_trackers.insert(tracker);
                     }
                     let packet = self.unregister_service(&info, intf_sock);
                     // repeat for one time just in case some peers miss the message
@@ -2858,7 +2849,7 @@ mod tests {
             1234,
             None,
         )
-            .expect("invalid service info");
+        .expect("invalid service info");
 
         // Set a short TTL for addresses for testing.
         let addr_ttl = 2;
@@ -2934,7 +2925,7 @@ mod tests {
             5023,
             None,
         )
-            .unwrap();
+        .unwrap();
 
         let new_ttl = 2; // for testing only.
         my_service._set_other_ttl(new_ttl);
