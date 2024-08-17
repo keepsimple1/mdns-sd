@@ -210,7 +210,7 @@ impl DnsCache {
     pub(crate) fn evict_expired_addr(&mut self, now: u64) -> HashMap<String, HashSet<IpAddr>> {
         let mut removed = HashMap::new();
 
-        for records in self.addr.values_mut() {
+        self.addr.retain(|_, records| {
             records.retain(|addr| {
                 let expired = addr.get_record().is_expired(now);
                 if expired {
@@ -222,8 +222,10 @@ impl DnsCache {
                     }
                 }
                 !expired
-            })
-        }
+            });
+
+            !records.is_empty()
+        });
 
         removed
     }
@@ -345,6 +347,67 @@ impl DnsCache {
             }
         }
 
+        (refresh_due, new_timers)
+    }
+
+    /// Returns the set of `host`, where refreshing the A / AAAA records is due
+    /// for a `ty_domain`.
+    pub(crate) fn refresh_due_hosts(&mut self, ty_domain: &str) -> (HashSet<String>, HashSet<u64>) {
+        let now = current_time_millis();
+
+        let mut instances = vec![];
+
+        // find instance names for ty_domain.
+        for record in self.ptr.get_mut(ty_domain).into_iter().flatten() {
+            if record.get_record().is_expired(now) {
+                continue;
+            }
+
+            if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
+                instances.push(ptr.alias.clone());
+            }
+        }
+
+        // Collect hostnames we have browsers for by SRV records.
+        let mut hostnames_browsed = HashSet::new();
+        for instance in instances {
+            let hosts: HashSet<String> = self
+                .srv
+                .get(&instance)
+                .into_iter()
+                .flatten()
+                .filter_map(|record| {
+                    record
+                        .any()
+                        .downcast_ref::<DnsSrv>()
+                        .map(|srv| srv.host.clone())
+                })
+                .collect();
+
+            hostnames_browsed.extend(hosts);
+        }
+        let mut refresh_due = HashSet::new();
+        let mut new_timers = HashSet::new();
+        for hostname in hostnames_browsed {
+            let refresh_timers: HashSet<u64> = self
+                .addr
+                .get_mut(&hostname)
+                .into_iter()
+                .flatten()
+                .filter_map(|record| {
+                    if record.get_record_mut().refresh_maybe(now) {
+                        Some(record.get_record().get_refresh_time())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !refresh_timers.is_empty() {
+                refresh_due.insert(hostname);
+                new_timers.extend(refresh_timers);
+            }
+        }
         (refresh_due, new_timers)
     }
 
