@@ -440,22 +440,22 @@ impl ServiceDaemon {
             }
 
             // Read until no more packets available.
-            let ip = match zc.poll_ids.get(&ev.key) {
-                Some(ip) => *ip,
+            let intf = match zc.poll_ids.get(&ev.key) {
+                Some(ip) => ip.clone(),
                 None => {
                     error!("Ip for event key {} not found", ev.key);
                     break;
                 }
             };
-            while zc.handle_read(&ip) {}
+            while zc.handle_read(&intf) {}
 
             // we continue to monitor this socket.
-            if let Some(intf_sock) = zc.intf_socks.get(&ip) {
+            if let Some(intf_sock) = zc.intf_socks.get(&intf) {
                 if let Err(e) = zc
                     .poller
                     .modify(&intf_sock.sock, polling::Event::readable(ev.key))
                 {
-                    error!("modify poller for IP {}: {}", &ip, e);
+                    error!("modify poller for IP {}: {}", &intf.ip(), e);
                     break;
                 }
             }
@@ -481,10 +481,11 @@ impl ServiceDaemon {
         }
 
         // Add mDNS sockets to the poller.
-        for (ip, if_sock) in zc.intf_socks.iter() {
-            let key = Zeroconf::add_poll_impl(&mut zc.poll_ids, &mut zc.poll_id_count, *ip);
+        for (intf, if_sock) in zc.intf_socks.iter() {
+            let key =
+                Zeroconf::add_poll_impl(&mut zc.poll_ids, &mut zc.poll_id_count, intf.clone());
             if let Err(e) = zc.poller.add(&if_sock.sock, polling::Event::readable(key)) {
-                error!("add socket of {:?} to poller: {}", ip, e);
+                error!("add socket of {:?} to poller: {}", intf, e);
                 return None;
             }
         }
@@ -897,10 +898,10 @@ struct IfSelection {
 /// A struct holding the state. It was inspired by `zeroconf` package in Python.
 struct Zeroconf {
     /// Local interfaces with sockets to recv/send on these interfaces.
-    intf_socks: HashMap<IpAddr, IntfSock>,
+    intf_socks: HashMap<Interface, IntfSock>,
 
     /// Map poll id to IpAddr
-    poll_ids: HashMap<usize, IpAddr>,
+    poll_ids: HashMap<usize, Interface>,
 
     /// Next poll id value
     poll_id_count: usize,
@@ -955,7 +956,6 @@ impl Zeroconf {
     fn new(signal_sock: UdpSocket, poller: Poller) -> Self {
         // Get interfaces.
         let my_ifaddrs = my_ip_interfaces();
-
         // Create a socket for every IP addr.
         // Note: it is possible that `my_ifaddrs` contains duplicated IP addrs.
         let mut intf_socks = HashMap::new();
@@ -963,14 +963,15 @@ impl Zeroconf {
             let sock = match new_socket_bind(&intf) {
                 Ok(s) => s,
                 Err(e) => {
-                    debug!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
+                    error!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
                     continue;
                 }
             };
 
-            intf_socks.insert(intf.ip(), IntfSock { intf, sock });
+            intf_socks.insert(intf.clone(), IntfSock { intf, sock });
         }
 
+        println!("intf socket: {}", intf_socks.len());
         let monitors = Vec::new();
         let service_name_len_max = SERVICE_NAME_LEN_MAX_DEFAULT;
 
@@ -1062,16 +1063,16 @@ impl Zeroconf {
     }
 
     /// Insert a new IP into the poll map and return key
-    fn add_poll(&mut self, ip: IpAddr) -> usize {
+    fn add_poll(&mut self, ip: Interface) -> usize {
         Self::add_poll_impl(&mut self.poll_ids, &mut self.poll_id_count, ip)
     }
 
     /// Insert a new IP into the poll map and return key
     /// This exist to satisfy the borrow checker
     fn add_poll_impl(
-        poll_ids: &mut HashMap<usize, IpAddr>,
+        poll_ids: &mut HashMap<usize, Interface>,
         poll_id_count: &mut usize,
-        ip: IpAddr,
+        ip: Interface,
     ) -> usize {
         let key = *poll_id_count;
         *poll_id_count += 1;
@@ -1112,21 +1113,19 @@ impl Zeroconf {
 
         // Update `intf_socks` based on the selections.
         for (idx, intf) in interfaces.into_iter().enumerate() {
-            let ip_addr = intf.ip();
-
             if intf_selections[idx] {
                 // Add the interface
-                if !self.intf_socks.contains_key(&ip_addr) {
+                if !self.intf_socks.contains_key(&intf) {
                     self.add_new_interface(intf);
                 }
             } else {
                 // Remove the interface
-                if let Some(if_sock) = self.intf_socks.remove(&ip_addr) {
+                if let Some(if_sock) = self.intf_socks.remove(&intf) {
                     if let Err(e) = self.poller.delete(&if_sock.sock) {
-                        error!("process_if_selections: poller.delete {:?}: {}", &ip_addr, e);
+                        error!("process_if_selections: poller.delete {:?}: {}", &intf, e);
                     }
                     // Remove from poll_ids
-                    self.poll_ids.retain(|_, v| v != &ip_addr);
+                    self.poll_ids.retain(|_, v| v != &intf);
                 }
             }
         }
@@ -1149,7 +1148,7 @@ impl Zeroconf {
                         error!("check_ip_changes: poller.delete {:?}: {}", &if_sock.intf, e);
                     }
                     // Remove from poll_ids
-                    poll_ids.retain(|_, v| v != &if_sock.intf.addr.ip());
+                    poll_ids.retain(|_, v| v != &if_sock.intf);
                     Some(if_sock.intf.ip())
                 } else {
                     None
@@ -1182,13 +1181,14 @@ impl Zeroconf {
         };
 
         // Add the new interface into the poller.
-        let key = self.add_poll(new_ip);
+        let key = self.add_poll(intf.clone());
         if let Err(e) = self.poller.add(&sock, polling::Event::readable(key)) {
             error!("check_ip_changes: poller add ip {}: {}", new_ip, e);
             return;
         }
 
-        self.intf_socks.insert(new_ip, IntfSock { intf, sock });
+        self.intf_socks
+            .insert(intf.clone(), IntfSock { intf, sock });
 
         self.add_addr_in_my_services(new_ip);
 
@@ -1456,8 +1456,8 @@ impl Zeroconf {
     ///
     /// Returns false if failed to receive a packet,
     /// otherwise returns true.
-    fn handle_read(&mut self, ip: &IpAddr) -> bool {
-        let intf_sock = match self.intf_socks.get_mut(ip) {
+    fn handle_read(&mut self, intf: &Interface) -> bool {
+        let intf_sock = match self.intf_socks.get_mut(intf) {
             Some(if_sock) => if_sock,
             None => return false,
         };
@@ -1479,7 +1479,7 @@ impl Zeroconf {
             }
         };
 
-        debug!("received {} bytes from IP: {}", sz, ip);
+        debug!("received {} bytes from IP: {}", sz, intf.addr.ip());
 
         // If sz is 0, it means sock reached End-of-File.
         if sz == 0 {
@@ -1491,11 +1491,12 @@ impl Zeroconf {
             // Replace the closed socket with a new one.
             match new_socket_bind(&intf_sock.intf) {
                 Ok(sock) => {
+                    debug!("reset socket for IP {}", intf.ip());
                     let intf = intf_sock.intf.clone();
-                    self.intf_socks.insert(*ip, IntfSock { intf, sock });
-                    debug!("reset socket for IP {}", ip);
+                    self.intf_socks
+                        .insert(intf.clone(), IntfSock { intf, sock });
                 }
-                Err(e) => error!("re-bind a socket to {}: {}", ip, e),
+                Err(e) => error!("re-bind a socket to {:?}: {}", intf, e),
             }
             return false;
         }
@@ -1505,7 +1506,7 @@ impl Zeroconf {
         match DnsIncoming::new(buf) {
             Ok(msg) => {
                 if msg.is_query() {
-                    self.handle_query(msg, ip);
+                    self.handle_query(msg, intf);
                 } else if msg.is_response() {
                     self.handle_response(msg);
                 } else {
@@ -1854,7 +1855,7 @@ impl Zeroconf {
     }
 
     /// Handle incoming query packets, figure out whether and what to respond.
-    fn handle_query(&mut self, msg: DnsIncoming, ip: &IpAddr) {
+    fn handle_query(&mut self, msg: DnsIncoming, ip: &Interface) {
         let intf_sock = match self.intf_socks.get(ip) {
             Some(sock) => sock,
             None => return,
@@ -2149,7 +2150,7 @@ impl Zeroconf {
                 // Send one unregister per interface and ip version
                 let mut multicast_sent_trackers = HashSet::new();
 
-                for (ip, intf_sock) in self.intf_socks.iter() {
+                for (intf, intf_sock) in self.intf_socks.iter() {
                     if let Some(tracker) = intf_sock.multicast_send_tracker() {
                         if multicast_sent_trackers.contains(&tracker) {
                             continue; // no need to send unregister the same interface with same ip version.
@@ -2162,7 +2163,7 @@ impl Zeroconf {
                         let next_time = current_time_millis() + 120;
                         self.retransmissions.push(ReRun {
                             next_time,
-                            command: Command::UnregisterResend(packet, *ip),
+                            command: Command::UnregisterResend(packet, intf.clone()),
                         });
                         timers.push(next_time);
                     }
@@ -2181,9 +2182,9 @@ impl Zeroconf {
         }
     }
 
-    fn exec_command_unregister_resend(&mut self, packet: Vec<u8>, ip: IpAddr) {
-        if let Some(intf_sock) = self.intf_socks.get(&ip) {
-            debug!("UnregisterResend from {}", &ip);
+    fn exec_command_unregister_resend(&mut self, packet: Vec<u8>, intf: Interface) {
+        if let Some(intf_sock) = self.intf_socks.get(&intf) {
+            error!("UnregisterResend from {}", &intf.ip());
             multicast_on_intf(&packet[..], intf_sock);
             self.increase_counter(Counter::UnregisterResend, 1);
         }
@@ -2368,7 +2369,7 @@ enum Command {
     RegisterResend(String), // (fullname)
 
     /// Resend unregister packet.
-    UnregisterResend(Vec<u8>, IpAddr), // (packet content)
+    UnregisterResend(Vec<u8>, Interface), // (packet content)
 
     /// Stop browsing a service type
     StopBrowse(String), // (ty_domain)
