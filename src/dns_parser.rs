@@ -278,6 +278,16 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
         self.get_record_mut().set_expire(expire_at);
     }
 
+    /// Given `now`, if the record is due to refresh, this method updates the refresh time
+    /// and returns the new refresh time. Otherwise, returns None.
+    fn updated_refresh_time(&mut self, now: u64) -> Option<u64> {
+        if self.get_record_mut().refresh_maybe(now) {
+            Some(self.get_record().get_refresh_time())
+        } else {
+            None
+        }
+    }
+
     /// Returns true if another record has matched content,
     /// and if its TTL is at least half of this record's.
     fn suppressed_by_answer(&self, other: &dyn DnsRecordExt) -> bool {

@@ -295,13 +295,7 @@ impl DnsCache {
             .get_mut(ty_domain)
             .into_iter()
             .flatten()
-            .filter_map(|record| {
-                if record.get_record_mut().refresh_maybe(now) {
-                    Some(record.get_record().get_refresh_time())
-                } else {
-                    None
-                }
-            })
+            .filter_map(|record| record.updated_refresh_time(now))
             .collect()
     }
 
@@ -332,13 +326,7 @@ impl DnsCache {
                 .get_mut(&instance)
                 .into_iter()
                 .flatten()
-                .filter_map(|record| {
-                    if record.get_record_mut().refresh_maybe(now) {
-                        Some(record.get_record().get_refresh_time())
-                    } else {
-                        None
-                    }
-                })
+                .filter_map(|record| record.updated_refresh_time(now))
                 .collect();
 
             if !refresh_timers.is_empty() {
@@ -394,13 +382,7 @@ impl DnsCache {
                 .get_mut(&hostname)
                 .into_iter()
                 .flatten()
-                .filter_map(|record| {
-                    if record.get_record_mut().refresh_maybe(now) {
-                        Some(record.get_record().get_refresh_time())
-                    } else {
-                        None
-                    }
-                })
+                .filter_map(|record| record.updated_refresh_time(now))
                 .collect();
 
             if !refresh_timers.is_empty() {
