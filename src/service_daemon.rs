@@ -441,7 +441,7 @@ impl ServiceDaemon {
 
             // Read until no more packets available.
             let intf = match zc.poll_ids.get(&ev.key) {
-                Some(ip) => ip.clone(),
+                Some(interface) => interface.clone(),
                 None => {
                     error!("Ip for event key {} not found", ev.key);
                     break;
@@ -900,7 +900,7 @@ struct Zeroconf {
     /// Local interfaces with sockets to recv/send on these interfaces.
     intf_socks: HashMap<Interface, IntfSock>,
 
-    /// Map poll id to IpAddr
+    /// Map poll id to Interface.
     poll_ids: HashMap<usize, Interface>,
 
     /// Next poll id value
@@ -963,7 +963,7 @@ impl Zeroconf {
             let sock = match new_socket_bind(&intf) {
                 Ok(s) => s,
                 Err(e) => {
-                    error!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
+                    debug!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
                     continue;
                 }
             };
@@ -971,7 +971,6 @@ impl Zeroconf {
             intf_socks.insert(intf.clone(), IntfSock { intf, sock });
         }
 
-        println!("intf socket: {}", intf_socks.len());
         let monitors = Vec::new();
         let service_name_len_max = SERVICE_NAME_LEN_MAX_DEFAULT;
 
@@ -1062,21 +1061,21 @@ impl Zeroconf {
         }
     }
 
-    /// Insert a new IP into the poll map and return key
-    fn add_poll(&mut self, ip: Interface) -> usize {
-        Self::add_poll_impl(&mut self.poll_ids, &mut self.poll_id_count, ip)
+    /// Insert a new interface into the poll map and return key
+    fn add_poll(&mut self, intf: Interface) -> usize {
+        Self::add_poll_impl(&mut self.poll_ids, &mut self.poll_id_count, intf)
     }
 
-    /// Insert a new IP into the poll map and return key
+    /// Insert a new interface into the poll map and return key
     /// This exist to satisfy the borrow checker
     fn add_poll_impl(
         poll_ids: &mut HashMap<usize, Interface>,
         poll_id_count: &mut usize,
-        ip: Interface,
+        intf: Interface,
     ) -> usize {
         let key = *poll_id_count;
         *poll_id_count += 1;
-        let _ = (*poll_ids).insert(key, ip);
+        let _ = (*poll_ids).insert(key, intf);
         key
     }
 
@@ -1855,8 +1854,8 @@ impl Zeroconf {
     }
 
     /// Handle incoming query packets, figure out whether and what to respond.
-    fn handle_query(&mut self, msg: DnsIncoming, ip: &Interface) {
-        let intf_sock = match self.intf_socks.get(ip) {
+    fn handle_query(&mut self, msg: DnsIncoming, intf: &Interface) {
+        let intf_sock = match self.intf_socks.get(intf) {
             Some(sock) => sock,
             None => return,
         };

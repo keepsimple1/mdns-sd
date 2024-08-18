@@ -29,7 +29,7 @@ fn integration_success() {
     let mut unique_intf_idx_ip_ver_set = HashSet::new();
     let mut non_idx_count = 0;
     for intf in all_interfaces.iter() {
-        println!("intf:: {:?}", intf);
+        // println!("intf:: {:?}", intf);
         let ip_ver = match intf.addr {
             IfAddr::V4(_) => 4u8,
             IfAddr::V6(_) => 6u8,
