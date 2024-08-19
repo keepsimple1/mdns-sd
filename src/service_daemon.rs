@@ -455,7 +455,7 @@ impl ServiceDaemon {
                     .poller
                     .modify(&intf_sock.sock, polling::Event::readable(ev.key))
                 {
-                    error!("modify poller for IP {}: {}", &intf.ip(), e);
+                    error!("modify poller for interface {:?}: {}", &intf, e);
                     break;
                 }
             }
@@ -956,6 +956,7 @@ impl Zeroconf {
     fn new(signal_sock: UdpSocket, poller: Poller) -> Self {
         // Get interfaces.
         let my_ifaddrs = my_ip_interfaces();
+
         // Create a socket for every IP addr.
         // Note: it is possible that `my_ifaddrs` contains duplicated IP addrs.
         let mut intf_socks = HashMap::new();

@@ -29,7 +29,6 @@ fn integration_success() {
     let mut unique_intf_idx_ip_ver_set = HashSet::new();
     let mut non_idx_count = 0;
     for intf in all_interfaces.iter() {
-        // println!("intf:: {:?}", intf);
         let ip_ver = match intf.addr {
             IfAddr::V4(_) => 4u8,
             IfAddr::V6(_) => 6u8,
@@ -42,10 +41,6 @@ fn integration_success() {
             non_idx_count += 1;
         }
     }
-    println!(
-        "unique intf with index: {} non idx count: {non_idx_count}",
-        unique_intf_idx_ip_ver_set.len()
-    );
     let unique_intf_idx_ip_ver_count = unique_intf_idx_ip_ver_set.len() + non_idx_count;
 
     let ifaddrs_set: HashSet<_> = all_interfaces.iter().map(|intf| intf.ip()).collect();
