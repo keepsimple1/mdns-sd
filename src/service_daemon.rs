@@ -1475,8 +1475,7 @@ impl Zeroconf {
         // If sz is 0, it means sock reached End-of-File.
         if sz == 0 {
             error!("socket {:?} was likely shutdown", sock);
-            let inmut_sock: &Socket = sock;
-            if let Err(e) = self.poller.delete(inmut_sock) {
+            if let Err(e) = self.poller.delete(&*sock) {
                 error!("failed to remove sock {:?} from poller: {}", sock, &e);
             }
 
