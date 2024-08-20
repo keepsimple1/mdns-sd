@@ -1718,7 +1718,7 @@ impl Zeroconf {
         let mut changes = Vec::new();
         let mut timers = Vec::new();
         for record in msg.answers {
-            match self.cache.add_or_update(record) {
+            match self.cache.add_or_update(record, &mut timers) {
                 Some((dns_record, true)) => {
                     timers.push(dns_record.get_record().get_expire_time());
                     timers.push(dns_record.get_record().get_refresh_time());

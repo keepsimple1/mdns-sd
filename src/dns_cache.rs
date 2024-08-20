@@ -108,9 +108,12 @@ impl DnsCache {
     ///
     /// Returns `None` if `incoming` is invalid / unrecognized, otherwise returns
     /// (a new record, true) or (existing record with TTL updated, false).
+    ///
+    /// If need to add new timers for related records, push into `timers`.
     pub(crate) fn add_or_update(
         &mut self,
         incoming: DnsRecordBox,
+        timers: &mut Vec<u64>,
     ) -> Option<(&DnsRecordBox, bool)> {
         let entry_name = incoming.get_name().to_string();
 
@@ -156,7 +159,11 @@ impl DnsCache {
                     && r.get_expire() > now + 1000
                 {
                     debug!("FLUSH one record: {:?}", &r);
-                    r.set_expire(now + 1000);
+                    let new_expire = now + 1000;
+                    r.set_expire(new_expire);
+
+                    // Add a timer so the run loop will handle this expire.
+                    timers.push(new_expire);
                 }
             });
         }
