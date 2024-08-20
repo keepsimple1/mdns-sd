@@ -2038,7 +2038,7 @@ impl Zeroconf {
         next_delay: u32,
         listener: Sender<ServiceEvent>,
     ) {
-        let addr_list: Vec<_> = self.intf_socks.keys().collect();
+        let addr_list: Vec<_> = self.intf_socks.keys().map(|itf| itf.addr.ip()).collect();
         if let Err(e) = listener.send(ServiceEvent::SearchStarted(format!(
             "{} on addrs {:?}",
             &ty, &addr_list
