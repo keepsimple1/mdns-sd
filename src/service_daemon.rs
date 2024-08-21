@@ -2038,10 +2038,16 @@ impl Zeroconf {
         next_delay: u32,
         listener: Sender<ServiceEvent>,
     ) {
-        let addr_list: Vec<_> = self.intf_socks.keys().map(|itf| itf.addr.ip()).collect();
+        let pretty_interfaces: Vec<String> = self
+            .intf_socks
+            .keys()
+            .map(|itf| format!("{} ({})", itf.ip(), itf.name))
+            .collect();
+
         if let Err(e) = listener.send(ServiceEvent::SearchStarted(format!(
-            "{} on addrs {:?}",
-            &ty, &addr_list
+            "{} on addrs [{}]",
+            &ty,
+            pretty_interfaces.join(", ")
         ))) {
             error!(
                 "Failed to send SearchStarted({})(repeating:{}): {}",
