@@ -52,7 +52,7 @@ fn main() {
                 }
             }
             other_event => {
-                println!("At {:?} : {:?}", now.elapsed(), &other_event);
+                println!("At {:?}: {:?}", now.elapsed(), &other_event);
             }
         }
     }
