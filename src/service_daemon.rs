@@ -2038,7 +2038,7 @@ impl Zeroconf {
         next_delay: u32,
         listener: Sender<ServiceEvent>,
     ) {
-        let pretty_interfaces: Vec<String> = self
+        let pretty_addrs: Vec<String> = self
             .intf_socks
             .keys()
             .map(|itf| format!("{} ({})", itf.ip(), itf.name))
@@ -2047,7 +2047,7 @@ impl Zeroconf {
         if let Err(e) = listener.send(ServiceEvent::SearchStarted(format!(
             "{} on addrs [{}]",
             &ty,
-            pretty_interfaces.join(", ")
+            pretty_addrs.join(", ")
         ))) {
             error!(
                 "Failed to send SearchStarted({})(repeating:{}): {}",
