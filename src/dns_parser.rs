@@ -528,7 +528,11 @@ impl DnsRecordExt for DnsTxt {
 impl fmt::Debug for DnsTxt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let properties = decode_txt(&self.text);
-        write!(f, "DnsTxt {{ record: {:?}, text: {:?} }}", self.record, properties)
+        write!(
+            f,
+            "DnsTxt {{ record: {:?}, text: {:?} }}",
+            self.record, properties
+        )
     }
 }
 
