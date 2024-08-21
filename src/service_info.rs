@@ -1,3 +1,5 @@
+//! Define `ServiceInfo` to represent a service and its operations.
+
 #[cfg(feature = "logging")]
 use crate::log::error;
 use crate::{dns_parser::split_sub_domain, Error, Result};
@@ -652,7 +654,7 @@ fn encode_txt<'a>(properties: impl Iterator<Item = &'a TxtProperty>) -> Vec<u8> 
 }
 
 // Convert from DNS TXT record content to key/value pairs
-fn decode_txt(txt: &[u8]) -> Vec<TxtProperty> {
+pub(crate) fn decode_txt(txt: &[u8]) -> Vec<TxtProperty> {
     let mut properties = Vec::new();
     let mut offset = 0;
     while offset < txt.len() {
