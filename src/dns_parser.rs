@@ -6,7 +6,7 @@
 
 #[cfg(feature = "logging")]
 use crate::log::debug;
-use crate::{Error, Result, ServiceInfo};
+use crate::{service_info::decode_txt, Error, Result, ServiceInfo};
 use if_addrs::Interface;
 use std::{
     any::Any,
@@ -482,7 +482,7 @@ impl DnsRecordExt for DnsSrv {
 //    marks).  Everything up to the first '=' character is the key (Section
 //    6.4).  Everything after the first '=' character to the end of the
 //    string (including subsequent '=' characters, if any) is the value
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DnsTxt {
     pub(crate) record: DnsRecord,
     pub(crate) text: Vec<u8>,
@@ -522,6 +522,17 @@ impl DnsRecordExt for DnsTxt {
 
     fn clone_box(&self) -> Box<dyn DnsRecordExt> {
         Box::new(self.clone())
+    }
+}
+
+impl fmt::Debug for DnsTxt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let properties = decode_txt(&self.text);
+        write!(
+            f,
+            "DnsTxt {{ record: {:?}, text: {:?} }}",
+            self.record, properties
+        )
     }
 }
 
