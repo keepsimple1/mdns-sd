@@ -1,3 +1,17 @@
+# Version 0.11.3 (2024-08-23)
+
+A release of bugfixes and refactorings.
+
+## All changes
+
+* 3292110 DnsTxt debug print: make its text field human-readable (#247) (keepsimple1) (2024-08-21)
+* 5567c1f Send SearchStarted events with addrs as `ip (intf-name)`  (#245) (hrzlgnm) (2024-08-22)
+* 9a91a53 cache flush: add the missing timer for updated expires (#244) (keepsimple1) (2024-08-19)
+* c1d7efa Change intf_socks to a map of (Interface, Socket) (#242) (keepsimple1) (2024-08-18)
+* 404100d refactor out a common method for DnsRecordExt (#241) (keepsimple1) (2024-08-18)
+* f055c78 Refresh A and AAAA records of active `.browse` queriers (#240) (hrzlgnm) (2024-08-17)
+* 0453030 Avoid redundant query, announcement and unregistration overhaul (#239) (hrzlgnm) (2024-08-16)
+
 # Version 0.11.2 (2024-08-06)
 
 Mostly a bugfix and refactoring release, with limited support added for:
