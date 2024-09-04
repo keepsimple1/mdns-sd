@@ -489,8 +489,8 @@ pub struct DnsTxt {
 }
 
 impl DnsTxt {
-    pub(crate) fn new(name: &str, ty: u16, class: u16, ttl: u32, text: Vec<u8>) -> Self {
-        let record = DnsRecord::new(name, ty, class, ttl);
+    pub(crate) fn new(name: &str, class: u16, ttl: u32, text: Vec<u8>) -> Self {
+        let record = DnsRecord::new(name, TYPE_TXT, class, ttl);
         Self { record, text }
     }
 }
@@ -1062,7 +1062,6 @@ impl DnsOutgoing {
 
         self.add_additional_answer(DnsTxt::new(
             service.get_fullname(),
-            TYPE_TXT,
             CLASS_IN | CLASS_CACHE_FLUSH,
             service.get_host_ttl(),
             service.generate_txt(),
@@ -1294,12 +1293,14 @@ impl DnsIncoming {
         // /                                               /
         // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 
+        // Muse have at least TYPE, CLASS, TTL, RDLENGTH fields: 10 bytes.
+        const RR_HEADER_REMAIN: usize = 10;
+
         for _ in 0..n {
             let name = self.read_name()?;
             let slice = &self.data[self.offset..];
 
-            // Muse have at least TYPE, CLASS, TTL, RDLENGTH fields: 10 bytes.
-            if slice.len() < 10 {
+            if slice.len() < RR_HEADER_REMAIN {
                 return Err(Error::Msg(format!(
                     "read_others: RR '{}' is too short after name: {} bytes",
                     &name,
@@ -1319,9 +1320,17 @@ impl DnsIncoming {
 
                 ttl = 1;
             }
-            let length = u16_from_be_slice(&slice[8..10]) as usize;
-            self.offset += 10;
-            let next_offset = self.offset + length;
+            let rdata_len = u16_from_be_slice(&slice[8..10]) as usize;
+            self.offset += RR_HEADER_REMAIN;
+            let next_offset = self.offset + rdata_len;
+
+            // Sanity check for RDATA length.
+            if next_offset > self.data.len() {
+                return Err(Error::Msg(format!(
+                    "RR {name} RDATA length {rdata_len} is invalid: remain data len: {}",
+                    self.data.len() - self.offset
+                )));
+            }
 
             // decode RDATA based on the record type.
             let rec: Option<DnsRecordBox> = match ty {
@@ -1334,10 +1343,9 @@ impl DnsIncoming {
                 ))),
                 TYPE_TXT => Some(Box::new(DnsTxt::new(
                     &name,
-                    ty,
                     class,
                     ttl,
-                    self.read_vec(length),
+                    self.read_vec(rdata_len),
                 ))),
                 TYPE_SRV => Some(Box::new(DnsSrv::new(
                     &name,
@@ -1379,7 +1387,7 @@ impl DnsIncoming {
                 ))),
                 x => {
                     debug!("Unknown DNS record type: {} name: {}", x, &name);
-                    self.offset += length;
+                    self.offset += rdata_len;
                     None
                 }
             };
@@ -1616,8 +1624,8 @@ const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
 mod tests {
     use super::{
         current_time_millis, get_expiration_time, DnsIncoming, DnsNSec, DnsOutgoing, DnsPointer,
-        DnsRecordExt, DnsSrv, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
-        MSG_HEADER_LEN, TYPE_A, TYPE_AAAA, TYPE_PTR,
+        DnsRecordExt, DnsSrv, DnsTxt, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY,
+        FLAGS_QR_RESPONSE, MSG_HEADER_LEN, TYPE_A, TYPE_AAAA, TYPE_PTR,
     };
 
     #[test]
@@ -1712,6 +1720,33 @@ mod tests {
         // Truncate the 'host' and its associated bytes (length byte, ending null byte),
         // and one more byte off to create an invalid u16.
         data_too_short.truncate(data_len - host.len() - 3);
+        let invalid = DnsIncoming::new(data_too_short);
+
+        // Verify the error of decoding.
+        assert!(invalid.is_err());
+        if let Err(e) = invalid {
+            println!("error: {e}");
+        }
+    }
+
+    #[test]
+    fn test_rr_read_vec_error() {
+        let mut response = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+        let name = "rr_read_vec_err._udp.local.";
+        let text = "greeting=hello".as_bytes().to_vec();
+
+        response.add_additional_answer(DnsTxt::new(name, CLASS_IN | CLASS_CACHE_FLUSH, 1, text));
+
+        let data = response.to_data_on_wire().remove(0);
+        let data_len = data.len();
+        let mut data_too_short = data.clone();
+
+        // verify the original response data is good.
+        let incoming = DnsIncoming::new(data);
+        assert!(incoming.is_ok());
+
+        // Truncate the data to mimic invalid length.
+        data_too_short.truncate(data_len - 5);
         let invalid = DnsIncoming::new(data_too_short);
 
         // Verify the error of decoding.
