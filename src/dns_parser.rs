@@ -1325,10 +1325,11 @@ impl DnsIncoming {
             self.offset += RR_HEADER_REMAIN;
             let next_offset = self.offset + rdata_len;
 
+            // Sanity check for RDATA length.
             if next_offset > self.data.len() {
                 return Err(Error::Msg(format!(
-                    "RR {name} RDATA length {rdata_len} is invalid: total data len: {}",
-                    self.data.len()
+                    "RR {name} RDATA length {rdata_len} is invalid: actual data len: {}",
+                    self.data.len() - self.offset
                 )));
             }
 
