@@ -1293,7 +1293,6 @@ impl Zeroconf {
         out.add_answer_at_time(
             DnsTxt::new(
                 info.get_fullname(),
-                TYPE_TXT,
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 info.get_other_ttl(),
                 info.generate_txt(),
@@ -1359,7 +1358,6 @@ impl Zeroconf {
         out.add_answer_at_time(
             DnsTxt::new(
                 info.get_fullname(),
-                TYPE_TXT,
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 0,
                 info.generate_txt(),
@@ -1945,7 +1943,6 @@ impl Zeroconf {
                         &msg,
                         DnsTxt::new(
                             &question.entry.name,
-                            TYPE_TXT,
                             CLASS_IN | CLASS_CACHE_FLUSH,
                             service.get_host_ttl(),
                             service.generate_txt(),
