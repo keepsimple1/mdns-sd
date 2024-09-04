@@ -1294,12 +1294,14 @@ impl DnsIncoming {
         // /                                               /
         // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 
+        // Muse have at least TYPE, CLASS, TTL, RDLENGTH fields: 10 bytes.
+        const RR_HEADER_REMAIN: usize = 10;
+
         for _ in 0..n {
             let name = self.read_name()?;
             let slice = &self.data[self.offset..];
 
-            // Muse have at least TYPE, CLASS, TTL, RDLENGTH fields: 10 bytes.
-            if slice.len() < 10 {
+            if slice.len() < RR_HEADER_REMAIN {
                 return Err(Error::Msg(format!(
                     "read_others: RR '{}' is too short after name: {} bytes",
                     &name,
@@ -1319,9 +1321,16 @@ impl DnsIncoming {
 
                 ttl = 1;
             }
-            let length = u16_from_be_slice(&slice[8..10]) as usize;
-            self.offset += 10;
-            let next_offset = self.offset + length;
+            let rdata_len = u16_from_be_slice(&slice[8..10]) as usize;
+            self.offset += RR_HEADER_REMAIN;
+            let next_offset = self.offset + rdata_len;
+
+            if next_offset > self.data.len() {
+                return Err(Error::Msg(format!(
+                    "RR {name} RDATA length {rdata_len} is invalid: total data len: {}",
+                    self.data.len()
+                )));
+            }
 
             // decode RDATA based on the record type.
             let rec: Option<DnsRecordBox> = match ty {
@@ -1337,7 +1346,7 @@ impl DnsIncoming {
                     ty,
                     class,
                     ttl,
-                    self.read_vec(length),
+                    self.read_vec(rdata_len),
                 ))),
                 TYPE_SRV => Some(Box::new(DnsSrv::new(
                     &name,
@@ -1379,7 +1388,7 @@ impl DnsIncoming {
                 ))),
                 x => {
                     debug!("Unknown DNS record type: {} name: {}", x, &name);
-                    self.offset += length;
+                    self.offset += rdata_len;
                     None
                 }
             };
