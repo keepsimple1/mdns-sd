@@ -25,7 +25,6 @@ socket2 = { version = "0.5.5", features = ["all"] }      # socket APIs
 
 [dev-dependencies]
 env_logger = { version = "= 0.10.2", default-features = false, features= ["humantime"] }
-fastrand = "1.8"
 rand ="0.8"
 test-log = "= 0.2.14"
 test-log-macros = "= 0.2.14"

@@ -68,6 +68,8 @@ pub const FLAGS_TC: u16 = 0x0200;
 
 pub(crate) type DnsRecordBox = Box<dyn DnsRecordExt>;
 
+const U16_SIZE: usize = 2;
+
 #[inline]
 pub const fn ip_address_to_type(address: &IpAddr) -> u16 {
     match address {
@@ -1420,7 +1422,6 @@ impl DnsIncoming {
     }
 
     fn read_u16(&mut self) -> Result<u16> {
-        const U16_SIZE: usize = 2;
         let slice = &self.data[self.offset..];
         if slice.len() < U16_SIZE {
             return Err(Error::Msg(format!(
@@ -1560,13 +1561,14 @@ impl DnsIncoming {
                 0xC0 => {
                     // Message compression.
                     // See https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.4
-                    if data[offset..].len() < 2 {
+                    let slice = &data[offset..];
+                    if slice.len() < U16_SIZE {
                         return Err(Error::Msg(format!(
-                            "read_u16: slice len is only {}",
-                            data.len()
+                            "read_name: u16 slice len is only {}",
+                            slice.len()
                         )));
                     }
-                    let pointer = (u16_from_be_slice(&data[offset..]) ^ 0xC000) as usize;
+                    let pointer = (u16_from_be_slice(slice) ^ 0xC000) as usize;
                     if pointer >= offset {
                         return Err(Error::Msg(format!(
                             "Bad name with invalid message compression: pointer {} offset {} data (so far): {:x?}",
