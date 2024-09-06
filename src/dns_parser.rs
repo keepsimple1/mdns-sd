@@ -1270,7 +1270,7 @@ impl DnsIncoming {
             .num_answers
             .checked_add(self.num_authorities)
             .and_then(|x| x.checked_add(self.num_additionals))
-            .ok_or(Error::Msg("read_others: overflow".to_string()))?;
+            .ok_or_else(|| Error::Msg("read_others: overflow".to_string()))?;
         debug!("read_others: {}", n);
 
         // RFC 1035: https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.1
