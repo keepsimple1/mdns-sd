@@ -1266,7 +1266,11 @@ impl DnsIncoming {
 
     /// Decodes all answers, authorities and additionals.
     fn read_others(&mut self) -> Result<()> {
-        let n = self.num_answers + self.num_authorities + self.num_additionals;
+        let n = self
+            .num_answers
+            .checked_add(self.num_authorities)
+            .and_then(|x| x.checked_add(self.num_additionals))
+            .ok_or(Error::Msg("read_others: overflow".to_string()))?;
         debug!("read_others: {}", n);
 
         // RFC 1035: https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.1
@@ -1556,6 +1560,12 @@ impl DnsIncoming {
                 0xC0 => {
                     // Message compression.
                     // See https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.4
+                    if data[offset..].len() < 2 {
+                        return Err(Error::Msg(format!(
+                            "read_u16: slice len is only {}",
+                            data.len()
+                        )));
+                    }
                     let pointer = (u16_from_be_slice(&data[offset..]) ^ 0xC000) as usize;
                     if pointer >= offset {
                         return Err(Error::Msg(format!(
@@ -1753,6 +1763,29 @@ mod tests {
         assert!(invalid.is_err());
         if let Err(e) = invalid {
             println!("error: {e}");
+        }
+    }
+
+    #[test]
+    fn test_rr_rand_data_error() {
+        use rand::prelude::*;
+
+        const DATA_LEN_MAX: usize = 2048;
+        const TEST_TIMES: usize = 100000;
+
+        let mut rng = rand::thread_rng();
+        let mut rand_data: Vec<u8> = Vec::with_capacity(DATA_LEN_MAX);
+
+        for _ in 0..TEST_TIMES {
+            // Generate a random length of data
+            let data_len: usize = rng.gen_range(0..DATA_LEN_MAX);
+            rand_data.resize(data_len, 0);
+
+            // Generate random data
+            rng.fill(rand_data.as_mut_slice());
+
+            // Decode rand data, it should not panic
+            let _ = DnsIncoming::new(rand_data.clone());
         }
     }
 
