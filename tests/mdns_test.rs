@@ -3,6 +3,7 @@ use mdns_sd::{
     DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, IntoTxtProperties, ServiceDaemon,
     ServiceEvent, ServiceInfo, UnregisterStatus,
 };
+use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::thread::sleep;
@@ -957,7 +958,8 @@ fn instance_name_two_dots() {
 
 fn my_ip_interfaces() -> Vec<Interface> {
     // Use a random port for binding test.
-    let test_port = fastrand::u16(8000u16..9000u16);
+    let mut rng = rand::thread_rng();
+    let test_port = rng.gen_range(8000u16..9000u16);
 
     if_addrs::get_if_addrs()
         .unwrap_or_default()
