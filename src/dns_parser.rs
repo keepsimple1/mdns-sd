@@ -1278,7 +1278,7 @@ impl DnsIncoming {
         // RFC 1035: https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.1
         //
         // All RRs have the same top level format shown below:
-        //         1  1  1  1  1  1
+        //                               1  1  1  1  1  1
         // 0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
         // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
         // |                                               |
