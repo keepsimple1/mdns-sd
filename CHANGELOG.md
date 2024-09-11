@@ -1,3 +1,25 @@
+# Version 0.11.4 (2024-09-10)
+
+Bugfixes. Added checks for corrupted RR data to prevent unnecessary panics. Thanks for new 
+contributor @rise0chen !
+
+Sorry that this release has a few merged small commits as I didn't know how to properly
+merge in a PR that targets a fetaure branch used in another PR, instead of `main` branch.
+
+## All changes
+
+* e54485e add --verbose in CI test run (#254) (keepsimple1)
+* f0c4c27 remove fastrand dependency from dev-test (#252) (keepsimple1)
+* dff1596 Merge pull request #250 from keepsimple1/rdata-check (keepsimple1)
+* 659e684 fix cargo clippy warning (keepsimple1)
+* 90a2f12 Merge pull request #251 from rise0chen/rdata-check (keepsimple1)
+* 6d51f55 Merge branch 'rdata-check' into rdata-check (keepsimple1)
+* 1b2cf40 add a check for rr data len (keepsimple1)
+* a5de799 feat: test random data (rise0chen)
+* 40698a3 add test case and simplify DnsTxt::new (keepsimple1)
+* fc489bd refactoring error log (keepsimple1)
+* a3fad8e add a check for rr data len (keepsimple1)
+
 # Version 0.11.3 (2024-08-23)
 
 A release of bugfixes and refactorings.
