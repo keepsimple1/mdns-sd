@@ -1199,8 +1199,8 @@ fn test_cache_flush_record() {
         match event {
             ServiceEvent::ServiceResolved(info) => {
                 resolved = true;
-                println!("Resolved a service of {}", &info.get_fullname());
-                println!("JLN service: {:?}", info);
+                timed_println(format!("Resolved a service of {}", &info.get_fullname()));
+                timed_println(format!("JLN service: {:?}", info));
                 break;
             }
             e => {
@@ -1233,10 +1233,10 @@ fn test_cache_flush_record() {
         &properties[..],
     )
     .unwrap();
-    let result = server.register(my_service.clone());
+    let result = server.register(my_service);
     assert!(result.is_ok());
 
-    println!("Re-registered with updated IPv4 addr: {}", &service_ip_addr);
+    timed_println(format!("Re-registered with updated IPv4 addr: {}", &service_ip_addr));
 
     // Wait for the new registration sent out and cache flushed.
     sleep(Duration::from_secs(2));
@@ -1249,7 +1249,7 @@ fn test_cache_flush_record() {
             ServiceEvent::ServiceResolved(info) => {
                 // Verify the address flushed and updated.
                 let new_addrs = info.get_addresses();
-                println!("new address resolved: {:?}", new_addrs);
+                timed_println(format!("new address resolved: {:?}", new_addrs));
                 if new_addrs.len() == 1 {
                     let first_addr = new_addrs.iter().next().unwrap();
                     assert_eq!(first_addr, &service_ip_addr);
@@ -1258,7 +1258,7 @@ fn test_cache_flush_record() {
                 }
             }
             e => {
-                println!("Received event {:?}", e);
+                timed_println(format!("Received event {:?}", e));
             }
         }
     }
@@ -1449,4 +1449,11 @@ fn test_domain_suffix_in_browse() {
     assert!(mdns_client.browse("_service-name._tcp.local").is_err());
     assert!(mdns_client.browse("_service-name._tcp.local.").is_ok());
     mdns_client.shutdown().unwrap();
+}
+
+/// A helper function to include a timestamp for println.
+fn timed_println(msg: String) {
+    let now = SystemTime::now();
+    let formatted_time = humantime::format_rfc3339(now);
+    println!("[{}] {}", formatted_time, msg);
 }
