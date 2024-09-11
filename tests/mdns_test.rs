@@ -1236,7 +1236,10 @@ fn test_cache_flush_record() {
     let result = server.register(my_service);
     assert!(result.is_ok());
 
-    timed_println(format!("Re-registered with updated IPv4 addr: {}", &service_ip_addr));
+    timed_println(format!(
+        "Re-registered with updated IPv4 addr: {}",
+        &service_ip_addr
+    ));
 
     // Wait for the new registration sent out and cache flushed.
     sleep(Duration::from_secs(2));
