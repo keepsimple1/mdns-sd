@@ -1634,6 +1634,8 @@ const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::iter::repeat_with;
+
     use super::{
         current_time_millis, get_expiration_time, DnsIncoming, DnsNSec, DnsOutgoing, DnsPointer,
         DnsRecordExt, DnsSrv, DnsTxt, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY,
@@ -1770,24 +1772,18 @@ mod tests {
 
     #[test]
     fn test_rr_rand_data_error() {
-        use rand::prelude::*;
-
         const DATA_LEN_MAX: usize = 2048;
         const TEST_TIMES: usize = 100000;
 
-        let mut rng = rand::thread_rng();
-        let mut rand_data: Vec<u8> = Vec::with_capacity(DATA_LEN_MAX);
-
         for _ in 0..TEST_TIMES {
             // Generate a random length of data
-            let data_len: usize = rng.gen_range(0..DATA_LEN_MAX);
-            rand_data.resize(data_len, 0);
+            let data_len = fastrand::usize(0..DATA_LEN_MAX);
 
             // Generate random data
-            rng.fill(rand_data.as_mut_slice());
+            let rand_data: Vec<u8> = repeat_with(|| fastrand::u8(..)).take(data_len).collect();
 
             // Decode rand data, it should not panic
-            let _ = DnsIncoming::new(rand_data.clone());
+            let _ = DnsIncoming::new(rand_data);
         }
     }
 
