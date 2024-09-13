@@ -790,9 +790,9 @@ impl DnsOutPacket {
             let remaining = &name[here..end];
 
             // Check if 'remaining' already appeared in this message
-            match self.names.get(remaining).copied() {
+            match self.names.get(remaining) {
                 Some(offset) => {
-                    let pointer = offset | POINTER_MASK;
+                    let pointer = *offset | POINTER_MASK;
                     self.write_short(pointer);
                     // println!(
                     //     "written pointer {} ({}) for {}",
@@ -1508,7 +1508,8 @@ impl DnsIncoming {
     /// domain name encoding.
     fn read_name(&mut self) -> Result<String> {
         let data = &self.data[..];
-        let mut offset = self.offset;
+        let start_offset = self.offset;
+        let mut offset = start_offset;
         let mut name = "".to_string();
         let mut at_end = false;
 
@@ -1516,6 +1517,12 @@ impl DnsIncoming {
         // "...Domain names in messages are expressed in terms of a sequence of labels.
         // Each label is represented as a one octet length field followed by that
         // number of octets."
+        //
+        // "...The compression scheme allows a domain name in a message to be
+        // represented as either:
+        // - a sequence of labels ending in a zero octet
+        // - a pointer
+        // - a sequence of labels ending with a pointer"
         loop {
             if offset >= data.len() {
                 return Err(Error::Msg(format!(
@@ -1569,15 +1576,17 @@ impl DnsIncoming {
                         )));
                     }
                     let pointer = (u16_from_be_slice(slice) ^ 0xC000) as usize;
-                    if pointer >= offset {
+                    if pointer >= start_offset {
+                        // Error: could trigger an infinite loop.
                         return Err(Error::Msg(format!(
-                            "Bad name with invalid message compression: pointer {} offset {} data (so far): {:x?}",
-                            &pointer, &offset, &data[..offset]
+                            "Invalid name compression: pointer {} must be less than the start offset {}",
+                            &pointer, &start_offset
                         )));
                     }
 
+                    // A pointer marks the end of a domain name.
                     if !at_end {
-                        self.offset = offset + 2;
+                        self.offset = offset + U16_SIZE;
                         at_end = true;
                     }
                     offset = pointer;
@@ -1676,6 +1685,39 @@ mod tests {
         assert!(invalid.is_err());
         if let Err(e) = invalid {
             println!("error: {}", e);
+        }
+    }
+
+    // `read_name` must not go into an infinite loop when the data is corrupted
+    // with a "name compression loop".
+    #[test]
+    fn test_read_name_compression_loop() {
+        let name = "test_loop";
+        let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
+        out.add_question(name, TYPE_PTR);
+        let mut data = out.to_data_on_wire().remove(0);
+
+        let name_length_offset = 12; // start of the name in the message.
+
+        // The "name" terminates with a "length 0" byte.
+        // Note that the "name length" itself is one byte.
+        let zero_length_offset = name_length_offset + 1 + name.len();
+
+        // Verify the "name length" byte and the "length 0" byte.
+        assert_eq!(data[name_length_offset], name.len() as u8);
+        assert_eq!(data[zero_length_offset], 0);
+
+        // Modify `data` to create a "name compression loop":
+        //
+        // Changing the "length 0" byte into a "pointer" byte,
+        // followed by the "offset pointed" byte.
+        data[zero_length_offset] = 0b1100_0000; // first two bits indicates a "pointer"
+        data[zero_length_offset + 1] = name_length_offset as u8; // points back to "name"
+
+        let result = DnsIncoming::new(data);
+        assert!(result.is_err());
+        if let Err(e) = result {
+            println!("Error: {}", e);
         }
     }
 
