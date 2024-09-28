@@ -1,3 +1,12 @@
+# Version 0.11.5 (2024-09-28)
+
+This is a bugfix release.
+
+## All changes
+
+* 2829d8e tests: fix remove addr test (#258) (keepsimple1)
+* 4f58e2f dns_parser: check against potential name compression loop (#257) (keepsimple1)
+
 # Version 0.11.4 (2024-09-10)
 
 Bugfixes. Added checks for corrupted RR data to prevent unnecessary panics. Thanks for new 
