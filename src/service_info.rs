@@ -726,6 +726,27 @@ pub fn valid_ip_on_intf(addr: &IpAddr, intf: &Interface) -> bool {
     }
 }
 
+/// Returns true if `addr_a` and `addr_b` are in the same network as `intf`.
+pub fn valid_two_addrs_on_intf(addr_a: &IpAddr, addr_b: &IpAddr, intf: &Interface) -> bool {
+    match (addr_a, addr_b, &intf.addr) {
+        (IpAddr::V4(ipv4_a), IpAddr::V4(ipv4_b), IfAddr::V4(intf)) => {
+            let netmask = u32::from(intf.netmask);
+            let intf_net = u32::from(intf.ip) & netmask;
+            let net_a = u32::from(*ipv4_a) & netmask;
+            let net_b = u32::from(*ipv4_b) & netmask;
+            net_a == intf_net && net_b == intf_net
+        }
+        (IpAddr::V6(ipv6_a), IpAddr::V6(ipv6_b), IfAddr::V6(intf)) => {
+            let netmask = u128::from(intf.netmask);
+            let intf_net = u128::from(intf.ip) & netmask;
+            let net_a = u128::from(*ipv6_a) & netmask;
+            let net_b = u128::from(*ipv6_b) & netmask;
+            net_a == intf_net && net_b == intf_net
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{decode_txt, encode_txt, u8_slice_to_hex, ServiceInfo, TxtProperty};

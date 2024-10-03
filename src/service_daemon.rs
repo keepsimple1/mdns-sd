@@ -945,7 +945,8 @@ impl Zeroconf {
         let my_ifaddrs = my_ip_interfaces();
 
         // Create a socket for every IP addr.
-        // Note: it is possible that `my_ifaddrs` contains duplicated IP addrs.
+        // Note: it is possible that `my_ifaddrs` contains the same IP addr with different interface names,
+        // or the same interface name with different IP addrs.
         let mut intf_socks = HashMap::new();
         for intf in my_ifaddrs {
             let sock = match new_socket_bind(&intf) {
@@ -1054,7 +1055,8 @@ impl Zeroconf {
         Self::add_poll_impl(&mut self.poll_ids, &mut self.poll_id_count, intf)
     }
 
-    /// Insert a new interface into the poll map and return key
+    /// Insert a new interface into the poll map and return its key.
+    ///
     /// This exist to satisfy the borrow checker
     fn add_poll_impl(
         poll_ids: &mut HashMap<usize, Interface>,
@@ -1382,13 +1384,6 @@ impl Zeroconf {
         send_dns_outgoing(&out, intf, sock).remove(0)
     }
 
-    /// Binds a channel `listener` to querying mDNS domain type `ty`.
-    ///
-    /// If there is already a `listener`, it will be updated, i.e. overwritten.
-    fn add_service_querier(&mut self, ty: String, listener: Sender<ServiceEvent>) {
-        self.service_queriers.insert(ty, listener);
-    }
-
     /// Binds a channel `listener` to querying mDNS hostnames.
     ///
     /// If there is already a `listener`, it will be updated, i.e. overwritten.
@@ -1495,7 +1490,7 @@ impl Zeroconf {
                 if msg.is_query() {
                     self.handle_query(msg, intf);
                 } else if msg.is_response() {
-                    self.handle_response(msg);
+                    self.handle_response(msg, intf);
                 } else {
                     error!("Invalid message: not query and not response");
                 }
@@ -1532,7 +1527,7 @@ impl Zeroconf {
 
     /// Checks if `ty_domain` has records in the cache. If yes, sends the
     /// cached records via `sender`.
-    fn query_cache_for_service(&mut self, ty_domain: &str, sender: Sender<ServiceEvent>) {
+    fn query_cache_for_service(&mut self, ty_domain: &str, sender: &Sender<ServiceEvent>) {
         let mut resolved: HashSet<String> = HashSet::new();
         let mut unresolved: HashSet<String> = HashSet::new();
 
@@ -1668,7 +1663,7 @@ impl Zeroconf {
 
     /// Deal with incoming response packets.  All answers
     /// are held in the cache, and listeners are notified.
-    fn handle_response(&mut self, mut msg: DnsIncoming) {
+    fn handle_response(&mut self, mut msg: DnsIncoming, intf: &Interface) {
         debug!(
             "handle_response: {} answers {} authorities {} additionals",
             &msg.answers.len(),
@@ -1716,7 +1711,7 @@ impl Zeroconf {
         let mut changes = Vec::new();
         let mut timers = Vec::new();
         for record in msg.answers {
-            match self.cache.add_or_update(record, &mut timers) {
+            match self.cache.add_or_update(intf, record, &mut timers) {
                 Some((dns_record, true)) => {
                     timers.push(dns_record.get_record().get_expire_time());
                     timers.push(dns_record.get_record().get_refresh_time());
@@ -2042,8 +2037,8 @@ impl Zeroconf {
             .collect();
 
         if let Err(e) = listener.send(ServiceEvent::SearchStarted(format!(
-            "{} on addrs [{}]",
-            &ty,
+            "{ty} on {} interfaces [{}]",
+            pretty_addrs.len(),
             pretty_addrs.join(", ")
         ))) {
             error!(
@@ -2053,9 +2048,13 @@ impl Zeroconf {
             return;
         }
         if !repeating {
-            self.add_service_querier(ty.clone(), listener.clone());
+            // Binds a `listener` to querying mDNS domain type `ty`.
+            //
+            // If there is already a `listener`, it will be updated, i.e. overwritten.
+            self.service_queriers.insert(ty.clone(), listener.clone());
+
             // if we already have the records in our cache, just send them
-            self.query_cache_for_service(&ty, listener.clone());
+            self.query_cache_for_service(&ty, &listener);
         }
 
         self.send_query(&ty, TYPE_PTR);

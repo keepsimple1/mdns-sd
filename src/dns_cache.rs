@@ -2,12 +2,17 @@
 //!
 //! This is an internal implementation, not visible to the public API.
 
-use crate::dns_parser::{
-    current_time_millis, split_sub_domain, DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, TYPE_A,
-    TYPE_AAAA, TYPE_NSEC, TYPE_PTR, TYPE_SRV, TYPE_TXT,
-};
+use if_addrs::Interface;
+
 #[cfg(feature = "logging")]
 use crate::log::debug;
+use crate::{
+    dns_parser::{
+        current_time_millis, split_sub_domain, DnsAddress, DnsPointer, DnsRecordBox, DnsSrv,
+        TYPE_A, TYPE_AAAA, TYPE_NSEC, TYPE_PTR, TYPE_SRV, TYPE_TXT,
+    },
+    service_info::valid_two_addrs_on_intf,
+};
 use std::{
     collections::{HashMap, HashSet},
     net::IpAddr,
@@ -112,6 +117,7 @@ impl DnsCache {
     /// If need to add new timers for related records, push into `timers`.
     pub(crate) fn add_or_update(
         &mut self,
+        intf: &Interface,
         incoming: DnsRecordBox,
         timers: &mut Vec<u64>,
     ) -> Option<(&DnsRecordBox, bool)> {
@@ -153,11 +159,27 @@ impl DnsCache {
                 // Ref: RFC 6762 Section 10.2
                 //
                 // Note: when the updated record actually expires, it will trigger events properly.
+                let mut should_flush = false;
+
                 if class == r.get_class()
                     && rtype == r.get_type()
                     && now > r.get_created() + 1000
                     && r.get_expire() > now + 1000
                 {
+                    should_flush = true;
+
+                    // additional checks for address records.
+                    if rtype == TYPE_A || rtype == TYPE_AAAA {
+                        if let Some(addr) = r.any().downcast_ref::<DnsAddress>() {
+                            if let Some(addr_b) = incoming.any().downcast_ref::<DnsAddress>() {
+                                should_flush =
+                                    valid_two_addrs_on_intf(&addr.address, &addr_b.address, intf);
+                            }
+                        }
+                    }
+                }
+
+                if should_flush {
                     debug!("FLUSH one record: {:?}", &r);
                     let new_expire = now + 1000;
                     r.set_expire(new_expire);
