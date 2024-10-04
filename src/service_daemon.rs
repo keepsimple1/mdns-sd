@@ -1890,7 +1890,7 @@ impl Zeroconf {
                                     TYPE_AAAA => "TYPE_AAAA",
                                     _ => "invalid_type",
                                 };
-                                error!(
+                                debug!(
                                     "Cannot find valid addrs for {} response on intf {:?}",
                                     t, &intf
                                 );
