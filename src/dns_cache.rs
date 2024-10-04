@@ -2,8 +2,6 @@
 //!
 //! This is an internal implementation, not visible to the public API.
 
-use if_addrs::Interface;
-
 #[cfg(feature = "logging")]
 use crate::log::debug;
 use crate::{
@@ -13,6 +11,7 @@ use crate::{
     },
     service_info::valid_two_addrs_on_intf,
 };
+use if_addrs::Interface;
 use std::{
     collections::{HashMap, HashSet},
     net::IpAddr,
