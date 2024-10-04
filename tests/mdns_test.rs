@@ -1213,7 +1213,7 @@ fn test_cache_flush_record() {
 
     // Stop browsing for a moment.
     client.stop_browse(service).unwrap();
-    sleep(Duration::from_secs(1));
+    sleep(Duration::from_secs(2)); // Let the cache record be surely older than 1 second.
 
     // Modify the IPv4 address for the service.
     if let IpAddr::V4(ipv4) = service_ip_addr {
