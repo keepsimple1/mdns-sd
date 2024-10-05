@@ -36,7 +36,9 @@ fn integration_success() {
 
         // use the same approach as `IntfSock.multicast_send_tracker`
         if let Some(idx) = intf.index {
-            unique_intf_idx_ip_ver_set.insert((idx, ip_ver));
+            if !unique_intf_idx_ip_ver_set.insert((idx, ip_ver)) {
+                println!("index {idx} IP v{ip_ver} repeated on interface {}, likely multi-addr on the same interface", intf.name);
+            }
         } else {
             non_idx_count += 1;
         }
@@ -973,7 +975,7 @@ fn my_ip_interfaces() -> Vec<Interface> {
                         match std::net::UdpSocket::bind((ifv4.ip, test_port)) {
                             Ok(_) => Some(i),
                             Err(e) => {
-                                println!("bind {}: {}, skipped.", ifv4.ip, e);
+                                println!("failed to bind {}: {e}, skipped.", ifv4.ip);
                                 None
                             }
                         }
@@ -990,7 +992,7 @@ fn my_ip_interfaces() -> Vec<Interface> {
                         match std::net::UdpSocket::bind(sock) {
                             Ok(_) => Some(i),
                             Err(e) => {
-                                println!("bind {}: {}, skipped.", ifv6.ip, e);
+                                println!("failed to bind {}: {e}, skipped.", ifv6.ip);
                                 None
                             }
                         }
@@ -1211,7 +1213,7 @@ fn test_cache_flush_record() {
 
     // Stop browsing for a moment.
     client.stop_browse(service).unwrap();
-    sleep(Duration::from_secs(1));
+    sleep(Duration::from_secs(2)); // Let the cache record be surely older than 1 second.
 
     // Modify the IPv4 address for the service.
     if let IpAddr::V4(ipv4) = service_ip_addr {
