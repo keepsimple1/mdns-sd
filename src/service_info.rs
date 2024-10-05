@@ -917,6 +917,8 @@ mod tests {
             name: "e0".to_string(),
             addr: ipv4_intf_addr,
             index: Some(1),
+            #[cfg(windows)]
+            adapter_name: "ethernet".to_string(),
         };
         let ipv4_a = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
         let ipv4_b = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
@@ -941,6 +943,8 @@ mod tests {
             name: "eth0".to_string(),
             addr: ipv6_intf_addr,
             index: Some(2),
+            #[cfg(windows)]
+            adapter_name: "ethernet".to_string(),
         };
         let ipv6_a = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
         let ipv6_b = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2));
