@@ -285,15 +285,9 @@ impl ServiceDaemon {
     ///
     /// To re-announce a service with an updated `service_info`, just call
     /// this `register` function again. No need to call `unregister` first.
-    pub fn register(&self, mut service_info: ServiceInfo) -> Result<()> {
+    pub fn register(&self, service_info: ServiceInfo) -> Result<()> {
         check_service_name(service_info.get_fullname())?;
         check_hostname(service_info.get_hostname())?;
-
-        if service_info.is_addr_auto() {
-            for iface in my_ip_interfaces() {
-                service_info.insert_ipaddr(iface.ip());
-            }
-        }
 
         self.send_cmd(Command::Register(service_info))
     }
@@ -624,7 +618,6 @@ impl ServiceDaemon {
             }
 
             Command::Register(service_info) => {
-                debug!("register service {:?}", &service_info);
                 zc.register_service(service_info);
                 zc.increase_counter(Counter::Register, 1);
             }
@@ -1081,6 +1074,31 @@ impl Zeroconf {
         self.timers.pop().map(|Reverse(v)| v)
     }
 
+    /// Apply all selections to `interfaces` and return the selected addresses.
+    fn selected_addrs(&self, interfaces: Vec<Interface>) -> HashSet<IpAddr> {
+        let intf_count = interfaces.len();
+        let mut intf_selections = vec![true; intf_count];
+
+        // apply if_selections
+        for selection in self.if_selections.iter() {
+            // Mark the interfaces for this selection.
+            for i in 0..intf_count {
+                if selection.if_kind.matches(&interfaces[i]) {
+                    intf_selections[i] = selection.selected;
+                }
+            }
+        }
+
+        let mut selected_addrs = HashSet::new();
+        for i in 0..intf_count {
+            if intf_selections[i] {
+                selected_addrs.insert(interfaces[i].addr.ip());
+            }
+        }
+
+        selected_addrs
+    }
+
     /// Apply all selections to `interfaces`.
     ///
     /// For any interface, add it if selected but not bound yet,
@@ -1192,13 +1210,22 @@ impl Zeroconf {
     ///    Section, all of its newly registered resource records
     ///
     /// Zeroconf will then respond to requests for information about this service.
-    fn register_service(&mut self, info: ServiceInfo) {
+    fn register_service(&mut self, mut info: ServiceInfo) {
         // Check the service name length.
         if let Err(e) = check_service_name_length(info.get_type(), self.service_name_len_max) {
             error!("check_service_name_length: {}", &e);
             self.notify_monitors(DaemonEvent::Error(e));
             return;
         }
+
+        if info.is_addr_auto() {
+            let selected_addrs = self.selected_addrs(my_ip_interfaces());
+            for addr in selected_addrs {
+                info.insert_ipaddr(addr);
+            }
+        }
+
+        debug!("register service {:?}", &info);
 
         let outgoing_addrs = self.send_unsolicited_response(&info);
         if !outgoing_addrs.is_empty() {
