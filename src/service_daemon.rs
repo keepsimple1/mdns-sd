@@ -2510,7 +2510,7 @@ fn check_service_name(fullname: &str) -> Result<()> {
 /// Validate a hostname.
 fn check_hostname(hostname: &str) -> Result<()> {
     if !hostname.ends_with(".local.") {
-        return Err(e_fmt!("Hostname must end with '.local.'"));
+        return Err(e_fmt!("Hostname must end with '.local.': {hostname}"));
     }
 
     if hostname == ".local." {
