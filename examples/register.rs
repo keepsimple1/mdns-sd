@@ -10,8 +10,9 @@
 //!
 //! Options:
 //! "--unregister": automatically unregister after 2 seconds.
+//! "--disable-ipv6": not to use IPv6 interfaces.
 
-use mdns_sd::{DaemonEvent, ServiceDaemon, ServiceInfo};
+use mdns_sd::{DaemonEvent, IfKind, ServiceDaemon, ServiceInfo};
 use std::{env, thread, time::Duration};
 
 fn main() {
@@ -20,14 +21,23 @@ fn main() {
     // Simple command line options.
     let args: Vec<String> = env::args().collect();
     let mut should_unreg = false;
+    let mut disable_ipv6 = false;
+
     for arg in args.iter() {
         if arg.as_str() == "--unregister" {
             should_unreg = true
+        } else if arg.as_str() == "--disable-ipv6" {
+            disable_ipv6 = true
         }
     }
 
     // Create a new mDNS daemon.
     let mdns = ServiceDaemon::new().expect("Could not create service daemon");
+
+    if disable_ipv6 {
+        mdns.disable_interface(IfKind::IPv6).unwrap();
+    }
+
     let service_type = match args.get(1) {
         Some(arg) => format!("{}.local.", arg),
         None => {
