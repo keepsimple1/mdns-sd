@@ -597,6 +597,8 @@ fn service_with_ipv4_only() {
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
 
+    // run till the timeout and collect the resolved addresses
+    // from all enabled interfaces.
     while let Ok(event) = browse_chan.recv_timeout(timeout) {
         match event {
             ServiceEvent::ServiceResolved(info) => {
@@ -611,7 +613,7 @@ fn service_with_ipv4_only() {
                 for addr in info.get_addresses().iter() {
                     assert!(addr.is_ipv4());
                 }
-                break;
+                // We don't break here, as there could be more addresses coming.
             }
             e => {
                 println!("Received event {:?}", e);
