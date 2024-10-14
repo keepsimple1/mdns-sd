@@ -277,7 +277,7 @@ impl DnsCache {
                         srv_records.retain(|srv| {
                             let expired = srv.get_record().is_expired(now);
                             if expired {
-                                debug!("expired SRV: {}: {}", ty_domain, srv.get_name());
+                                debug!("expired SRV: {}: {:?}", ty_domain, srv);
                                 expired_instances
                                     .entry(ty_domain.to_string())
                                     .or_insert_with(HashSet::new)
@@ -299,7 +299,7 @@ impl DnsCache {
                 let expired = x.get_record().is_expired(now);
                 if expired {
                     if let Some(dns_ptr) = x.any().downcast_ref::<DnsPointer>() {
-                        debug!("expired PTR: {:?}", dns_ptr);
+                        debug!("expired PTR: domain:{ty_domain} record: {:?}", dns_ptr);
                         expired_instances
                             .entry(ty_domain.to_string())
                             .or_insert_with(HashSet::new)

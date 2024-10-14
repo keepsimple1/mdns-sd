@@ -1,10 +1,14 @@
 //! Define `ServiceInfo` to represent a service and its operations.
 
 #[cfg(feature = "logging")]
-use crate::log::error;
-use crate::{dns_parser::split_sub_domain, Error, Result};
+use crate::log::{error, info};
+use crate::{
+    dns_parser::{rr_type_name, split_sub_domain, DnsRecordBox, DnsRecordExt, DnsSrv, TYPE_SRV},
+    Error, Result,
+};
 use if_addrs::{IfAddr, Interface};
 use std::{
+    cmp,
     collections::{HashMap, HashSet},
     convert::TryInto,
     fmt,
@@ -38,6 +42,15 @@ pub struct ServiceInfo {
     weight: u16,
     txt_properties: TxtProperties,
     addr_auto: bool, // Let the system update addresses automatically.
+
+    status: HashMap<Interface, ServiceStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ServiceStatus {
+    Probing,
+    Announced,
+    Unknown,
 }
 
 impl ServiceInfo {
@@ -121,6 +134,7 @@ impl ServiceInfo {
             weight: 0,
             txt_properties,
             addr_auto: false,
+            status: HashMap::new(),
         };
 
         Ok(this)
@@ -314,6 +328,24 @@ impl ServiceInfo {
     /// other_ttl is for PTR and TXT records.
     pub(crate) fn _set_other_ttl(&mut self, ttl: u32) {
         self.other_ttl = ttl;
+    }
+
+    pub(crate) fn set_status(&mut self, intf: &Interface, status: ServiceStatus) {
+        match self.status.get_mut(intf) {
+            Some(service_status) => {
+                *service_status = status;
+            }
+            None => {
+                self.status.entry(intf.clone()).or_insert(status);
+            }
+        }
+    }
+
+    pub(crate) fn get_status(&self, intf: &Interface) -> ServiceStatus {
+        self.status
+            .get(intf)
+            .cloned()
+            .unwrap_or(ServiceStatus::Unknown)
     }
 }
 
@@ -744,6 +776,259 @@ pub fn valid_two_addrs_on_intf(addr_a: &IpAddr, addr_b: &IpAddr, intf: &Interfac
             net_a == intf_net && net_b == intf_net
         }
         _ => false,
+    }
+}
+
+/// A probing for a particular name.
+#[derive(Debug)]
+pub(crate) struct Probe {
+    /// All records probing for the same name.
+    pub(crate) records: Vec<DnsRecordBox>,
+
+    /// The fullnames of services that are probing these records.
+    /// These are the original service names, will not change per conflicts.
+    pub(crate) waiting_services: Vec<String>,
+
+    /// The time (T) to send the first query .
+    pub(crate) start_time: u64,
+
+    /// The time to send the next (including the first) query.
+    pub(crate) next_send: u64,
+}
+
+impl Probe {
+    pub(crate) fn new(start_time: u64) -> Self {
+        // RFC 6762: https://datatracker.ietf.org/doc/html/rfc6762#section-8.1:
+        //
+        // "250 ms after the first query, the host should send a second; then,
+        //   250 ms after that, a third.  If, by 250 ms after the third probe, no
+        //   conflicting Multicast DNS responses have been received, the host may
+        //   move to the next step, announcing. "
+        let next_send = start_time;
+
+        Self {
+            records: Vec::new(),
+            waiting_services: Vec::new(),
+            start_time,
+            next_send,
+        }
+    }
+
+    /// Add a new record with the same probing name in a sorted order.
+    pub(crate) fn insert_record(&mut self, record: DnsRecordBox) {
+        /*
+        RFC 6762: https://datatracker.ietf.org/doc/html/rfc6762#section-8.2.1
+
+        " The records are sorted using the same lexicographical order as
+        described above, that is, if the record classes differ, the record
+        with the lower class number comes first.  If the classes are the same
+        but the rrtypes differ, the record with the lower rrtype number comes
+        first."
+         */
+        let insert_position = self
+            .records
+            .binary_search_by(
+                |existing| match existing.get_class().cmp(&record.get_class()) {
+                    std::cmp::Ordering::Equal => existing.get_type().cmp(&record.get_type()),
+                    other => other,
+                },
+            )
+            .unwrap_or_else(|pos| pos);
+
+        self.records.insert(insert_position, record);
+    }
+
+    /// Compares with `incoming` records. Returns `Less` if we yield.
+    pub(crate) fn tiebreaking(&self, incoming: &[&DnsRecordBox]) -> cmp::Ordering {
+        /*
+        RFC 6762: https://datatracker.ietf.org/doc/html/rfc6762#section-8.2
+
+        " If the host finds that its
+            own data is lexicographically earlier, then it defers to the winning
+            host by waiting one second, and then begins probing for this record
+            again."
+         */
+        let min_len = self.records.len().min(incoming.len());
+
+        // Compare elements up to the length of the shorter vector
+        for (i, incoming_record) in incoming.iter().enumerate().take(min_len) {
+            match self.records[i].compare(incoming_record.as_ref()) {
+                cmp::Ordering::Equal => continue,
+                other => return other,
+            }
+        }
+
+        self.records.len().cmp(&incoming.len())
+    }
+
+    pub(crate) fn update_next_send(&mut self, now: u64) {
+        self.next_send = now + 250;
+    }
+
+    /// Returns whether this probe is finished.
+    pub(crate) fn expired(&self, now: u64) -> bool {
+        // The 2nd query is T + 250ms, the 3rd query is T + 500ms,
+        // The expire time is T + 750ms
+        now >= self.start_time + 750
+    }
+}
+
+/// DNS records of all the registered services.
+pub(crate) struct DnsRegistry {
+    /// keyed by the name of all related records.
+    /*
+     When a host is probing for a group of related records with the same
+    name (e.g., the SRV and TXT record describing a DNS-SD service), only
+    a single question need be placed in the Question Section, since query
+    type "ANY" (255) is used, which will elicit answers for all records
+    with that name.  However, for tiebreaking to work correctly in all
+    cases, the Authority Section must contain *all* the records and
+    proposed rdata being probed for uniqueness.
+     */
+    pub(crate) probing: HashMap<String, Probe>,
+
+    /// Already done probing, or no need to probe.
+    pub(crate) active: HashMap<String, Vec<DnsRecordBox>>,
+
+    /// timers of the newly added probes.
+    pub(crate) new_timers: Vec<u64>,
+
+    /// Mapping from original names to new names.
+    pub(crate) name_changes: HashMap<String, String>,
+}
+
+impl DnsRegistry {
+    pub(crate) fn new() -> Self {
+        Self {
+            probing: HashMap::new(),
+            active: HashMap::new(),
+            new_timers: Vec::new(),
+            name_changes: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn is_probing_done<T>(
+        &mut self,
+        answer: &T,
+        service_name: &str,
+        start_time: u64,
+    ) -> bool
+    where
+        T: DnsRecordExt + Send + 'static,
+    {
+        if let Some(active_records) = self.active.get(answer.get_name()) {
+            for record in active_records.iter() {
+                if answer.matches(record.as_ref()) {
+                    info!(
+                        "found active record {} type {}",
+                        answer.get_name(),
+                        answer.get_type()
+                    );
+                    return true;
+                }
+            }
+        }
+
+        let probe = self
+            .probing
+            .entry(answer.get_name().to_string())
+            .or_insert(Probe::new(start_time));
+
+        self.new_timers.push(probe.next_send);
+
+        for record in probe.records.iter() {
+            if answer.matches(record.as_ref()) {
+                info!(
+                    "found existing record {} in probe of '{}'",
+                    rr_type_name(answer.get_type()),
+                    answer.get_name(),
+                );
+                probe.waiting_services.push(service_name.to_string());
+                return false; // Found existing probe for the same record.
+            }
+        }
+
+        info!(
+            "insert record {} into probe of {}",
+            rr_type_name(answer.get_type()),
+            answer.get_name(),
+        );
+        probe.insert_record(answer.clone_box());
+        probe.waiting_services.push(service_name.to_string());
+
+        false
+    }
+
+    pub(crate) fn update_hostname(
+        &mut self,
+        original: &str,
+        new_name: &str,
+        probe_time: u64,
+    ) -> bool {
+        // check all records in "probing" and "active":
+        // if the record is SRV, and hostname is set to original, remove it.
+        // and add it to "probing" with "new_name".
+
+        let mut found_records = Vec::new();
+        let mut new_timer_added = false;
+
+        for (_name, probe) in self.probing.iter_mut() {
+            probe.records.retain(|record| {
+                if record.get_type() == TYPE_SRV {
+                    if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
+                        if srv.host == original {
+                            let mut new_record = srv.clone();
+                            new_record.host = new_name.to_string();
+                            found_records.push(new_record);
+                            return false;
+                        }
+                    }
+                }
+                true
+            });
+        }
+
+        for (_name, records) in self.active.iter_mut() {
+            records.retain(|record| {
+                if record.get_type() == TYPE_SRV {
+                    if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
+                        if srv.host == original {
+                            let mut new_record = srv.clone();
+                            new_record.host = new_name.to_string();
+                            found_records.push(new_record);
+                            return false;
+                        }
+                    }
+                }
+                true
+            });
+        }
+
+        for record in found_records {
+            let probe = match self.probing.get_mut(record.get_name()) {
+                Some(p) => {
+                    p.start_time = probe_time; // restart this probe.
+                    p
+                }
+                None => {
+                    let new_probe = self
+                        .probing
+                        .entry(record.get_name().to_string())
+                        .or_insert(Probe::new(probe_time));
+                    new_timer_added = true;
+                    new_probe
+                }
+            };
+
+            info!(
+                "insert record {} with new hostname into probe: {}",
+                rr_type_name(record.get_type()),
+                record.get_name()
+            );
+            probe.insert_record(Box::new(record));
+        }
+
+        new_timer_added
     }
 }
 

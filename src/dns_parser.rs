@@ -29,6 +29,21 @@ pub const TYPE_SRV: u16 = 33;
 pub const TYPE_NSEC: u16 = 47; // Negative responses
 pub const TYPE_ANY: u16 = 255;
 
+pub(crate) const fn rr_type_name(rr_type: u16) -> &'static str {
+    match rr_type {
+        TYPE_A => "TYPE_A",
+        TYPE_CNAME => "TYPE_CNAME",
+        TYPE_PTR => "TYPE_PTR",
+        TYPE_HINFO => "TYPE_HINFO",
+        TYPE_TXT => "TYPE_TXT",
+        TYPE_AAAA => "TYPE_AAAA",
+        TYPE_SRV => "TYPE_SRV",
+        TYPE_NSEC => "TYPE_NSEC",
+        TYPE_ANY => "TYPE_ANY",
+        _ => "type_others",
+    }
+}
+
 pub const CLASS_IN: u16 = 1;
 pub const CLASS_MASK: u16 = 0x7FFF;
 pub const CLASS_CACHE_FLUSH: u16 = 0x8000;
@@ -116,6 +131,9 @@ pub struct DnsRecord {
     /// Support re-query an instance before its PTR record expires.
     /// See https://datatracker.ietf.org/doc/html/rfc6762#section-5.2
     refresh: u64, // UNIX time in millis
+
+    /// If conflict resolution decides to change the name, this is the new one.
+    new_name: Option<String>,
 }
 
 impl DnsRecord {
@@ -135,6 +153,7 @@ impl DnsRecord {
             created,
             expires,
             refresh,
+            new_name: None,
         }
     }
 
@@ -230,6 +249,27 @@ impl DnsRecord {
             self.ttl -= (elapsed / 1000) as u32;
         }
     }
+
+    pub(crate) fn set_new_name(&mut self, new_name: String) {
+        if new_name == self.entry.name {
+            self.new_name = None;
+        } else {
+            self.new_name = Some(new_name);
+        }
+    }
+
+    pub(crate) fn get_new_name(&self) -> Option<&str> {
+        self.new_name.as_deref()
+    }
+
+    /// Return the new name if exists, otherwise the regular name in DnsEntry.
+    pub(crate) fn get_name(&self) -> &str {
+        self.new_name.as_deref().unwrap_or(&self.entry.name)
+    }
+
+    pub(crate) fn get_original_name(&self) -> &str {
+        &self.entry.name
+    }
 }
 
 impl PartialEq for DnsRecord {
@@ -247,6 +287,41 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
     /// Returns whether `other` record is considered the same except TTL.
     fn matches(&self, other: &dyn DnsRecordExt) -> bool;
 
+    /// Returns whether `other` record has the same rdata.
+    fn rrdata_match(&self, other: &dyn DnsRecordExt) -> bool;
+
+    /// Returns the result based on a byte-level comparison of `rdata`.
+    /// If `other` is not valid, returns `Greater`.
+    fn compare_rdata(&self, other: &dyn DnsRecordExt) -> cmp::Ordering;
+
+    /// Returns the result based on "lexicographically later" defined below.
+    fn compare(&self, other: &dyn DnsRecordExt) -> cmp::Ordering {
+        /*
+        RFC 6762: https://datatracker.ietf.org/doc/html/rfc6762#section-8.2
+
+        ... The determination of "lexicographically later" is performed by first
+        comparing the record class (excluding the cache-flush bit described
+        in Section 10.2), then the record type, then raw comparison of the
+        binary content of the rdata without regard for meaning or structure.
+        If the record classes differ, then the numerically greater class is
+        considered "lexicographically later".  Otherwise, if the record types
+        differ, then the numerically greater type is considered
+        "lexicographically later".  If the rrtype and rrclass both match,
+        then the rdata is compared. ...
+        */
+        match self.get_class().cmp(&other.get_class()) {
+            cmp::Ordering::Equal => match self.get_type().cmp(&other.get_type()) {
+                cmp::Ordering::Equal => self.compare_rdata(other),
+                not_equal => not_equal,
+            },
+            not_equal => not_equal,
+        }
+    }
+
+    /// Returns a human-readable string of rdata.
+    fn rdata_print(&self) -> String;
+
+    /// Returns the class only, excluding class_flush / unique bit.
     fn get_class(&self) -> u16 {
         self.get_record().entry.class
     }
@@ -255,9 +330,15 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
         self.get_record().entry.cache_flush
     }
 
+    /// Return the new name if exists, otherwise the regular name in DnsEntry.
     fn get_name(&self) -> &str {
-        self.get_record().entry.name.as_str()
+        self.get_record().get_name()
     }
+
+    fn get_original_name(&self) -> &str {
+        self.get_record().get_original_name()
+    }
+
     fn get_type(&self) -> u16 {
         self.get_record().entry.ty
     }
@@ -355,6 +436,25 @@ impl DnsRecordExt for DnsAddress {
         false
     }
 
+    fn rrdata_match(&self, other: &dyn DnsRecordExt) -> bool {
+        if let Some(other_a) = other.any().downcast_ref::<Self>() {
+            return self.address == other_a.address;
+        }
+        false
+    }
+
+    fn compare_rdata(&self, other: &dyn DnsRecordExt) -> cmp::Ordering {
+        if let Some(other_a) = other.any().downcast_ref::<Self>() {
+            self.address.cmp(&other_a.address)
+        } else {
+            cmp::Ordering::Greater
+        }
+    }
+
+    fn rdata_print(&self) -> String {
+        format!("{}", self.address)
+    }
+
     fn clone_box(&self) -> Box<dyn DnsRecordExt> {
         Box::new(self.clone())
     }
@@ -396,6 +496,25 @@ impl DnsRecordExt for DnsPointer {
             return self.alias == other_ptr.alias && self.record.entry == other_ptr.record.entry;
         }
         false
+    }
+
+    fn rrdata_match(&self, other: &dyn DnsRecordExt) -> bool {
+        if let Some(other_ptr) = other.any().downcast_ref::<Self>() {
+            return self.alias == other_ptr.alias;
+        }
+        false
+    }
+
+    fn compare_rdata(&self, other: &dyn DnsRecordExt) -> cmp::Ordering {
+        if let Some(other_ptr) = other.any().downcast_ref::<Self>() {
+            self.alias.cmp(&other_ptr.alias)
+        } else {
+            cmp::Ordering::Greater
+        }
+    }
+
+    fn rdata_print(&self) -> String {
+        self.alias.clone()
     }
 
     fn clone_box(&self) -> Box<dyn DnsRecordExt> {
@@ -467,6 +586,55 @@ impl DnsRecordExt for DnsSrv {
         false
     }
 
+    fn rrdata_match(&self, other: &dyn DnsRecordExt) -> bool {
+        if let Some(other_srv) = other.any().downcast_ref::<Self>() {
+            return self.host == other_srv.host
+                && self.port == other_srv.port
+                && self.weight == other_srv.weight
+                && self.priority == other_srv.priority;
+        }
+        false
+    }
+
+    fn compare_rdata(&self, other: &dyn DnsRecordExt) -> cmp::Ordering {
+        let Some(other_srv) = other.any().downcast_ref::<Self>() else {
+            return cmp::Ordering::Greater;
+        };
+
+        // 1. compare `priority`
+        match self
+            .priority
+            .to_be_bytes()
+            .cmp(&other_srv.priority.to_be_bytes())
+        {
+            cmp::Ordering::Equal => {
+                // 2. compare `weight`
+                match self
+                    .weight
+                    .to_be_bytes()
+                    .cmp(&other_srv.weight.to_be_bytes())
+                {
+                    cmp::Ordering::Equal => {
+                        // 3. compare `port`.
+                        match self.port.to_be_bytes().cmp(&other_srv.port.to_be_bytes()) {
+                            cmp::Ordering::Equal => self.host.cmp(&other_srv.host),
+                            not_equal => not_equal,
+                        }
+                    }
+                    not_equal => not_equal,
+                }
+            }
+            not_equal => not_equal,
+        }
+    }
+
+    fn rdata_print(&self) -> String {
+        format!(
+            "priority: {}, weight: {}, port: {}, host: {}",
+            self.priority, self.weight, self.port, self.host
+        )
+    }
+
     fn clone_box(&self) -> Box<dyn DnsRecordExt> {
         Box::new(self.clone())
     }
@@ -520,6 +688,25 @@ impl DnsRecordExt for DnsTxt {
             return self.text == other_txt.text && self.record.entry == other_txt.record.entry;
         }
         false
+    }
+
+    fn rrdata_match(&self, other: &dyn DnsRecordExt) -> bool {
+        if let Some(other_txt) = other.any().downcast_ref::<Self>() {
+            return self.text == other_txt.text;
+        }
+        false
+    }
+
+    fn compare_rdata(&self, other: &dyn DnsRecordExt) -> cmp::Ordering {
+        if let Some(other_txt) = other.any().downcast_ref::<Self>() {
+            self.text.cmp(&other_txt.text)
+        } else {
+            cmp::Ordering::Greater
+        }
+    }
+
+    fn rdata_print(&self) -> String {
+        format!("{:?}", decode_txt(&self.text))
     }
 
     fn clone_box(&self) -> Box<dyn DnsRecordExt> {
@@ -579,6 +766,28 @@ impl DnsRecordExt for DnsHostInfo {
                 && self.record.entry == other_hinfo.record.entry;
         }
         false
+    }
+
+    fn rrdata_match(&self, other: &dyn DnsRecordExt) -> bool {
+        if let Some(other_hinfo) = other.any().downcast_ref::<Self>() {
+            return self.cpu == other_hinfo.cpu && self.os == other_hinfo.os;
+        }
+        false
+    }
+
+    fn compare_rdata(&self, other: &dyn DnsRecordExt) -> cmp::Ordering {
+        if let Some(other_hinfo) = other.any().downcast_ref::<Self>() {
+            match self.cpu.cmp(&other_hinfo.cpu) {
+                cmp::Ordering::Equal => self.os.cmp(&other_hinfo.os),
+                ordering => ordering,
+            }
+        } else {
+            cmp::Ordering::Greater
+        }
+    }
+
+    fn rdata_print(&self) -> String {
+        format!("cpu: {}, os: {}", self.cpu, self.os)
     }
 
     fn clone_box(&self) -> Box<dyn DnsRecordExt> {
@@ -664,6 +873,33 @@ impl DnsRecordExt for DnsNSec {
         false
     }
 
+    fn rrdata_match(&self, other: &dyn DnsRecordExt) -> bool {
+        if let Some(other_record) = other.any().downcast_ref::<Self>() {
+            return self.next_domain == other_record.next_domain
+                && self.type_bitmap == other_record.type_bitmap;
+        }
+        false
+    }
+
+    fn compare_rdata(&self, other: &dyn DnsRecordExt) -> cmp::Ordering {
+        if let Some(other_nsec) = other.any().downcast_ref::<Self>() {
+            match self.next_domain.cmp(&other_nsec.next_domain) {
+                cmp::Ordering::Equal => self.type_bitmap.cmp(&other_nsec.type_bitmap),
+                ordering => ordering,
+            }
+        } else {
+            cmp::Ordering::Greater
+        }
+    }
+
+    fn rdata_print(&self) -> String {
+        format!(
+            "next_domain: {}, type_bitmap len: {}",
+            self.next_domain,
+            self.type_bitmap.len()
+        )
+    }
+
     fn clone_box(&self) -> Box<dyn DnsRecordExt> {
         Box::new(self.clone())
     }
@@ -714,7 +950,7 @@ impl DnsOutPacket {
         let start_size = self.size;
 
         let record = record_ext.get_record();
-        self.write_name(&record.entry.name);
+        self.write_name(record.get_name());
         self.write_short(record.entry.ty);
         if record.entry.cache_flush {
             // check "multicast"
@@ -901,9 +1137,9 @@ pub(crate) struct DnsOutgoing {
     multicast: bool,
     pub(crate) questions: Vec<DnsQuestion>,
     pub(crate) answers: Vec<(DnsRecordBox, u64)>,
-    pub(crate) authorities: Vec<DnsPointer>,
+    pub(crate) authorities: Vec<DnsRecordBox>,
     pub(crate) additionals: Vec<DnsRecordBox>,
-    pub(crate) known_answer_count: i64,
+    pub(crate) known_answer_count: i64, // for internal maintenance only
 }
 
 impl DnsOutgoing {
@@ -967,8 +1203,12 @@ impl DnsOutgoing {
     }
 
     /// A workaround as Rust doesn't allow us to pass DnsRecordBox in as `impl DnsRecordExt`
-    pub(crate) fn add_additional_answer_box(&mut self, answer_box: DnsRecordBox) {
-        self.additionals.push(answer_box);
+    pub(crate) fn add_answer_box(&mut self, answer_box: DnsRecordBox) {
+        self.answers.push((answer_box, 0));
+    }
+
+    pub(crate) fn add_authority(&mut self, record: DnsRecordBox) {
+        self.authorities.push(record);
     }
 
     /// Returns true if `answer` is added to the outgoing msg.
@@ -996,7 +1236,6 @@ impl DnsOutgoing {
         answer: impl DnsRecordExt + Send + 'static,
         now: u64,
     ) -> bool {
-        debug!("Check for add_answer_at_time");
         if now == 0 || !answer.get_record().is_expired(now) {
             debug!("add_answer push: {:?}", &answer);
             self.answers.push((Box::new(answer), now));
@@ -1115,7 +1354,7 @@ impl DnsOutgoing {
         }
 
         for auth in self.authorities.iter() {
-            auth_count += u16::from(packet.write_record(auth, 0));
+            auth_count += u16::from(packet.write_record(auth.as_ref(), 0));
         }
 
         for addi in self.additionals.iter() {
@@ -1173,9 +1412,9 @@ pub struct DnsIncoming {
     offset: usize,
     data: Vec<u8>,
     pub(crate) questions: Vec<DnsQuestion>,
-    /// This field includes records in the `answers` section
-    /// and in the `additionals` section.
     pub(crate) answers: Vec<DnsRecordBox>,
+    pub(crate) authorities: Vec<DnsRecordBox>,
+    pub(crate) additional: Vec<DnsRecordBox>,
     pub(crate) id: u16,
     flags: u16,
     pub(crate) num_questions: u16,
@@ -1191,6 +1430,8 @@ impl DnsIncoming {
             data,
             questions: Vec::new(),
             answers: Vec::new(),
+            authorities: Vec::new(),
+            additional: Vec::new(),
             id: 0,
             flags: 0,
             num_questions: 0,
@@ -1199,9 +1440,31 @@ impl DnsIncoming {
             num_additionals: 0,
         };
 
+        /*
+        RFC 1035 section 4.1: https://datatracker.ietf.org/doc/html/rfc1035#section-4.1
+        ...
+        All communications inside of the domain protocol are carried in a single
+        format called a message.  The top level format of message is divided
+        into 5 sections (some of which are empty in certain cases) shown below:
+
+            +---------------------+
+            |        Header       |
+            +---------------------+
+            |       Question      | the question for the name server
+            +---------------------+
+            |        Answer       | RRs answering the question
+            +---------------------+
+            |      Authority      | RRs pointing toward an authority
+            +---------------------+
+            |      Additional     | RRs holding additional information
+            +---------------------+
+         */
         incoming.read_header()?;
         incoming.read_questions()?;
-        incoming.read_others()?;
+        incoming.read_answers()?;
+        incoming.read_authorities()?;
+        incoming.read_additional()?;
+
         Ok(incoming)
     }
 
@@ -1266,14 +1529,25 @@ impl DnsIncoming {
         Ok(())
     }
 
-    /// Decodes all answers, authorities and additionals.
-    fn read_others(&mut self) -> Result<()> {
-        let n = self
-            .num_answers
-            .checked_add(self.num_authorities)
-            .and_then(|x| x.checked_add(self.num_additionals))
-            .ok_or_else(|| Error::Msg("read_others: overflow".to_string()))?;
-        debug!("read_others: {}", n);
+    fn read_answers(&mut self) -> Result<()> {
+        self.answers = self.read_rr_records(self.num_answers)?;
+        Ok(())
+    }
+
+    fn read_authorities(&mut self) -> Result<()> {
+        self.authorities = self.read_rr_records(self.num_authorities)?;
+        Ok(())
+    }
+
+    fn read_additional(&mut self) -> Result<()> {
+        self.additional = self.read_rr_records(self.num_additionals)?;
+        Ok(())
+    }
+
+    /// Decodes a sequence of RR records (in answers, authorities and additionals).
+    fn read_rr_records(&mut self, count: u16) -> Result<Vec<DnsRecordBox>> {
+        debug!("read_rr_records: {}", count);
+        let mut rr_records = Vec::new();
 
         // RFC 1035: https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.1
         //
@@ -1302,7 +1576,7 @@ impl DnsIncoming {
         // Muse have at least TYPE, CLASS, TTL, RDLENGTH fields: 10 bytes.
         const RR_HEADER_REMAIN: usize = 10;
 
-        for _ in 0..n {
+        for _ in 0..count {
             let name = self.read_name()?;
             let slice = &self.data[self.offset..];
 
@@ -1408,11 +1682,11 @@ impl DnsIncoming {
 
             if let Some(record) = rec {
                 debug!("read_others: {:?}", &record);
-                self.answers.push(record);
+                rr_records.push(record);
             }
         }
 
-        Ok(())
+        Ok(rr_records)
     }
 
     fn read_char_string(&mut self) -> String {
