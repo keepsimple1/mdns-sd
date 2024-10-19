@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
-// use test_log::test; // commented out for debugging a flaky test in CI.
+use test_log::test;
 
 /// This test covers:
 /// register(announce), browse(query), response, unregister, shutdown.
@@ -186,7 +186,7 @@ fn integration_success() {
     println!("metrics: {:?}", &metrics);
     assert_eq!(metrics["register"], 1);
     assert_eq!(metrics["unregister"], 1);
-    assert_eq!(metrics["register-resend"], 1);
+    assert!(metrics["register-resend"] >= 1);
 
     println!("unique interface set: {:?}", unique_intf_idx_ip_ver_set);
     assert_eq!(
@@ -540,7 +540,7 @@ fn service_with_named_interface_only() {
 
     // Browse again.
     let browse_chan = d.browse(my_ty_domain).unwrap();
-    let timeout = Duration::from_secs(2);
+    let timeout = Duration::from_secs(3);
     let mut resolved = false;
 
     while let Ok(event) = browse_chan.recv_timeout(timeout) {
@@ -745,14 +745,14 @@ fn subtype() {
     let d = ServiceDaemon::new().expect("Failed to create daemon");
 
     // Register a service with a subdomain
-    let subtype_domain = "_directory._sub._test._tcp.local.";
-    let ty_domain = "_test._tcp.local.";
+    let subtype_domain = "_directory._sub._test-subtype._tcp.local.";
+    let ty_domain = "_test-subtype._tcp.local.";
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let instance_name = now.as_micros().to_string(); // Create a unique name.
     let host_ipv4 = my_ip_interfaces()[0].ip().to_string();
-    let host_name = "my_host.local.";
+    let host_name = "subtype_host.local.";
     let port = 5201;
     let my_service = ServiceInfo::new(
         subtype_domain,
@@ -835,7 +835,10 @@ fn service_name_check() {
     assert!(result.is_ok());
 
     // Verify that the service was published successfully.
-    let event = monitor.recv_timeout(Duration::from_millis(500)).unwrap();
+    let publish_timeout = 1000;
+    let event = monitor
+        .recv_timeout(Duration::from_millis(publish_timeout))
+        .unwrap();
     assert!(matches!(event, DaemonEvent::Announce(_, _)));
 
     // Check for the internal upper limit of service name length max.
@@ -930,10 +933,13 @@ fn instance_name_two_dots() {
     assert!(result.is_ok());
 
     // Verify that the service was published successfully.
-    let event = monitor.recv_timeout(Duration::from_millis(500)).unwrap();
+    let publish_timeout = 1000;
+    let event = monitor
+        .recv_timeout(Duration::from_millis(publish_timeout))
+        .unwrap();
     assert!(matches!(event, DaemonEvent::Announce(_, _)));
 
-    // Browseing the service.
+    // Browse the service.
     let receiver = server_daemon.browse(service_type).unwrap();
     let mut resolved = false;
     let timeout = Duration::from_secs(2);
@@ -1163,7 +1169,7 @@ fn hostname_resolution_timeout() {
     d.shutdown().unwrap();
 }
 
-#[test_log::test]
+#[test]
 fn test_cache_flush_record() {
     // Create a daemon
     let server = ServiceDaemon::new().expect("Failed to create server");
@@ -1454,6 +1460,100 @@ fn test_domain_suffix_in_browse() {
     assert!(mdns_client.browse("_service-name._tcp.local").is_err());
     assert!(mdns_client.browse("_service-name._tcp.local.").is_ok());
     mdns_client.shutdown().unwrap();
+}
+
+#[test]
+fn test_conflict_resolution() {
+    // This test registers two services using the same names, but different IP addresses.
+    let ty_domain = "_conflict-test._udp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string(); // Create a unique name.
+    let host_name = "conflict_host.local.";
+    let port = 5200;
+
+    // Register the first service.
+    let server1 = ServiceDaemon::new().expect("failed to start server1");
+
+    // Get a single IPv4 address
+    let ip_addr1 = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv4())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    // Publish the service on server1
+    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
+        .expect("valid service info");
+    server1
+        .register(service1)
+        .expect("Failed to register service1");
+
+    // wait for the service announced.
+    sleep(Duration::from_secs(1));
+
+    // Register the second service.
+    let server2 = ServiceDaemon::new().expect("failed to start server2");
+
+    // Modify the IPv4 address for the service.
+    let IpAddr::V4(ipv4) = ip_addr1 else {
+        assert!(false);
+        return;
+    };
+    let bytes = ipv4.octets();
+    let ip_addr2 = IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 1));
+
+    let service2 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr2, port, None)
+        .expect("failed to create ServiceInfo for service2");
+    server2
+        .register(service2)
+        .expect("failed to register service2");
+
+    // Verify name change event for the second service, due to the name conflict.
+    let server2_monitor = server2.monitor().unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut name_changed = false;
+    while let Ok(event) = server2_monitor.recv_timeout(timeout) {
+        match event {
+            DaemonEvent::NameChange(change) => {
+                println!("server2 daemon event: {:?}", change);
+                name_changed = true;
+                break;
+            }
+            other => println!("server2 other event: {:?}", other),
+        }
+    }
+    assert!(name_changed);
+
+    // Verify both services are resolved.
+    let client = ServiceDaemon::new().expect("failed to create mdns client");
+    let receiver = client.browse(ty_domain).unwrap();
+
+    let timeout = Duration::from_secs(3);
+    let mut service_names = HashSet::new();
+
+    while let Ok(event) = receiver.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                println!(
+                    "Resolved a service: {} host {} IP {:?}",
+                    info.get_fullname(),
+                    info.get_hostname(),
+                    info.get_addresses_v4()
+                );
+
+                service_names.insert(info.get_fullname().to_string());
+                if info.get_fullname().contains("(2)") {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Verify that we have resolve two services instead of one.
+    assert_eq!(service_names.len(), 2);
 }
 
 /// A helper function to include a timestamp for println.

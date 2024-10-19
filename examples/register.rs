@@ -2,11 +2,11 @@
 //!
 //! Run with:
 //!
-//! cargo run --example register <service_type> <instance_name>
+//! cargo run --example register <service_type> <instance_name> <hostname> [options]
 //!
 //! Example:
 //!
-//! cargo run --example register _my-hello._udp test1
+//! cargo run --example register _my-hello._udp instance1 host1
 //!
 //! Options:
 //! "--unregister": automatically unregister after 2 seconds.
@@ -16,7 +16,9 @@ use mdns_sd::{DaemonEvent, IfKind, ServiceDaemon, ServiceInfo};
 use std::{env, thread, time::Duration};
 
 fn main() {
-    env_logger::init();
+    // setup env_logger with more precise timestamp.
+    let mut builder = env_logger::Builder::from_default_env();
+    builder.format_timestamp_millis().init();
 
     // Simple command line options.
     let args: Vec<String> = env::args().collect();
@@ -52,11 +54,18 @@ fn main() {
             return;
         }
     };
+    let hostname = match args.get(3) {
+        Some(arg) => arg,
+        None => {
+            print_usage();
+            return;
+        }
+    };
 
     // With `enable_addr_auto()`, we can give empty addrs and let the lib find them.
     // If the caller knows specific addrs to use, then assign the addrs here.
     let my_addrs = "";
-    let service_hostname = format!("{}{}", instance_name, &service_type);
+    let service_hostname = format!("{}.local.", hostname);
     let port = 3456;
 
     // The key string in TXT properties is case insensitive. Only the first
@@ -106,10 +115,11 @@ fn main() {
 
 fn print_usage() {
     println!("Usage:");
-    println!("cargo run --example register <service_type> <instance_name> [--unregister]");
+    println!("cargo run --example register <service_type> <instance_name> <hostname> [options]");
     println!("Options:");
     println!("--unregister: automatically unregister after 2 seconds");
+    println!("--disable-ipv6: not to use IPv6 interfaces.");
     println!();
     println!("For example:");
-    println!("cargo run --example register _my-hello._udp test1");
+    println!("cargo run --example register _my-hello._udp instance1 host1");
 }

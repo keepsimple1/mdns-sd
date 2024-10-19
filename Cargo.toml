@@ -3,7 +3,7 @@ name = "mdns-sd"
 version = "0.11.5"
 authors = ["keepsimple <keepsimple@gmail.com>"]
 edition = "2018"
-rust-version = "1.63.0"
+rust-version = "1.65.0"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/keepsimple1/mdns-sd"
 documentation = "https://docs.rs/mdns-sd"
@@ -17,6 +17,7 @@ logging = ["log"]
 default = ["async", "logging"]
 
 [dependencies]
+fastrand = "2.1"
 flume = { version = "0.11", default-features = false } # channel between threads
 if-addrs = { version = "0.13", features = ["link-local"] } # get local IP addresses
 log = { version = "0.4", optional = true }             # logging
