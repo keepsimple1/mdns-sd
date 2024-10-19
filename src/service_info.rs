@@ -932,7 +932,7 @@ impl DnsRegistry {
         let probe = self
             .probing
             .entry(answer.get_name().to_string())
-            .or_insert(Probe::new(start_time));
+            .or_insert_with(|| Probe::new(start_time));
 
         self.new_timers.push(probe.next_send);
 
@@ -1014,7 +1014,7 @@ impl DnsRegistry {
                     let new_probe = self
                         .probing
                         .entry(record.get_name().to_string())
-                        .or_insert(Probe::new(probe_time));
+                        .or_insert_with(|| Probe::new(probe_time));
                     new_timer_added = true;
                     new_probe
                 }

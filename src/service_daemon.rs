@@ -1199,7 +1199,7 @@ impl Zeroconf {
             None => self
                 .dns_registry_map
                 .entry(intf.clone())
-                .or_insert(DnsRegistry::new()),
+                .or_insert_with(DnsRegistry::new),
         };
 
         for (_, service_info) in self.my_services.iter_mut() {
@@ -1288,7 +1288,7 @@ impl Zeroconf {
                 None => self
                     .dns_registry_map
                     .entry(intf.clone())
-                    .or_insert(DnsRegistry::new()),
+                    .or_insert_with(DnsRegistry::new),
             };
 
             if announce_service_on_intf(dns_registry, info, intf, sock) {
@@ -1988,7 +1988,7 @@ impl Zeroconf {
                     let new_probe = dns_registry
                         .probing
                         .entry(record.get_name().to_string())
-                        .or_insert(Probe::new(create_time));
+                        .or_insert_with(|| Probe::new(create_time));
                     self.timers.push(Reverse(new_probe.next_send));
                     new_probe
                 }
