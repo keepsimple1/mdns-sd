@@ -1589,7 +1589,7 @@ impl Zeroconf {
             }
         };
 
-        debug!("received {} bytes from IP: {}", sz, intf.ip());
+        debug!("received {} bytes at IP: {}", sz, intf.ip());
 
         // If sz is 0, it means sock reached End-of-File.
         if sz == 0 {
@@ -1938,6 +1938,19 @@ impl Zeroconf {
             let Some(probe) = dns_registry.probing.get_mut(name) else {
                 continue;
             };
+
+            // check against possible multicast forwarding
+            if answer.get_type() == TYPE_A || answer.get_type() == TYPE_AAAA {
+                if let Some(answer_addr) = answer.any().downcast_ref::<DnsAddress>() {
+                    if !answer_addr.in_subnet(intf) {
+                        info!(
+                            "conflict handler: answer addr {:?} not in the subnet of {:?}",
+                            answer_addr, intf
+                        );
+                        continue;
+                    }
+                }
+            }
 
             probe.records.retain(|record| {
                 if record.get_type() == answer.get_type()

@@ -6,7 +6,10 @@
 
 #[cfg(feature = "logging")]
 use crate::log::debug;
-use crate::{service_info::decode_txt, Error, Result, ServiceInfo};
+use crate::{
+    service_info::{decode_txt, valid_ip_on_intf},
+    Error, Result, ServiceInfo,
+};
 use if_addrs::Interface;
 use std::{
     any::Any,
@@ -407,6 +410,11 @@ impl DnsAddress {
         let record = DnsRecord::new(name, ty, class, ttl);
         Self { record, address }
     }
+
+    /// Returns whether this address is in the same subnet of `intf`.
+    pub(crate) fn in_subnet(&self, intf: &Interface) -> bool {
+        valid_ip_on_intf(&self.address, intf)
+    }
 }
 
 impl DnsRecordExt for DnsAddress {
@@ -675,7 +683,6 @@ impl DnsRecordExt for DnsTxt {
     }
 
     fn write(&self, packet: &mut DnsOutPacket) {
-        debug!("writing text length {}", &self.text.len());
         packet.write_bytes(&self.text);
     }
 
@@ -1675,13 +1682,13 @@ impl DnsIncoming {
             // sanity check.
             if self.offset != next_offset {
                 return Err(Error::Msg(format!(
-                    "read_others: decode offset error for RData type {} record: {:?} offset: {} expected offset: {}",
+                    "read_rr_records: decode offset error for RData type {} record: {:?} offset: {} expected offset: {}",
                     ty, &rec, self.offset, next_offset,
                 )));
             }
 
             if let Some(record) = rec {
-                debug!("read_others: {:?}", &record);
+                debug!("read_rr_records: {:?}", &record);
                 rr_records.push(record);
             }
         }
