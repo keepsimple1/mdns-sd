@@ -2076,7 +2076,7 @@ impl Zeroconf {
         const META_QUERY: &str = "_services._dns-sd._udp.local.";
 
         for question in msg.questions.iter() {
-            debug!("query question: {:?}", &question);
+            info!("query question: {:?}", &question);
             let qtype = question.entry.ty;
 
             if qtype == TYPE_PTR {
