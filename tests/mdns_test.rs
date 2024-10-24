@@ -835,7 +835,7 @@ fn service_name_check() {
     assert!(result.is_ok());
 
     // Verify that the service was published successfully.
-    let publish_timeout = 1000;
+    let publish_timeout = 2000; // Include 1 second for probing.
     let event = monitor
         .recv_timeout(Duration::from_millis(publish_timeout))
         .unwrap();
