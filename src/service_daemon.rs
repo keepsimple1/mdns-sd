@@ -291,10 +291,13 @@ impl ServiceDaemon {
     /// Please note that enabling the feature enables fetching the plugin-provided services
     /// on *every* request, so this is disabled by default due to extra overhead.
     #[cfg(feature = "plugins")]
-    pub fn register_plugin(&self, name: String, pc_recv: Sender<Receiver<PluginCommand>>) -> Result<()> {
+    pub fn register_plugin(
+        &self,
+        name: String,
+        pc_recv: Sender<Receiver<PluginCommand>>,
+    ) -> Result<()> {
         self.send_cmd(Command::RegisterPlugin(name, pc_recv))
     }
-
 
     /// Registers a service provided by this host.
     ///
@@ -309,7 +312,6 @@ impl ServiceDaemon {
 
         self.send_cmd(Command::Register(service_info))
     }
-
 
     /// Unregisters a service. This is a graceful shutdown of a service.
     ///
@@ -431,13 +433,15 @@ impl ServiceDaemon {
                         let (p_send, p_recv) = bounded(1);
 
                         match sender.send(PluginCommand::Exit(p_send)) {
-                            Ok(()) => {},
-                            Err(e) => error!("failed to send plugin exit command: {}, {}", plugin, e)
+                            Ok(()) => {}
+                            Err(e) => {
+                                error!("failed to send plugin exit command: {}, {}", plugin, e)
+                            }
                         };
 
                         match p_recv.recv() {
                             Ok(()) => debug!("plugin {} exited successfully", plugin),
-                            Err(e) => error!("plugin {} failed to exit: {}", plugin, e)
+                            Err(e) => error!("plugin {} failed to exit: {}", plugin, e),
                         }
                     }
 
@@ -2403,12 +2407,12 @@ impl Zeroconf {
                 warn!("Could not find plugin {}", plugin);
 
                 return HashMap::new();
-            },
+            }
             Some(p_send) => p_send,
         };
 
         match p_send.send(PluginCommand::ListServices(r_send)) {
-            Ok(()) => {},
+            Ok(()) => {}
             Err(e) => warn!("Failed to send ListServices command: {}", e),
         }
 
@@ -2439,12 +2443,12 @@ impl Zeroconf {
 
             match old_send.send(PluginCommand::Exit(exit_send)) {
                 Ok(()) => debug!("Requested old plugin exit"),
-                Err(e) => warn!("Failed to send exit command to a plugin: {}", e)
+                Err(e) => warn!("Failed to send exit command to a plugin: {}", e),
             }
 
             match exit_recv.recv_timeout(Duration::from_secs(1)) {
                 Ok(()) => debug!("The old plugin exited"),
-                Err(e) => warn!("Old plugin's exit timed out: {}", e)
+                Err(e) => warn!("Old plugin's exit timed out: {}", e),
             }
         }
 

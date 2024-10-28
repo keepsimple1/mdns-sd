@@ -148,10 +148,10 @@ mod log {
 mod dns_cache;
 mod dns_parser;
 mod error;
-mod service_daemon;
-mod service_info;
 #[cfg(feature = "plugins")]
 mod plugin;
+mod service_daemon;
+mod service_info;
 
 pub use error::{Error, Result};
 pub use service_daemon::{

@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use crate::ServiceInfo;
 use flume::Sender;
+use std::collections::HashMap;
 
 /// Commands to be implemented by plugins
 #[derive(Debug)]
