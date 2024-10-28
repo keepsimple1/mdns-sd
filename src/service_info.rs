@@ -44,6 +44,9 @@ pub struct ServiceInfo {
     addr_auto: bool, // Let the system update addresses automatically.
 
     status: HashMap<Interface, ServiceStatus>,
+
+    /// Whether we need to probe names before announcing this service.
+    need_probing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +138,7 @@ impl ServiceInfo {
             txt_properties,
             addr_auto: false,
             status: HashMap::new(),
+            need_probing: true,
         };
 
         Ok(this)
@@ -152,6 +156,14 @@ impl ServiceInfo {
     /// automatically when the host IP addrs change.
     pub const fn is_addr_auto(&self) -> bool {
         self.addr_auto
+    }
+
+    pub fn set_need_probing(&mut self, enable: bool) {
+        self.need_probing = enable;
+    }
+
+    pub const fn does_need_probing(&self) -> bool {
+        self.need_probing
     }
 
     /// Returns the service type including the domain label.

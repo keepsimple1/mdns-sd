@@ -1408,7 +1408,10 @@ impl Zeroconf {
 
             // wake up services waiting.
             for service_name in waiting_services {
-                info!("try to announce service {service_name}");
+                info!(
+                    "try to announce service {service_name} on intf {}",
+                    intf.ip()
+                );
                 if let Some(info) = self.my_services.get_mut(&service_name) {
                     if announce_service_on_intf(dns_registry, info, intf, sock) {
                         let next_time = now + 1000;
@@ -2076,7 +2079,7 @@ impl Zeroconf {
         const META_QUERY: &str = "_services._dns-sd._udp.local.";
 
         for question in msg.questions.iter() {
-            info!("query question: {:?}", &question);
+            debug!("query question: {:?}", &question);
             let qtype = question.entry.ty;
 
             if qtype == TYPE_PTR {
@@ -2923,6 +2926,13 @@ fn prepare_announce(
     intf: &Interface,
     dns_registry: &mut DnsRegistry,
 ) -> Option<DnsOutgoing> {
+    let intf_addrs = info.get_addrs_on_intf(intf);
+    if intf_addrs.is_empty() {
+        debug!("No valid addrs to add on intf {:?}", &intf);
+        return None;
+    }
+
+    // check if we changed our name due to conflicts.
     let service_fullname = match dns_registry.name_changes.get(info.get_fullname()) {
         Some(new_name) => new_name,
         None => info.get_fullname(),
@@ -2933,6 +2943,7 @@ fn prepare_announce(
         &intf.name,
         &intf.ip()
     );
+
     let mut probing_count = 0;
     let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
     let create_time = current_time_millis() + fastrand::u64(0..250);
@@ -2962,17 +2973,11 @@ fn prepare_announce(
         );
     }
 
-    let intf_addrs = info.get_addrs_on_intf(intf);
-    if intf_addrs.is_empty() {
-        debug!("No valid addrs to add on intf {:?}", &intf);
-        return None;
-    }
-
     // SRV records.
-    let mut hostname = info.get_hostname().to_string();
-    if let Some(new_name) = dns_registry.name_changes.get(&hostname) {
-        hostname = new_name.to_string();
-    }
+    let hostname = match dns_registry.name_changes.get(info.get_hostname()) {
+        Some(new_name) => new_name.to_string(),
+        None => info.get_hostname().to_string(),
+    };
 
     let mut srv = DnsSrv::new(
         info.get_fullname(),
@@ -2988,7 +2993,9 @@ fn prepare_announce(
         srv.get_record_mut().set_new_name(new_name.to_string());
     }
 
-    if dns_registry.is_probing_done(&srv, info.get_fullname(), create_time) {
+    if !info.does_need_probing()
+        || dns_registry.is_probing_done(&srv, info.get_fullname(), create_time)
+    {
         out.add_answer_at_time(srv, 0);
     } else {
         probing_count += 1;
@@ -3007,13 +3014,16 @@ fn prepare_announce(
         txt.get_record_mut().set_new_name(new_name.to_string());
     }
 
-    if dns_registry.is_probing_done(&txt, info.get_fullname(), create_time) {
+    if !info.does_need_probing()
+        || dns_registry.is_probing_done(&txt, info.get_fullname(), create_time)
+    {
         out.add_answer_at_time(txt, 0);
     } else {
         probing_count += 1;
     }
 
-    // Address records.
+    // Address records. (A and AAAA)
+
     let hostname = info.get_hostname();
     for address in intf_addrs {
         let mut dns_addr = DnsAddress::new(
@@ -3028,7 +3038,9 @@ fn prepare_announce(
             dns_addr.get_record_mut().set_new_name(new_name.to_string());
         }
 
-        if dns_registry.is_probing_done(&dns_addr, info.get_fullname(), create_time) {
+        if !info.does_need_probing()
+            || dns_registry.is_probing_done(&dns_addr, info.get_fullname(), create_time)
+        {
             out.add_answer_at_time(dns_addr, 0);
         } else {
             probing_count += 1;

@@ -800,7 +800,7 @@ fn subtype() {
 
 /// Verify service name has to be valid.
 #[test]
-fn service_name_check() {
+fn test_service_name_check() {
     // Create a daemon for the server.
     let server_daemon = ServiceDaemon::new().expect("Failed to create server daemon");
     let monitor = server_daemon.monitor().unwrap();
@@ -809,7 +809,7 @@ fn service_name_check() {
     let host_ipv4 = "";
     let host_name = "my_host.local.";
     let port = 5200;
-    let my_service = ServiceInfo::new(
+    let mut my_service = ServiceInfo::new(
         service_name_too_long,
         "my_instance",
         host_name,
@@ -819,6 +819,9 @@ fn service_name_check() {
     )
     .expect("valid service info")
     .enable_addr_auto();
+
+    my_service.set_need_probing(false);
+
     let result = server_daemon.register(my_service.clone());
     assert!(result.is_ok());
 
@@ -835,7 +838,7 @@ fn service_name_check() {
     assert!(result.is_ok());
 
     // Verify that the service was published successfully.
-    let publish_timeout = 2000; // Include 1 second for probing.
+    let publish_timeout = 1000; // Include 1 second for probing.
     let event = monitor
         .recv_timeout(Duration::from_millis(publish_timeout))
         .unwrap();
