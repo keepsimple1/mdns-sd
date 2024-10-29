@@ -1,12 +1,17 @@
 use if_addrs::{IfAddr, Interface};
-use mdns_sd::{
-    DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, IntoTxtProperties, ServiceDaemon,
-    ServiceEvent, ServiceInfo, UnregisterStatus,
-};
+use mdns_sd::{DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus};
+#[cfg(feature = "plugins")]
+use mdns_sd::{PluginCommand};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+#[cfg(feature = "plugins")]
+use std::sync::Arc;
 use std::thread::sleep;
+#[cfg(feature = "plugins")]
+use std::thread::spawn;
 use std::time::{Duration, SystemTime};
+#[cfg(feature = "plugins")]
+use flume::bounded;
 // use test_log::test; // commented out for debugging a flaky test in CI.
 
 /// This test covers:
@@ -1453,6 +1458,93 @@ fn test_domain_suffix_in_browse() {
     let mdns_client = ServiceDaemon::new().expect("failed to create mDNS client");
     assert!(mdns_client.browse("_service-name._tcp.local").is_err());
     assert!(mdns_client.browse("_service-name._tcp.local.").is_ok());
+    mdns_client.shutdown().unwrap();
+}
+
+#[test]
+#[cfg(feature = "plugins")]
+fn plugin_support_test() {
+    let mdns_server = ServiceDaemon::new().expect("failed to create mdns server");
+    let mdns_client = ServiceDaemon::new().expect("Failed to create mdns client");
+
+    let mut ips = vec![];
+
+    for i in my_ip_interfaces() {
+        mdns_server.enable_interface(&i.name).unwrap();
+        mdns_client.enable_interface(&i.name).unwrap();
+        ips.push(i.ip().to_string());
+    }
+
+    let (papi_send, papi_recv) = bounded(100);
+
+    mdns_server.register_plugin("test".to_string(), papi_send).expect("failed to register plugin");
+
+    let cmd_registered = papi_recv.recv().expect("failed to receive command");
+
+    match cmd_registered {
+        PluginCommand::Registered => {},
+        _ => panic!("Wrong plugin command received"),
+    };
+
+    spawn(move || {
+        let service_info_arc = Arc::new({
+            let service_type = "somehost._tcp.local.";
+            let instance_name = "somehost";
+            let ip = ips.join(",");
+            let host_name = "somehost.local.";
+            let port = 5200;
+            let properties = [("property_1", "test"), ("property_2", "1234")];
+
+            ServiceInfo::new(
+                service_type,
+                instance_name,
+                host_name,
+                ip,
+                port,
+                &properties[..],
+            ).unwrap()
+        });
+
+        loop {
+            let cmd = papi_recv.recv();
+
+            match cmd {
+                Ok(PluginCommand::Registered) => {},
+                Ok(PluginCommand::Exit(sender)) => {
+                    sender.send(()).unwrap();
+                    return;
+                },
+                Ok(PluginCommand::ListServices(sender)) => {
+                    let mut map = HashMap::new();
+
+                    map.insert("somehost.local.".to_string(), service_info_arc.clone());
+
+                    sender.send(map).unwrap();
+                },
+                Err(_) => return
+            }
+        }
+    });
+
+    let browse_chan = mdns_client.resolve_hostname("somehost.local.", None).unwrap();
+
+    let mut resolved = false;
+
+    while let Ok(event) = browse_chan.recv() {
+        match event {
+            HostnameResolutionEvent::AddressesFound(host, _addresses) => {
+                resolved = true;
+                println!("Resolved a service of {}", &host);
+                break;
+            }
+            other => {
+                println!("Received event {:?}", other);
+            }
+        }
+    }
+    assert!(resolved);
+
+    mdns_server.shutdown().unwrap();
     mdns_client.shutdown().unwrap();
 }
 

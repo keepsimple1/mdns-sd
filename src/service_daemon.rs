@@ -58,6 +58,8 @@ use std::{
     time::Duration,
     vec,
 };
+use std::cell::LazyCell;
+use std::sync::Arc;
 
 /// A simple macro to report all kinds of errors.
 macro_rules! e_fmt {
@@ -286,7 +288,7 @@ impl ServiceDaemon {
     /// externally.
     ///
     /// If feature `plugins` is enabled, the daemon will send requests to the plugins
-    /// using the flume channel that will be sent to `pc_recv`.
+    /// using the flume channel sender for which needs to be provided as `pc_send`.
     ///
     /// Please note that enabling the feature enables fetching the plugin-provided services
     /// on *every* request, so this is disabled by default due to extra overhead.
@@ -294,9 +296,9 @@ impl ServiceDaemon {
     pub fn register_plugin(
         &self,
         name: String,
-        pc_recv: Sender<Receiver<PluginCommand>>,
+        pc_send: Sender<PluginCommand>,
     ) -> Result<()> {
-        self.send_cmd(Command::RegisterPlugin(name, pc_recv))
+        self.send_cmd(Command::RegisterPlugin(name, pc_send))
     }
 
     /// Registers a service provided by this host.
@@ -700,8 +702,8 @@ impl ServiceDaemon {
             }
 
             #[cfg(feature = "plugins")]
-            Command::RegisterPlugin(name, resp_s) => {
-                zc.register_plugin(name, resp_s);
+            Command::RegisterPlugin(name, papi_send) => {
+                zc.register_plugin(name, papi_send);
             }
 
             Command::SetOption(daemon_opt) => {
@@ -1926,26 +1928,30 @@ impl Zeroconf {
         // See https://datatracker.ietf.org/doc/html/rfc6763#section-9
         const META_QUERY: &str = "_services._dns-sd._udp.local.";
 
-        let mut all_services = HashMap::new();
-
-        for (k, v) in &self.my_services {
-            all_services.insert(k, v);
-        }
-
         let services_by_plugins = self.list_plugin_services();
 
-        for (_plugin, services) in &services_by_plugins {
-            for (k, v) in services {
+        let all_services_cell = LazyCell::new(|| {
+            let mut all_services: HashMap<&String, &ServiceInfo> = HashMap::new();
+
+            for (k, v) in &self.my_services {
                 all_services.insert(k, v);
             }
-        }
+
+            for (_plugin, services) in &services_by_plugins {
+                for (k, v) in services {
+                    all_services.insert(k, v);
+                }
+            }
+
+            all_services
+        });
 
         for question in msg.questions.iter() {
             debug!("query question: {:?}", &question);
             let qtype = question.entry.ty;
 
             if qtype == TYPE_PTR {
-                for service in all_services.values() {
+                for service in (*all_services_cell).values() {
                     if question.entry.name == service.get_type()
                         || service
                             .get_subtype()
@@ -1971,7 +1977,7 @@ impl Zeroconf {
                 }
             } else {
                 if qtype == TYPE_A || qtype == TYPE_AAAA || qtype == TYPE_ANY {
-                    for service in all_services.values() {
+                    for service in (*all_services_cell).values() {
                         if service.get_hostname().to_lowercase()
                             == question.entry.name.to_lowercase()
                         {
@@ -2005,7 +2011,7 @@ impl Zeroconf {
                 }
 
                 let name_to_find = question.entry.name.to_lowercase();
-                let service = match all_services.get(&name_to_find) {
+                let service = match (*all_services_cell).get(&name_to_find) {
                     Some(s) => s,
                     None => continue,
                 };
@@ -2383,7 +2389,7 @@ impl Zeroconf {
 
     // Returns (Plugin, Map<Service, Info>)
     #[cfg(feature = "plugins")]
-    fn list_plugin_services(&self) -> Vec<(String, HashMap<String, ServiceInfo>)> {
+    fn list_plugin_services(&self) -> Vec<(String, HashMap<String, Arc<ServiceInfo>>)> {
         let mut output = vec![];
 
         for key in self.plugin_senders.keys() {
@@ -2394,12 +2400,12 @@ impl Zeroconf {
     }
 
     #[cfg(not(feature = "plugins"))]
-    fn list_plugin_services(&self) -> Vec<(String, HashMap<String, ServiceInfo>)> {
+    fn list_plugin_services(&self) -> Vec<(String, HashMap<String, Arc<ServiceInfo>>)> {
         vec![]
     }
 
     #[cfg(feature = "plugins")]
-    fn list_plugin_services_for(&self, plugin: &str) -> HashMap<String, ServiceInfo> {
+    fn list_plugin_services_for(&self, plugin: &str) -> HashMap<String, Arc<ServiceInfo>> {
         let (r_send, r_recv) = bounded(1);
 
         let p_send = match self.plugin_senders.get(plugin) {
@@ -2424,18 +2430,7 @@ impl Zeroconf {
     }
 
     #[cfg(feature = "plugins")]
-    fn register_plugin(&mut self, name: String, resp_s: Sender<Receiver<PluginCommand>>) {
-        let (send, recv) = bounded(100);
-
-        match resp_s.send(recv) {
-            Ok(()) => debug!("Registered a plugin"),
-            Err(e) => {
-                error!("Failed to send registered plugin's receive handle: {}", e);
-
-                return;
-            }
-        }
-
+    fn register_plugin(&mut self, name: String, papi_send: Sender<PluginCommand>) {
         if self.plugin_senders.contains_key(&name) {
             let old_send = self.plugin_senders.get(&name).unwrap();
 
@@ -2454,7 +2449,12 @@ impl Zeroconf {
 
         debug!("Registered a new plugin: {}", name);
 
-        self.plugin_senders.insert(name, send);
+        self.plugin_senders.insert(name, papi_send.clone());
+
+        match papi_send.send(PluginCommand::Registered) {
+            Ok(()) => {},
+            Err(e) => warn!("Failed to send a registration notification to a plugin: {}", e),
+        };
     }
 }
 
@@ -2552,7 +2552,7 @@ enum Command {
     SetOption(DaemonOption),
 
     #[cfg(feature = "plugins")]
-    RegisterPlugin(String, Sender<Receiver<PluginCommand>>),
+    RegisterPlugin(String, Sender<PluginCommand>),
 
     Exit(Sender<DaemonStatus>),
 }
