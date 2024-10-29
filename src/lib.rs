@@ -148,6 +148,8 @@ mod log {
 mod dns_cache;
 mod dns_parser;
 mod error;
+#[cfg(feature = "plugins")]
+mod plugin;
 mod service_daemon;
 mod service_info;
 
@@ -157,6 +159,9 @@ pub use service_daemon::{
     ServiceEvent, UnregisterStatus, SERVICE_NAME_LEN_MAX_DEFAULT,
 };
 pub use service_info::{AsIpAddrs, IntoTxtProperties, ServiceInfo, TxtProperties, TxtProperty};
+
+#[cfg(feature = "plugins")]
+pub use plugin::PluginCommand;
 
 /// A handler to receive messages from [ServiceDaemon]. Re-export from `flume` crate.
 pub use flume::Receiver;
