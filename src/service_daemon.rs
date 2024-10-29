@@ -48,7 +48,6 @@ use flume::{bounded, Sender, TrySendError};
 use if_addrs::{IfAddr, Interface};
 use polling::Poller;
 use socket2::{SockAddr, Socket};
-use std::cell::LazyCell;
 use std::sync::Arc;
 use std::{
     cmp::{self, Reverse},
@@ -1926,28 +1925,24 @@ impl Zeroconf {
 
         let services_by_plugins = self.list_plugin_services();
 
-        let all_services_cell = LazyCell::new(|| {
-            let mut all_services: HashMap<&String, &ServiceInfo> = HashMap::new();
+        let mut all_services: HashMap<&String, &ServiceInfo> = HashMap::new();
 
-            for (k, v) in &self.my_services {
+        for (k, v) in &self.my_services {
+            all_services.insert(k, v);
+        }
+
+        for (_plugin, services) in &services_by_plugins {
+            for (k, v) in services {
                 all_services.insert(k, v);
             }
-
-            for (_plugin, services) in &services_by_plugins {
-                for (k, v) in services {
-                    all_services.insert(k, v);
-                }
-            }
-
-            all_services
-        });
+        }
 
         for question in msg.questions.iter() {
             debug!("query question: {:?}", &question);
             let qtype = question.entry.ty;
 
             if qtype == TYPE_PTR {
-                for service in (*all_services_cell).values() {
+                for service in all_services.values() {
                     if question.entry.name == service.get_type()
                         || service
                             .get_subtype()
@@ -1973,7 +1968,7 @@ impl Zeroconf {
                 }
             } else {
                 if qtype == TYPE_A || qtype == TYPE_AAAA || qtype == TYPE_ANY {
-                    for service in (*all_services_cell).values() {
+                    for service in all_services.values() {
                         if service.get_hostname().to_lowercase()
                             == question.entry.name.to_lowercase()
                         {
@@ -2007,7 +2002,7 @@ impl Zeroconf {
                 }
 
                 let name_to_find = question.entry.name.to_lowercase();
-                let service = match (*all_services_cell).get(&name_to_find) {
+                let service = match all_services.get(&name_to_find) {
                     Some(s) => s,
                     None => continue,
                 };
