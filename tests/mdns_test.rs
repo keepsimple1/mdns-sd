@@ -1,7 +1,12 @@
-use if_addrs::{IfAddr, Interface};
-use mdns_sd::{DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, IntoTxtProperties, ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus};
 #[cfg(feature = "plugins")]
-use mdns_sd::{PluginCommand};
+use flume::bounded;
+use if_addrs::{IfAddr, Interface};
+#[cfg(feature = "plugins")]
+use mdns_sd::PluginCommand;
+use mdns_sd::{
+    DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, IntoTxtProperties, ServiceDaemon,
+    ServiceEvent, ServiceInfo, UnregisterStatus,
+};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 #[cfg(feature = "plugins")]
@@ -10,8 +15,6 @@ use std::thread::sleep;
 #[cfg(feature = "plugins")]
 use std::thread::spawn;
 use std::time::{Duration, SystemTime};
-#[cfg(feature = "plugins")]
-use flume::bounded;
 // use test_log::test; // commented out for debugging a flaky test in CI.
 
 /// This test covers:
@@ -1477,12 +1480,14 @@ fn plugin_support_test() {
 
     let (papi_send, papi_recv) = bounded(100);
 
-    mdns_server.register_plugin("test".to_string(), papi_send).expect("failed to register plugin");
+    mdns_server
+        .register_plugin("test".to_string(), papi_send)
+        .expect("failed to register plugin");
 
     let cmd_registered = papi_recv.recv().expect("failed to receive command");
 
     match cmd_registered {
-        PluginCommand::Registered => {},
+        PluginCommand::Registered => {}
         _ => panic!("Wrong plugin command received"),
     };
 
@@ -1502,31 +1507,34 @@ fn plugin_support_test() {
                 ip,
                 port,
                 &properties[..],
-            ).unwrap()
+            )
+            .unwrap()
         });
 
         loop {
             let cmd = papi_recv.recv();
 
             match cmd {
-                Ok(PluginCommand::Registered) => {},
+                Ok(PluginCommand::Registered) => {}
                 Ok(PluginCommand::Exit(sender)) => {
                     sender.send(()).unwrap();
                     return;
-                },
+                }
                 Ok(PluginCommand::ListServices(sender)) => {
                     let mut map = HashMap::new();
 
                     map.insert("somehost.local.".to_string(), service_info_arc.clone());
 
                     sender.send(map).unwrap();
-                },
-                Err(_) => return
+                }
+                Err(_) => return,
             }
         }
     });
 
-    let browse_chan = mdns_client.resolve_hostname("somehost.local.", None).unwrap();
+    let browse_chan = mdns_client
+        .resolve_hostname("somehost.local.", None)
+        .unwrap();
 
     let mut resolved = false;
 

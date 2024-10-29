@@ -48,6 +48,8 @@ use flume::{bounded, Sender, TrySendError};
 use if_addrs::{IfAddr, Interface};
 use polling::Poller;
 use socket2::{SockAddr, Socket};
+use std::cell::LazyCell;
+use std::sync::Arc;
 use std::{
     cmp::{self, Reverse},
     collections::{BinaryHeap, HashMap, HashSet},
@@ -58,8 +60,6 @@ use std::{
     time::Duration,
     vec,
 };
-use std::cell::LazyCell;
-use std::sync::Arc;
 
 /// A simple macro to report all kinds of errors.
 macro_rules! e_fmt {
@@ -293,11 +293,7 @@ impl ServiceDaemon {
     /// Please note that enabling the feature enables fetching the plugin-provided services
     /// on *every* request, so this is disabled by default due to extra overhead.
     #[cfg(feature = "plugins")]
-    pub fn register_plugin(
-        &self,
-        name: String,
-        pc_send: Sender<PluginCommand>,
-    ) -> Result<()> {
+    pub fn register_plugin(&self, name: String, pc_send: Sender<PluginCommand>) -> Result<()> {
         self.send_cmd(Command::RegisterPlugin(name, pc_send))
     }
 
@@ -2452,8 +2448,11 @@ impl Zeroconf {
         self.plugin_senders.insert(name, papi_send.clone());
 
         match papi_send.send(PluginCommand::Registered) {
-            Ok(()) => {},
-            Err(e) => warn!("Failed to send a registration notification to a plugin: {}", e),
+            Ok(()) => {}
+            Err(e) => warn!(
+                "Failed to send a registration notification to a plugin: {}",
+                e
+            ),
         };
     }
 }
