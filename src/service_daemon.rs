@@ -2259,6 +2259,7 @@ impl Zeroconf {
             send_dns_outgoing(&out, intf, sock);
 
             self.increase_counter(Counter::Respond, 1);
+            self.notify_monitors(DaemonEvent::Respond(intf.ip()));
         }
 
         self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count);
@@ -2649,7 +2650,11 @@ pub enum DaemonEvent {
     /// Daemon detected a IP address removed from the host.
     IpDel(IpAddr),
 
+    /// Daemon resolved a name conflict by changing one of its names.
     NameChange(DnsNameChange),
+
+    /// Send out a multicast response via an IP address.
+    Respond(IpAddr),
 }
 
 #[derive(Clone, Debug)]
