@@ -46,7 +46,7 @@ pub struct ServiceInfo {
     status: HashMap<Interface, ServiceStatus>,
 
     /// Whether we need to probe names before announcing this service.
-    need_probing: bool,
+    requires_probe: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,7 +138,7 @@ impl ServiceInfo {
             txt_properties,
             addr_auto: false,
             status: HashMap::new(),
-            need_probing: true,
+            requires_probe: true,
         };
 
         Ok(this)
@@ -158,12 +158,19 @@ impl ServiceInfo {
         self.addr_auto
     }
 
-    pub fn set_need_probing(&mut self, enable: bool) {
-        self.need_probing = enable;
+    /// Set whether this service info requires name probing for potential name conflicts.
+    ///
+    /// By default, it is true (i.e. requires probing) for every service info. You
+    /// set it to `false` only when you are sure there are no conflicts, or for testing purposes.
+    pub fn set_requires_probe(&mut self, enable: bool) {
+        self.requires_probe = enable;
     }
 
-    pub const fn does_need_probing(&self) -> bool {
-        self.need_probing
+    /// Returns whether this service info requires name probing for potential name conflicts.
+    ///
+    /// By default, it returns true for every service info.
+    pub const fn requires_probe(&self) -> bool {
+        self.requires_probe
     }
 
     /// Returns the service type including the domain label.

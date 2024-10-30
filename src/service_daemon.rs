@@ -2993,7 +2993,7 @@ fn prepare_announce(
         srv.get_record_mut().set_new_name(new_name.to_string());
     }
 
-    if !info.does_need_probing()
+    if !info.requires_probe()
         || dns_registry.is_probing_done(&srv, info.get_fullname(), create_time)
     {
         out.add_answer_at_time(srv, 0);
@@ -3014,7 +3014,7 @@ fn prepare_announce(
         txt.get_record_mut().set_new_name(new_name.to_string());
     }
 
-    if !info.does_need_probing()
+    if !info.requires_probe()
         || dns_registry.is_probing_done(&txt, info.get_fullname(), create_time)
     {
         out.add_answer_at_time(txt, 0);
@@ -3038,7 +3038,7 @@ fn prepare_announce(
             dns_addr.get_record_mut().set_new_name(new_name.to_string());
         }
 
-        if !info.does_need_probing()
+        if !info.requires_probe()
             || dns_registry.is_probing_done(&dns_addr, info.get_fullname(), create_time)
         {
             out.add_answer_at_time(dns_addr, 0);

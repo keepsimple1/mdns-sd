@@ -820,7 +820,7 @@ fn test_service_name_check() {
     .expect("valid service info")
     .enable_addr_auto();
 
-    my_service.set_need_probing(false);
+    my_service.set_requires_probe(false);
 
     let result = server_daemon.register(my_service.clone());
     assert!(result.is_ok());
