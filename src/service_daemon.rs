@@ -2667,9 +2667,17 @@ pub enum DaemonEvent {
 
 #[derive(Clone, Debug)]
 pub struct DnsNameChange {
+    /// The original name set in `ServiceInfo` by the user.
     pub original: String,
+
+    /// A new name is created by appending `(<num>)` after the original name.
+    /// For example: "foo" becomes "foo (2)"
     pub new_name: String,
+
+    /// The value is one of `RR_TYPE_` constants.
     pub rr_type: u16,
+
+    /// The interface where the name conflict and its change happened.
     pub intf_name: String,
 }
 
