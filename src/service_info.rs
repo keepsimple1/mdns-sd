@@ -3,7 +3,7 @@
 #[cfg(feature = "logging")]
 use crate::log::{error, info};
 use crate::{
-    dns_parser::{rr_type_name, split_sub_domain, DnsRecordBox, DnsRecordExt, DnsSrv, TYPE_SRV},
+    dns_parser::{rr_type_name, split_sub_domain, DnsRecordBox, DnsRecordExt, DnsSrv, RR_TYPE_SRV},
     Error, Result,
 };
 use if_addrs::{IfAddr, Interface};
@@ -993,7 +993,7 @@ impl DnsRegistry {
 
         for (_name, probe) in self.probing.iter_mut() {
             probe.records.retain(|record| {
-                if record.get_type() == TYPE_SRV {
+                if record.get_type() == RR_TYPE_SRV {
                     if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
                         if srv.host == original {
                             let mut new_record = srv.clone();
@@ -1009,7 +1009,7 @@ impl DnsRegistry {
 
         for (_name, records) in self.active.iter_mut() {
             records.retain(|record| {
-                if record.get_type() == TYPE_SRV {
+                if record.get_type() == RR_TYPE_SRV {
                     if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
                         if srv.host == original {
                             let mut new_record = srv.clone();

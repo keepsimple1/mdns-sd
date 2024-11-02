@@ -36,7 +36,7 @@ use crate::{
         current_time_millis, ip_address_to_type, rr_type_name, split_sub_domain, DnsAddress,
         DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt,
         CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
-        TYPE_A, TYPE_AAAA, TYPE_ANY, TYPE_PTR, TYPE_SRV, TYPE_TXT,
+        RR_TYPE_A, RR_TYPE_AAAA, RR_TYPE_ANY, RR_TYPE_PTR, RR_TYPE_SRV, RR_TYPE_TXT,
     },
     error::{Error, Result},
     service_info::{DnsRegistry, Probe, ServiceInfo, ServiceStatus},
@@ -1341,7 +1341,7 @@ impl Zeroconf {
                         // move the record to active
                         expired_names.push(name.clone());
                     } else {
-                        out.add_question(name, TYPE_ANY);
+                        out.add_question(name, RR_TYPE_ANY);
 
                         /*
                         RFC 6762 section 8.2: https://datatracker.ietf.org/doc/html/rfc6762#section-8.2
@@ -1451,7 +1451,7 @@ impl Zeroconf {
         out.add_answer_at_time(
             DnsPointer::new(
                 info.get_type(),
-                TYPE_PTR,
+                RR_TYPE_PTR,
                 CLASS_IN,
                 0,
                 info.get_fullname().to_string(),
@@ -1462,7 +1462,13 @@ impl Zeroconf {
         if let Some(sub) = info.get_subtype() {
             debug!("Adding subdomain {}", sub);
             out.add_answer_at_time(
-                DnsPointer::new(sub, TYPE_PTR, CLASS_IN, 0, info.get_fullname().to_string()),
+                DnsPointer::new(
+                    sub,
+                    RR_TYPE_PTR,
+                    CLASS_IN,
+                    0,
+                    info.get_fullname().to_string(),
+                ),
                 0,
             );
         }
@@ -1641,13 +1647,13 @@ impl Zeroconf {
             for record in records {
                 if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
                     if self.cache.get_addr(&srv.host).is_none() {
-                        self.send_query_vec(&[(&srv.host, TYPE_A), (&srv.host, TYPE_AAAA)]);
+                        self.send_query_vec(&[(&srv.host, RR_TYPE_A), (&srv.host, RR_TYPE_AAAA)]);
                         return true;
                     }
                 }
             }
         } else {
-            self.send_query(instance, TYPE_ANY);
+            self.send_query(instance, RR_TYPE_ANY);
             return true;
         }
 
@@ -1858,7 +1864,7 @@ impl Zeroconf {
 
                     let ty = dns_record.get_type();
                     let name = dns_record.get_name();
-                    if ty == TYPE_PTR {
+                    if ty == RR_TYPE_PTR {
                         if self.service_queriers.contains_key(name) {
                             timers.push(dns_record.get_record().get_refresh_time());
                         }
@@ -1898,7 +1904,7 @@ impl Zeroconf {
         // Go through remaining changes to see if any hostname resolutions were found or updated.
         changes
             .iter()
-            .filter(|change| change.ty == TYPE_A || change.ty == TYPE_AAAA)
+            .filter(|change| change.ty == RR_TYPE_A || change.ty == RR_TYPE_AAAA)
             .map(|change| change.name.clone())
             .collect::<HashSet<String>>()
             .iter()
@@ -1915,10 +1921,10 @@ impl Zeroconf {
         let mut updated_instances = HashSet::new();
         for update in changes {
             match update.ty {
-                TYPE_PTR | TYPE_SRV | TYPE_TXT => {
+                RR_TYPE_PTR | RR_TYPE_SRV | RR_TYPE_TXT => {
                     updated_instances.insert(update.name);
                 }
-                TYPE_A | TYPE_AAAA => {
+                RR_TYPE_A | RR_TYPE_AAAA => {
                     let instances = self.cache.get_instances_on_host(&update.name);
                     updated_instances.extend(instances);
                 }
@@ -1943,7 +1949,7 @@ impl Zeroconf {
             };
 
             // check against possible multicast forwarding
-            if answer.get_type() == TYPE_A || answer.get_type() == TYPE_AAAA {
+            if answer.get_type() == RR_TYPE_A || answer.get_type() == RR_TYPE_AAAA {
                 if let Some(answer_addr) = answer.any().downcast_ref::<DnsAddress>() {
                     if !answer_addr.in_subnet(intf) {
                         info!(
@@ -2082,7 +2088,7 @@ impl Zeroconf {
             debug!("query question: {:?}", &question);
             let qtype = question.entry.ty;
 
-            if qtype == TYPE_PTR {
+            if qtype == RR_TYPE_PTR {
                 for service in self.my_services.values() {
                     if service.get_status(intf) != ServiceStatus::Announced {
                         continue;
@@ -2100,7 +2106,7 @@ impl Zeroconf {
                             &msg,
                             DnsPointer::new(
                                 &question.entry.name,
-                                TYPE_PTR,
+                                RR_TYPE_PTR,
                                 CLASS_IN,
                                 service.get_other_ttl(),
                                 service.get_type().to_string(),
@@ -2113,7 +2119,7 @@ impl Zeroconf {
                 }
             } else {
                 // Simultaneous Probe Tiebreaking (RFC 6762 section 8.2)
-                if qtype == TYPE_ANY && msg.num_authorities > 0 {
+                if qtype == RR_TYPE_ANY && msg.num_authorities > 0 {
                     if let Some(dns_registry) = self.dns_registry_map.get_mut(intf) {
                         let probe_name = &question.entry.name;
 
@@ -2157,7 +2163,7 @@ impl Zeroconf {
                     }
                 }
 
-                if qtype == TYPE_A || qtype == TYPE_AAAA || qtype == TYPE_ANY {
+                if qtype == RR_TYPE_A || qtype == RR_TYPE_AAAA || qtype == RR_TYPE_ANY {
                     for service in self.my_services.values() {
                         if service.get_status(intf) != ServiceStatus::Announced {
                             continue;
@@ -2167,10 +2173,12 @@ impl Zeroconf {
                             == question.entry.name.to_lowercase()
                         {
                             let intf_addrs = service.get_addrs_on_intf(intf);
-                            if intf_addrs.is_empty() && (qtype == TYPE_A || qtype == TYPE_AAAA) {
+                            if intf_addrs.is_empty()
+                                && (qtype == RR_TYPE_A || qtype == RR_TYPE_AAAA)
+                            {
                                 let t = match qtype {
-                                    TYPE_A => "TYPE_A",
-                                    TYPE_AAAA => "TYPE_AAAA",
+                                    RR_TYPE_A => "TYPE_A",
+                                    RR_TYPE_AAAA => "TYPE_AAAA",
                                     _ => "invalid_type",
                                 };
                                 debug!(
@@ -2205,7 +2213,7 @@ impl Zeroconf {
                     continue;
                 }
 
-                if qtype == TYPE_SRV || qtype == TYPE_ANY {
+                if qtype == RR_TYPE_SRV || qtype == RR_TYPE_ANY {
                     out.add_answer(
                         &msg,
                         DnsSrv::new(
@@ -2220,7 +2228,7 @@ impl Zeroconf {
                     );
                 }
 
-                if qtype == TYPE_TXT || qtype == TYPE_ANY {
+                if qtype == RR_TYPE_TXT || qtype == RR_TYPE_ANY {
                     out.add_answer(
                         &msg,
                         DnsTxt::new(
@@ -2232,7 +2240,7 @@ impl Zeroconf {
                     );
                 }
 
-                if qtype == TYPE_SRV {
+                if qtype == RR_TYPE_SRV {
                     let intf_addrs = service.get_addrs_on_intf(intf);
                     if intf_addrs.is_empty() {
                         error!(
@@ -2345,7 +2353,7 @@ impl Zeroconf {
             self.query_cache_for_service(&ty, &listener);
         }
 
-        self.send_query(&ty, TYPE_PTR);
+        self.send_query(&ty, RR_TYPE_PTR);
         self.increase_counter(Counter::Browse, 1);
 
         let next_time = current_time_millis() + (next_delay * 1000) as u64;
@@ -2379,7 +2387,7 @@ impl Zeroconf {
             self.query_cache_for_hostname(&hostname, listener.clone());
         }
 
-        self.send_query_vec(&[(&hostname, TYPE_A), (&hostname, TYPE_AAAA)]);
+        self.send_query_vec(&[(&hostname, RR_TYPE_A), (&hostname, RR_TYPE_AAAA)]);
         self.increase_counter(Counter::ResolveHostname, 1);
 
         let now = current_time_millis();
@@ -2569,7 +2577,7 @@ impl Zeroconf {
             let refreshed_timers = self.cache.refresh_due_ptr(ty_domain);
             if !refreshed_timers.is_empty() {
                 debug!("sending refresh query for PTR: {}", ty_domain);
-                self.send_query(ty_domain, TYPE_PTR);
+                self.send_query(ty_domain, RR_TYPE_PTR);
                 query_ptr_count += 1;
                 new_timers.extend(refreshed_timers);
             }
@@ -2577,14 +2585,14 @@ impl Zeroconf {
             let (instances, timers) = self.cache.refresh_due_srv(ty_domain);
             for instance in instances.iter() {
                 debug!("sending refresh query for SRV: {}", instance);
-                self.send_query(instance, TYPE_SRV);
+                self.send_query(instance, RR_TYPE_SRV);
                 query_srv_count += 1;
             }
             new_timers.extend(timers);
             let (hostnames, timers) = self.cache.refresh_due_hosts(ty_domain);
             for hostname in hostnames.iter() {
                 debug!("sending refresh queries for A and AAAA:  {}", hostname);
-                self.send_query_vec(&[(hostname, TYPE_A), (hostname, TYPE_AAAA)]);
+                self.send_query_vec(&[(hostname, RR_TYPE_A), (hostname, RR_TYPE_AAAA)]);
                 query_addr_count += 2;
             }
             new_timers.extend(timers);
@@ -2956,7 +2964,7 @@ fn prepare_announce(
     out.add_answer_at_time(
         DnsPointer::new(
             info.get_type(),
-            TYPE_PTR,
+            RR_TYPE_PTR,
             CLASS_IN,
             info.get_other_ttl(),
             service_fullname.to_string(),
@@ -2969,7 +2977,7 @@ fn prepare_announce(
         out.add_answer_at_time(
             DnsPointer::new(
                 sub,
-                TYPE_PTR,
+                RR_TYPE_PTR,
                 CLASS_IN,
                 info.get_other_ttl(),
                 service_fullname.to_string(),
@@ -3082,7 +3090,7 @@ mod tests {
         ServiceEvent, ServiceInfo, GROUP_ADDR_V4, MDNS_PORT,
     };
     use crate::{
-        dns_parser::{DnsOutgoing, DnsPointer, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE, TYPE_PTR},
+        dns_parser::{DnsOutgoing, DnsPointer, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE, RR_TYPE_PTR},
         service_daemon::check_hostname,
     };
     use std::{
@@ -3217,7 +3225,7 @@ mod tests {
         // Invalidate the ptr from the service to the host.
         let invalidate_ptr_packet = DnsPointer::new(
             my_service.get_type(),
-            TYPE_PTR,
+            RR_TYPE_PTR,
             CLASS_IN,
             0,
             my_service.get_fullname().to_string(),

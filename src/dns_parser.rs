@@ -22,28 +22,45 @@ use std::{
     time::SystemTime,
 };
 
-pub const TYPE_A: u16 = 1; // IPv4 address
-pub const TYPE_CNAME: u16 = 5;
-pub const TYPE_PTR: u16 = 12;
-pub const TYPE_HINFO: u16 = 13;
-pub const TYPE_TXT: u16 = 16;
-pub const TYPE_AAAA: u16 = 28; // IPv6 address
-pub const TYPE_SRV: u16 = 33;
-pub const TYPE_NSEC: u16 = 47; // Negative responses
-pub const TYPE_ANY: u16 = 255;
+/// DNS record type for IPv4 address
+pub const RR_TYPE_A: u16 = 1;
+
+/// DNS record type for Canonical Name
+pub const RR_TYPE_CNAME: u16 = 5;
+
+/// DNS record type for Pointer
+pub const RR_TYPE_PTR: u16 = 12;
+
+/// DNS record type for Host Info
+pub const RR_TYPE_HINFO: u16 = 13;
+
+/// DNS record type for Text (properties)
+pub const RR_TYPE_TXT: u16 = 16;
+
+/// DNS record type for IPv6 address
+pub const RR_TYPE_AAAA: u16 = 28;
+
+/// DNS record type for Service
+pub const RR_TYPE_SRV: u16 = 33;
+
+/// DNS record type for Negative Responses
+pub const RR_TYPE_NSEC: u16 = 47;
+
+/// DNS record type for any records (wildcard)
+pub const RR_TYPE_ANY: u16 = 255;
 
 pub(crate) const fn rr_type_name(rr_type: u16) -> &'static str {
     match rr_type {
-        TYPE_A => "TYPE_A",
-        TYPE_CNAME => "TYPE_CNAME",
-        TYPE_PTR => "TYPE_PTR",
-        TYPE_HINFO => "TYPE_HINFO",
-        TYPE_TXT => "TYPE_TXT",
-        TYPE_AAAA => "TYPE_AAAA",
-        TYPE_SRV => "TYPE_SRV",
-        TYPE_NSEC => "TYPE_NSEC",
-        TYPE_ANY => "TYPE_ANY",
-        _ => "type_others",
+        RR_TYPE_A => "TYPE_A",
+        RR_TYPE_CNAME => "TYPE_CNAME",
+        RR_TYPE_PTR => "TYPE_PTR",
+        RR_TYPE_HINFO => "TYPE_HINFO",
+        RR_TYPE_TXT => "TYPE_TXT",
+        RR_TYPE_AAAA => "TYPE_AAAA",
+        RR_TYPE_SRV => "TYPE_SRV",
+        RR_TYPE_NSEC => "TYPE_NSEC",
+        RR_TYPE_ANY => "TYPE_ANY",
+        _ => "unknown",
     }
 }
 
@@ -91,8 +108,8 @@ const U16_SIZE: usize = 2;
 #[inline]
 pub const fn ip_address_to_type(address: &IpAddr) -> u16 {
     match address {
-        IpAddr::V4(_) => TYPE_A,
-        IpAddr::V6(_) => TYPE_AAAA,
+        IpAddr::V4(_) => RR_TYPE_A,
+        IpAddr::V6(_) => RR_TYPE_AAAA,
     }
 }
 
@@ -552,7 +569,7 @@ impl DnsSrv {
         port: u16,
         host: String,
     ) -> Self {
-        let record = DnsRecord::new(name, TYPE_SRV, class, ttl);
+        let record = DnsRecord::new(name, RR_TYPE_SRV, class, ttl);
         Self {
             record,
             priority,
@@ -668,7 +685,7 @@ pub struct DnsTxt {
 
 impl DnsTxt {
     pub(crate) fn new(name: &str, class: u16, ttl: u32, text: Vec<u8>) -> Self {
-        let record = DnsRecord::new(name, TYPE_TXT, class, ttl);
+        let record = DnsRecord::new(name, RR_TYPE_TXT, class, ttl);
         Self { record, text }
     }
 }
@@ -816,7 +833,7 @@ pub struct DnsNSec {
 
 impl DnsNSec {
     fn new(name: &str, class: u16, ttl: u32, next_domain: String, type_bitmap: Vec<u8>) -> Self {
-        let record = DnsRecord::new(name, TYPE_NSEC, class, ttl);
+        let record = DnsRecord::new(name, RR_TYPE_NSEC, class, ttl);
         Self {
             record,
             next_domain,
@@ -1273,7 +1290,7 @@ impl DnsOutgoing {
             msg,
             DnsPointer::new(
                 service.get_type(),
-                TYPE_PTR,
+                RR_TYPE_PTR,
                 CLASS_IN,
                 service.get_other_ttl(),
                 service.get_fullname().to_string(),
@@ -1289,7 +1306,7 @@ impl DnsOutgoing {
             debug!("Adding subdomain {}", sub);
             self.add_additional_answer(DnsPointer::new(
                 sub,
-                TYPE_PTR,
+                RR_TYPE_PTR,
                 CLASS_IN,
                 service.get_other_ttl(),
                 service.get_fullname().to_string(),
@@ -1621,20 +1638,20 @@ impl DnsIncoming {
 
             // decode RDATA based on the record type.
             let rec: Option<DnsRecordBox> = match ty {
-                TYPE_CNAME | TYPE_PTR => Some(Box::new(DnsPointer::new(
+                RR_TYPE_CNAME | RR_TYPE_PTR => Some(Box::new(DnsPointer::new(
                     &name,
                     ty,
                     class,
                     ttl,
                     self.read_name()?,
                 ))),
-                TYPE_TXT => Some(Box::new(DnsTxt::new(
+                RR_TYPE_TXT => Some(Box::new(DnsTxt::new(
                     &name,
                     class,
                     ttl,
                     self.read_vec(rdata_len),
                 ))),
-                TYPE_SRV => Some(Box::new(DnsSrv::new(
+                RR_TYPE_SRV => Some(Box::new(DnsSrv::new(
                     &name,
                     class,
                     ttl,
@@ -1643,7 +1660,7 @@ impl DnsIncoming {
                     self.read_u16()?,
                     self.read_name()?,
                 ))),
-                TYPE_HINFO => Some(Box::new(DnsHostInfo::new(
+                RR_TYPE_HINFO => Some(Box::new(DnsHostInfo::new(
                     &name,
                     ty,
                     class,
@@ -1651,21 +1668,21 @@ impl DnsIncoming {
                     self.read_char_string(),
                     self.read_char_string(),
                 ))),
-                TYPE_A => Some(Box::new(DnsAddress::new(
+                RR_TYPE_A => Some(Box::new(DnsAddress::new(
                     &name,
                     ty,
                     class,
                     ttl,
                     self.read_ipv4().into(),
                 ))),
-                TYPE_AAAA => Some(Box::new(DnsAddress::new(
+                RR_TYPE_AAAA => Some(Box::new(DnsAddress::new(
                     &name,
                     ty,
                     class,
                     ttl,
                     self.read_ipv6().into(),
                 ))),
-                TYPE_NSEC => Some(Box::new(DnsNSec::new(
+                RR_TYPE_NSEC => Some(Box::new(DnsNSec::new(
                     &name,
                     class,
                     ttl,
@@ -1929,14 +1946,14 @@ mod tests {
     use super::{
         current_time_millis, get_expiration_time, DnsIncoming, DnsNSec, DnsOutgoing, DnsPointer,
         DnsRecordExt, DnsSrv, DnsTxt, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY,
-        FLAGS_QR_RESPONSE, MSG_HEADER_LEN, TYPE_A, TYPE_AAAA, TYPE_PTR,
+        FLAGS_QR_RESPONSE, MSG_HEADER_LEN, RR_TYPE_A, RR_TYPE_AAAA, RR_TYPE_PTR,
     };
 
     #[test]
     fn test_read_name_invalid_length() {
         let name = "test_read";
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
-        out.add_question(name, TYPE_PTR);
+        out.add_question(name, RR_TYPE_PTR);
         let data = out.to_data_on_wire().remove(0);
 
         // construct invalid data.
@@ -1975,7 +1992,7 @@ mod tests {
     fn test_read_name_compression_loop() {
         let name = "test_loop";
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
-        out.add_question(name, TYPE_PTR);
+        out.add_question(name, RR_TYPE_PTR);
         let mut data = out.to_data_on_wire().remove(0);
 
         let name_length_offset = 12; // start of the name in the message.
@@ -2124,8 +2141,8 @@ mod tests {
         );
         let absent_types = nsec._types();
         assert_eq!(absent_types.len(), 2);
-        assert_eq!(absent_types[0], TYPE_A);
-        assert_eq!(absent_types[1], TYPE_AAAA);
+        assert_eq!(absent_types[0], RR_TYPE_A);
+        assert_eq!(absent_types[1], RR_TYPE_AAAA);
     }
 
     #[test]
@@ -2158,7 +2175,7 @@ mod tests {
     #[test]
     fn test_packet_size() {
         let mut outgoing = DnsOutgoing::new(FLAGS_QR_QUERY);
-        outgoing.add_question("test_packet_size", TYPE_PTR);
+        outgoing.add_question("test_packet_size", RR_TYPE_PTR);
 
         let packet = outgoing.to_packets().remove(0);
         println!("packet size: {}", packet.size);
@@ -2172,12 +2189,12 @@ mod tests {
     fn test_querier_known_answer_multi_packet() {
         let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
         let name = "test_multi_packet._udp.local.";
-        query.add_question(name, TYPE_PTR);
+        query.add_question(name, RR_TYPE_PTR);
 
         let known_answer_count = 400;
         for i in 0..known_answer_count {
             let alias = format!("instance{}.{}", i, name);
-            let answer = DnsPointer::new(name, TYPE_PTR, CLASS_IN, 0, alias);
+            let answer = DnsPointer::new(name, RR_TYPE_PTR, CLASS_IN, 0, alias);
             query.add_additional_answer(answer);
         }
 
