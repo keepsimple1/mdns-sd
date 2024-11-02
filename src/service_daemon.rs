@@ -3090,12 +3090,48 @@ fn announce_service_on_intf(
     false
 }
 
+/// Returns a new name based on the `original` to avoid conflicts.
+/// If the name already contains a number in parentheses, increments that number.
+///
+/// Examples:
+/// - `foo.local.` becomes `foo (2).local.`
+/// - `foo (2).local.` becomes `foo (3).local.`
+/// - `foo (9)` becomes `foo (10)`
+fn name_change(original: &str) -> String {
+    let mut parts: Vec<_> = original.split('.').collect();
+    let Some(first_part) = parts.get_mut(0) else {
+        return format!("{original} (2)");
+    };
+
+    let mut new_name = format!("{} (2)", first_part);
+
+    // check if there is already has `(<num>)` suffix.
+    if let Some(paren_pos) = first_part.rfind(" (") {
+        // Check if there's a closing parenthesis
+        if let Some(end_paren) = first_part[paren_pos..].find(')') {
+            let absolute_end_pos = paren_pos + end_paren;
+            // Only process if the closing parenthesis is the last character
+            if absolute_end_pos == first_part.len() - 1 {
+                let num_start = paren_pos + 2; // Skip " ("
+                                               // Try to parse the number between parentheses
+                if let Ok(number) = first_part[num_start..absolute_end_pos].parse::<u32>() {
+                    let base_name = &first_part[..paren_pos];
+                    new_name = format!("{} ({})", base_name, number + 1)
+                }
+            }
+        }
+    }
+
+    *first_part = &new_name;
+    parts.join(".")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        check_domain_suffix, check_service_name_length, my_ip_interfaces, new_socket_bind,
-        send_dns_outgoing, valid_instance_name, HostnameResolutionEvent, ServiceDaemon,
-        ServiceEvent, ServiceInfo, GROUP_ADDR_V4, MDNS_PORT,
+        check_domain_suffix, check_service_name_length, my_ip_interfaces, name_change,
+        new_socket_bind, send_dns_outgoing, valid_instance_name, HostnameResolutionEvent,
+        ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4, MDNS_PORT,
     };
     use crate::{
         dns_parser::{DnsOutgoing, DnsPointer, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE, RR_TYPE_PTR},
@@ -3467,18 +3503,19 @@ mod tests {
         mdns_server.shutdown().unwrap();
         mdns_client.shutdown().unwrap();
     }
-}
 
-/// Returns a new name based on the `original` to avoid conflicts.
-///
-/// For example:
-/// `foo.local.` becomes `foo (2).local.`
-fn name_change(original: &str) -> String {
-    let mut parts: Vec<_> = original.split('.').collect();
-    let Some(first_part) = parts.get_mut(0) else {
-        return format!("{original} (2)");
-    };
-    let new_name = format!("{} (2)", first_part);
-    *first_part = &new_name;
-    parts.join(".")
+    #[test]
+    fn test_name_change() {
+        assert_eq!(name_change("foo.local."), "foo (2).local.");
+        assert_eq!(name_change("foo (2).local."), "foo (3).local.");
+        assert_eq!(name_change("foo (9).local."), "foo (10).local.");
+        assert_eq!(name_change("foo"), "foo (2)");
+        assert_eq!(name_change("foo (2)"), "foo (3)");
+        assert_eq!(name_change(""), " (2)");
+
+        // Additional edge cases
+        assert_eq!(name_change("foo (abc)"), "foo (abc) (2)"); // Invalid number
+        assert_eq!(name_change("foo (2"), "foo (2 (2)"); // Missing closing parenthesis
+        assert_eq!(name_change("foo (2) extra"), "foo (2) extra (2)"); // Extra text after number
+    }
 }
