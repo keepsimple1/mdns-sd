@@ -7,7 +7,7 @@
 #[cfg(feature = "logging")]
 use crate::log::debug;
 use crate::{
-    service_info::{decode_txt, valid_ip_on_intf},
+    service_info::{decode_txt, valid_ip_on_intf, DnsRegistry},
     Error, Result, ServiceInfo,
 };
 use if_addrs::Interface;
@@ -353,10 +353,6 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
     /// Return the new name if exists, otherwise the regular name in DnsEntry.
     fn get_name(&self) -> &str {
         self.get_record().get_name()
-    }
-
-    fn get_original_name(&self) -> &str {
-        self.get_record().get_original_name()
     }
 
     fn get_type(&self) -> u16 {
@@ -1279,12 +1275,24 @@ impl DnsOutgoing {
         msg: &DnsIncoming,
         service: &ServiceInfo,
         intf: &Interface,
+        dns_registry: &DnsRegistry,
     ) {
         let intf_addrs = service.get_addrs_on_intf(intf);
         if intf_addrs.is_empty() {
             debug!("No addrs on LAN of intf {:?}", intf);
             return;
         }
+
+        // check if we changed our name due to conflicts.
+        let service_fullname = match dns_registry.name_changes.get(service.get_fullname()) {
+            Some(new_name) => new_name,
+            None => service.get_fullname(),
+        };
+
+        let hostname = match dns_registry.name_changes.get(service.get_hostname()) {
+            Some(new_name) => new_name,
+            None => service.get_hostname(),
+        };
 
         let ptr_added = self.add_answer(
             msg,
@@ -1293,7 +1301,7 @@ impl DnsOutgoing {
                 RR_TYPE_PTR,
                 CLASS_IN,
                 service.get_other_ttl(),
-                service.get_fullname().to_string(),
+                service_fullname.to_string(),
             ),
         );
 
@@ -1309,24 +1317,24 @@ impl DnsOutgoing {
                 RR_TYPE_PTR,
                 CLASS_IN,
                 service.get_other_ttl(),
-                service.get_fullname().to_string(),
+                service_fullname.to_string(),
             ));
         }
 
         // Add recommended additional answers according to
         // https://tools.ietf.org/html/rfc6763#section-12.1.
         self.add_additional_answer(DnsSrv::new(
-            service.get_fullname(),
+            service_fullname,
             CLASS_IN | CLASS_CACHE_FLUSH,
             service.get_host_ttl(),
             service.get_priority(),
             service.get_weight(),
             service.get_port(),
-            service.get_hostname().to_string(),
+            hostname.to_string(),
         ));
 
         self.add_additional_answer(DnsTxt::new(
-            service.get_fullname(),
+            service_fullname,
             CLASS_IN | CLASS_CACHE_FLUSH,
             service.get_host_ttl(),
             service.generate_txt(),
@@ -1334,7 +1342,7 @@ impl DnsOutgoing {
 
         for address in intf_addrs {
             self.add_additional_answer(DnsAddress::new(
-                service.get_hostname(),
+                hostname,
                 ip_address_to_type(&address),
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 service.get_host_ttl(),

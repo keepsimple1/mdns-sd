@@ -1655,6 +1655,127 @@ fn test_name_tiebreaking() {
     assert_eq!(first_addrs.iter().next().unwrap(), &ip_addr2);
 }
 
+#[test]
+fn test_name_conflict_3() {
+    // Similar to `test_name_conflict_resolution` but with 3 servers.
+    let ty_domain = "_conflict-3._udp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string(); // Create a unique name.
+    let host_name = "conflict3_host.local.";
+    let port = 5200;
+
+    // Register the first service.
+    let server1 = ServiceDaemon::new().expect("failed to start server1");
+
+    // Get a single IPv4 address
+    let ip_addr1 = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv4())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    // Publish the service on server1
+    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
+        .expect("valid service info");
+    server1
+        .register(service1)
+        .expect("Failed to register service1");
+
+    // wait for the service announced.
+    sleep(Duration::from_secs(1));
+
+    // Register the second service.
+    let server2 = ServiceDaemon::new().expect("failed to start server2");
+
+    // Modify the IPv4 address for the service.
+    let IpAddr::V4(ipv4) = ip_addr1 else {
+        assert!(false);
+        return;
+    };
+    let bytes = ipv4.octets();
+    let ip_addr2 = IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 1));
+
+    let info2 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr2, port, None)
+        .expect("failed to create ServiceInfo for service2");
+    server2
+        .register(info2)
+        .expect("failed to register service2");
+
+    // Verify name change event for the second service, due to the name conflict.
+    let server2_monitor = server2.monitor().unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut name_changed = false;
+    while let Ok(event) = server2_monitor.recv_timeout(timeout) {
+        match event {
+            DaemonEvent::NameChange(change) => {
+                println!("server2 daemon event: {:?}", change);
+                name_changed = true;
+            }
+            other => println!("server2 other event: {:?}", other),
+        }
+    }
+    assert!(name_changed);
+
+    // Register the third service
+    let server3 = ServiceDaemon::new().expect("failed to start server2");
+
+    // Modify the IPv4 address for the service.
+    let ip_addr3 = IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 2));
+
+    let info3 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr3, port, None)
+        .expect("failed to create ServiceInfo for service2");
+
+    server3
+        .register(info3)
+        .expect("failed to register service2");
+
+    let server3_monitor = server3.monitor().unwrap();
+    let timeout = Duration::from_secs(3);
+    name_changed = false;
+    while let Ok(event) = server3_monitor.recv_timeout(timeout) {
+        match event {
+            DaemonEvent::NameChange(change) => {
+                println!("server3 daemon event: {:?}", change);
+                name_changed = true;
+                break;
+            }
+            other => println!("server3 other event: {:?}", other),
+        }
+    }
+    assert!(name_changed);
+
+    // Verify all services are resolved.
+    let client = ServiceDaemon::new().expect("failed to create mdns client");
+    let receiver = client.browse(ty_domain).unwrap();
+
+    let timeout = Duration::from_secs(3);
+    let mut service_names = HashSet::new();
+
+    while let Ok(event) = receiver.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                println!(
+                    "Resolved a service: {} host {} IP {:?}",
+                    info.get_fullname(),
+                    info.get_hostname(),
+                    info.get_addresses_v4()
+                );
+
+                service_names.insert(info.get_fullname().to_string());
+                if service_names.len() >= 3 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Verify that we have resolve two services instead of one.
+    assert_eq!(service_names.len(), 3);
+}
+
 /// A helper function to include a timestamp for println.
 fn timed_println(msg: String) {
     let now = SystemTime::now();

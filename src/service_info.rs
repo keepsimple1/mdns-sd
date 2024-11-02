@@ -806,7 +806,7 @@ pub(crate) struct Probe {
 
     /// The fullnames of services that are probing these records.
     /// These are the original service names, will not change per conflicts.
-    pub(crate) waiting_services: Vec<String>,
+    pub(crate) waiting_services: HashSet<String>,
 
     /// The time (T) to send the first query .
     pub(crate) start_time: u64,
@@ -827,7 +827,7 @@ impl Probe {
 
         Self {
             records: Vec::new(),
-            waiting_services: Vec::new(),
+            waiting_services: HashSet::new(),
             start_time,
             next_send,
         }
@@ -939,9 +939,9 @@ impl DnsRegistry {
             for record in active_records.iter() {
                 if answer.matches(record.as_ref()) {
                     info!(
-                        "found active record {} type {}",
+                        "found active record {} {}",
+                        rr_type_name(answer.get_type()),
                         answer.get_name(),
-                        answer.get_type()
                     );
                     return true;
                 }
@@ -951,7 +951,10 @@ impl DnsRegistry {
         let probe = self
             .probing
             .entry(answer.get_name().to_string())
-            .or_insert_with(|| Probe::new(start_time));
+            .or_insert_with(|| {
+                info!("new probe of {}", answer.get_name());
+                Probe::new(start_time)
+            });
 
         self.new_timers.push(probe.next_send);
 
@@ -962,7 +965,7 @@ impl DnsRegistry {
                     rr_type_name(answer.get_type()),
                     answer.get_name(),
                 );
-                probe.waiting_services.push(service_name.to_string());
+                probe.waiting_services.insert(service_name.to_string());
                 return false; // Found existing probe for the same record.
             }
         }
@@ -973,21 +976,20 @@ impl DnsRegistry {
             answer.get_name(),
         );
         probe.insert_record(answer.clone_box());
-        probe.waiting_services.push(service_name.to_string());
+        probe.waiting_services.insert(service_name.to_string());
 
         false
     }
 
+    /// check all records in "probing" and "active":
+    /// if the record is SRV, and hostname is set to original, remove it.
+    /// and create a new SRV with "host" set to "new_name" and put into "probing".
     pub(crate) fn update_hostname(
         &mut self,
         original: &str,
         new_name: &str,
         probe_time: u64,
     ) -> bool {
-        // check all records in "probing" and "active":
-        // if the record is SRV, and hostname is set to original, remove it.
-        // and add it to "probing" with "new_name".
-
         let mut found_records = Vec::new();
         let mut new_timer_added = false;
 
@@ -1040,7 +1042,7 @@ impl DnsRegistry {
             };
 
             info!(
-                "insert record {} with new hostname into probe: {}",
+                "insert record {} with new hostname {new_name} into probe for: {}",
                 rr_type_name(record.get_type()),
                 record.get_name()
             );
