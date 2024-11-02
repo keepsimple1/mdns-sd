@@ -838,10 +838,7 @@ fn test_service_name_check() {
     assert!(result.is_ok());
 
     // Verify that the service was published successfully.
-    let publish_timeout = 1000; // Include 1 second for probing.
-    let event = monitor
-        .recv_timeout(Duration::from_millis(publish_timeout))
-        .unwrap();
+    let event = monitor.recv_timeout(Duration::from_millis(500)).unwrap();
     assert!(matches!(event, DaemonEvent::Announce(_, _)));
 
     // Check for the internal upper limit of service name length max.
