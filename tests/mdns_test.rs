@@ -1463,7 +1463,7 @@ fn test_domain_suffix_in_browse() {
 }
 
 #[test]
-fn test_conflict_resolution() {
+fn test_name_conflict_resolution() {
     // This test registers two services using the same names, but different IP addresses.
     let ty_domain = "_conflict-test._udp.local.";
     let now = SystemTime::now()
@@ -1554,6 +1554,105 @@ fn test_conflict_resolution() {
 
     // Verify that we have resolve two services instead of one.
     assert_eq!(service_names.len(), 2);
+}
+
+#[test]
+fn test_name_tiebreaking() {
+    // This test registers two services using the same names, but different IP addresses,
+    // same as `test_name_conflict_resolution`, the only difference being that two servers
+    // do the probing at the same time. Hence tiebreaking. Server2 should win.
+
+    let ty_domain = "_tiebreaking._udp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string(); // Create a unique name.
+    let host_name = "tiebreaking_host.local.";
+    let port = 5200;
+
+    // Register the first service.
+    let server1 = ServiceDaemon::new().expect("failed to start server1");
+
+    // Get a single IPv4 address
+    let ip_addr1 = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv4())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    // Publish the service on server1
+    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
+        .expect("valid service info");
+    server1
+        .register(service1)
+        .expect("Failed to register service1");
+
+    // Register the second service immediately to trigger tiebreaking.
+    let server2 = ServiceDaemon::new().expect("failed to start server2");
+
+    // Modify the IPv4 address for the service.
+    let IpAddr::V4(ipv4_2) = ip_addr1 else {
+        assert!(false);
+        return;
+    };
+    let bytes = ipv4_2.octets();
+    let ip_addr2 = IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 1));
+
+    let service2 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr2, port, None)
+        .expect("failed to create ServiceInfo for service2");
+    server2
+        .register(service2)
+        .expect("failed to register service2");
+
+    // Verify name change event for the first service, per tiebreaking rules.
+    let server1_monitor = server1.monitor().unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut name_changed = false;
+
+    while let Ok(event) = server1_monitor.recv_timeout(timeout) {
+        match event {
+            DaemonEvent::NameChange(change) => {
+                println!("server1 daemon event: {:?}", change);
+                name_changed = true;
+                break;
+            }
+            other => println!("server1 other event: {:?}", other),
+        }
+    }
+    assert!(name_changed);
+
+    // Verify both services are resolved.
+    let client = ServiceDaemon::new().expect("failed to create mdns client");
+    let receiver = client.browse(ty_domain).unwrap();
+
+    let timeout = Duration::from_secs(3);
+    let mut resolved_services = vec![];
+
+    while let Ok(event) = receiver.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                println!(
+                    "Resolved a service: {} host {} IP {:?}",
+                    info.get_fullname(),
+                    info.get_hostname(),
+                    info.get_addresses_v4()
+                );
+
+                resolved_services.push(info);
+                if resolved_services.len() == 2 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Verify that we have resolve two services instead of one.
+    assert_eq!(resolved_services.len(), 2);
+
+    // Verify that server2 was resolved first, i.e. won the tiebreaking.
+    let first_addrs = resolved_services[0].get_addresses();
+    assert_eq!(first_addrs.iter().next().unwrap(), &ip_addr2);
 }
 
 /// A helper function to include a timestamp for println.
