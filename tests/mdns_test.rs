@@ -1544,7 +1544,11 @@ fn test_name_conflict_resolution() {
                 );
 
                 service_names.insert(info.get_fullname().to_string());
+
+                // Find and verify name conflict resolution.
+
                 if info.get_fullname().contains("(2)") {
+                    assert_eq!(info.get_hostname(), "conflict_host-2.local.");
                     break;
                 }
             }

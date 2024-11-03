@@ -1990,7 +1990,11 @@ impl Zeroconf {
                     // create a new name for this record
                     // then remove the old record in probing.
                     let mut new_record = record.clone();
-                    let new_name = name_change(name);
+                    let new_name = match record.get_type() {
+                        RR_TYPE_A => hostname_change(name),
+                        RR_TYPE_AAAA => hostname_change(name),
+                        _ => name_change(name),
+                    };
                     new_record.get_record_mut().set_new_name(new_name);
                     new_records.push(new_record);
                     return false; // old record is dropped from the probe.
@@ -3166,12 +3170,41 @@ fn name_change(original: &str) -> String {
     parts.join(".")
 }
 
+/// Returns a new name based on the `original` to avoid conflicts.
+/// If the name already contains a hyphenated number, increments that number.
+///
+/// Examples:
+/// - `foo.local.` becomes `foo-2.local.`
+/// - `foo-2.local.` becomes `foo-3.local.`
+/// - `foo` becomes `foo-2`
+fn hostname_change(original: &str) -> String {
+    let mut parts: Vec<_> = original.split('.').collect();
+    let Some(first_part) = parts.get_mut(0) else {
+        return format!("{original}-2");
+    };
+
+    let mut new_name = format!("{}-2", first_part);
+
+    // check if there is already a `-<num>` suffix
+    if let Some(hyphen_pos) = first_part.rfind('-') {
+        // Try to parse everything after the hyphen as a number
+        if let Ok(number) = first_part[hyphen_pos + 1..].parse::<u32>() {
+            let base_name = &first_part[..hyphen_pos];
+            new_name = format!("{}-{}", base_name, number + 1);
+        }
+    }
+
+    *first_part = &new_name;
+    parts.join(".")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        check_domain_suffix, check_service_name_length, my_ip_interfaces, name_change,
-        new_socket_bind, send_dns_outgoing, valid_instance_name, HostnameResolutionEvent,
-        ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4, MDNS_PORT,
+        check_domain_suffix, check_service_name_length, hostname_change, my_ip_interfaces,
+        name_change, new_socket_bind, send_dns_outgoing, valid_instance_name,
+        HostnameResolutionEvent, ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4,
+        MDNS_PORT,
     };
     use crate::{
         dns_parser::{DnsOutgoing, DnsPointer, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE, RR_TYPE_PTR},
@@ -3557,5 +3590,14 @@ mod tests {
         assert_eq!(name_change("foo (abc)"), "foo (abc) (2)"); // Invalid number
         assert_eq!(name_change("foo (2"), "foo (2 (2)"); // Missing closing parenthesis
         assert_eq!(name_change("foo (2) extra"), "foo (2) extra (2)"); // Extra text after number
+    }
+
+    #[test]
+    fn test_hostname_change() {
+        assert_eq!(hostname_change("foo.local."), "foo-2.local.");
+        assert_eq!(hostname_change("foo"), "foo-2");
+        assert_eq!(hostname_change("foo-2.local."), "foo-3.local.");
+        assert_eq!(hostname_change("foo-9"), "foo-10");
+        assert_eq!(hostname_change("test-42.domain."), "test-43.domain.");
     }
 }
