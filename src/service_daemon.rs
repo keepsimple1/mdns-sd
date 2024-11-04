@@ -2703,19 +2703,29 @@ pub enum DaemonEvent {
     IpDel(IpAddr),
 
     /// Daemon resolved a name conflict by changing one of its names.
+    /// see [DnsNameChange] for more details.
     NameChange(DnsNameChange),
 
     /// Send out a multicast response via an IP address.
     Respond(IpAddr),
 }
 
+/// Represents a name change due to a name conflict resolution.
+/// See [RFC 6762 section 9](https://datatracker.ietf.org/doc/html/rfc6762#section-9)
 #[derive(Clone, Debug)]
 pub struct DnsNameChange {
     /// The original name set in `ServiceInfo` by the user.
     pub original: String,
 
-    /// A new name is created by appending `(<num>)` after the original name.
-    /// For example: "foo" becomes "foo (2)"
+    /// A new name is created by appending a suffix after the original name.
+    ///
+    /// - for a service instance name, the suffix is `(N)`, where N starts at 2.
+    /// - for a host name, the suffix is `-N`, where N starts at 2.
+    ///
+    /// For example:
+    ///
+    /// - Service name `foo._service-type._udp` becomes `foo (2)._service-type._udp`
+    /// - Host name `foo.local.` becomes `foo-2.local.`
     pub new_name: String,
 
     /// The value is one of `RR_TYPE_` constants.

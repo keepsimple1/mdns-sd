@@ -49,6 +49,7 @@ pub const RR_TYPE_NSEC: u16 = 47;
 /// DNS record type for any records (wildcard)
 pub const RR_TYPE_ANY: u16 = 255;
 
+/// Returns the name string of a `rr_type`.
 pub(crate) const fn rr_type_name(rr_type: u16) -> &'static str {
     match rr_type {
         RR_TYPE_A => "TYPE_A",
