@@ -7,7 +7,7 @@ use crate::log::debug;
 use crate::{
     dns_parser::{
         current_time_millis, split_sub_domain, DnsAddress, DnsPointer, DnsRecordBox, DnsSrv,
-        TYPE_A, TYPE_AAAA, TYPE_NSEC, TYPE_PTR, TYPE_SRV, TYPE_TXT,
+        RR_TYPE_A, RR_TYPE_AAAA, RR_TYPE_NSEC, RR_TYPE_PTR, RR_TYPE_SRV, RR_TYPE_TXT,
     },
     service_info::valid_two_addrs_on_intf,
 };
@@ -124,7 +124,7 @@ impl DnsCache {
 
         // If it is PTR with subtype, store a mapping from the instance fullname
         // to the subtype in this cache.
-        if incoming.get_type() == TYPE_PTR {
+        if incoming.get_type() == RR_TYPE_PTR {
             let (_, subtype_opt) = split_sub_domain(&entry_name);
             if let Some(subtype) = subtype_opt {
                 if let Some(ptr) = incoming.any().downcast_ref::<DnsPointer>() {
@@ -137,11 +137,11 @@ impl DnsCache {
 
         // get the existing records for the type.
         let record_vec = match incoming.get_type() {
-            TYPE_PTR => self.ptr.entry(entry_name).or_default(),
-            TYPE_SRV => self.srv.entry(entry_name).or_default(),
-            TYPE_TXT => self.txt.entry(entry_name).or_default(),
-            TYPE_A | TYPE_AAAA => self.addr.entry(entry_name).or_default(),
-            TYPE_NSEC => self.nsec.entry(entry_name).or_default(),
+            RR_TYPE_PTR => self.ptr.entry(entry_name).or_default(),
+            RR_TYPE_SRV => self.srv.entry(entry_name).or_default(),
+            RR_TYPE_TXT => self.txt.entry(entry_name).or_default(),
+            RR_TYPE_A | RR_TYPE_AAAA => self.addr.entry(entry_name).or_default(),
+            RR_TYPE_NSEC => self.nsec.entry(entry_name).or_default(),
             _ => return None,
         };
 
@@ -168,7 +168,7 @@ impl DnsCache {
                     should_flush = true;
 
                     // additional checks for address records.
-                    if rtype == TYPE_A || rtype == TYPE_AAAA {
+                    if rtype == RR_TYPE_A || rtype == RR_TYPE_AAAA {
                         if let Some(addr) = r.any().downcast_ref::<DnsAddress>() {
                             if let Some(addr_b) = incoming.any().downcast_ref::<DnsAddress>() {
                                 should_flush =
@@ -215,10 +215,10 @@ impl DnsCache {
         let mut found = false;
         let record_name = record.get_name();
         let record_vec = match record.get_type() {
-            TYPE_PTR => self.ptr.get_mut(record_name),
-            TYPE_SRV => self.srv.get_mut(record_name),
-            TYPE_TXT => self.txt.get_mut(record_name),
-            TYPE_A | TYPE_AAAA => self.addr.get_mut(record_name),
+            RR_TYPE_PTR => self.ptr.get_mut(record_name),
+            RR_TYPE_SRV => self.srv.get_mut(record_name),
+            RR_TYPE_TXT => self.txt.get_mut(record_name),
+            RR_TYPE_A | RR_TYPE_AAAA => self.addr.get_mut(record_name),
             _ => return found,
         };
         if let Some(record_vec) = record_vec {
@@ -277,7 +277,7 @@ impl DnsCache {
                         srv_records.retain(|srv| {
                             let expired = srv.get_record().is_expired(now);
                             if expired {
-                                debug!("expired SRV: {}: {}", ty_domain, srv.get_name());
+                                debug!("expired SRV: {}: {:?}", ty_domain, srv);
                                 expired_instances
                                     .entry(ty_domain.to_string())
                                     .or_insert_with(HashSet::new)
@@ -299,7 +299,7 @@ impl DnsCache {
                 let expired = x.get_record().is_expired(now);
                 if expired {
                     if let Some(dns_ptr) = x.any().downcast_ref::<DnsPointer>() {
-                        debug!("expired PTR: {:?}", dns_ptr);
+                        debug!("expired PTR: domain:{ty_domain} record: {:?}", dns_ptr);
                         expired_instances
                             .entry(ty_domain.to_string())
                             .or_insert_with(HashSet::new)
@@ -460,10 +460,10 @@ impl DnsCache {
         now: u64,
     ) -> Vec<&'a DnsRecordBox> {
         let records_opt = match qtype {
-            TYPE_PTR => self.get_ptr(name),
-            TYPE_SRV => self.get_srv(name),
-            TYPE_A | TYPE_AAAA => self.get_addr(name),
-            TYPE_TXT => self.get_txt(name),
+            RR_TYPE_PTR => self.get_ptr(name),
+            RR_TYPE_SRV => self.get_srv(name),
+            RR_TYPE_A | RR_TYPE_AAAA => self.get_addr(name),
+            RR_TYPE_TXT => self.get_txt(name),
             _ => None,
         };
 
