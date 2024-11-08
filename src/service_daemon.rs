@@ -398,6 +398,24 @@ impl ServiceDaemon {
         )))
     }
 
+    /// Issues two queries one second apart for `resource`.
+    ///
+    /// If no response is received within 10 seconds, the current resource
+    /// record will be flushed, and if needed, `ServiceRemoved` event will be
+    /// sent to active queriers.
+    pub fn verify_resource(&self, resource: DnsResource) -> Result<()> {
+        /*
+        https://datatracker.ietf.org/doc/html/rfc6762#section-10.4
+
+        When the cache receives this hint that it should reconfirm some
+        record, it MUST issue two or more queries for the resource record in
+        dispute.  If no response is received within ten seconds, then, even
+        though its TTL may indicate that it is not yet due to expire, that
+        record SHOULD be promptly flushed from the cache.
+         */
+        self.send_cmd(Command::VerifyResource(resource))
+    }
+
     fn daemon_thread(signal_sock: UdpSocket, poller: Poller, receiver: Receiver<Command>) {
         let zc = Zeroconf::new(signal_sock, poller);
 
@@ -665,11 +683,26 @@ impl ServiceDaemon {
                 zc.process_set_option(daemon_opt);
             }
 
+            Command::VerifyResource(resource) => {
+                zc.exec_command_verify_resource(resource);
+            }
+
             _ => {
                 error!("unexpected command: {:?}", &command);
             }
         }
     }
+}
+
+/// Different kinds of resources for DNS.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum DnsResource {
+    /// Service instance with its full name.
+    Srv(String),
+
+    /// Address records for a host.
+    Addr(String),
 }
 
 /// Creates a new UDP socket that uses `intf` to send and recv multicast.
@@ -2610,6 +2643,26 @@ impl Zeroconf {
         self.increase_counter(Counter::RegisterResend, 1);
     }
 
+    fn exec_command_verify_resource(&mut self, resource: DnsResource) {
+        let now = current_time_millis();
+        let expire_at = now + 10_000; // update the expire time to be 10 seconds.
+
+        // send query for the resource and update expire time for records.
+        match resource {
+            DnsResource::Srv(ref service_name) => {
+                self.send_query(service_name, RR_TYPE_SRV);
+                self.cache.expire_srv(service_name, expire_at);
+            }
+            DnsResource::Addr(ref hostname) => {
+                self.send_query_vec(&[(hostname, RR_TYPE_A), (hostname, RR_TYPE_AAAA)]);
+                self.cache.expire_addr(hostname, expire_at);
+            }
+        }
+
+        // schedule a resend 1 second later
+        self.add_retransmission(now + 1000, Command::VerifyResource(resource));
+    }
+
     /// Refresh cached service records with active queriers
     fn refresh_active_services(&mut self) {
         let mut query_ptr_count = 0;
@@ -2658,12 +2711,16 @@ impl Zeroconf {
 pub enum ServiceEvent {
     /// Started searching for a service type.
     SearchStarted(String),
+
     /// Found a specific (service_type, fullname).
     ServiceFound(String, String),
+
     /// Resolved a service instance with detailed info.
     ServiceResolved(ServiceInfo),
+
     /// A service instance (service_type, fullname) was removed.
     ServiceRemoved(String, String),
+
     /// Stopped searching for a service type.
     SearchStopped(String),
 }
@@ -2777,6 +2834,12 @@ enum Command {
 
     SetOption(DaemonOption),
 
+    /// Proactively confirm a DNS resource record.
+    ///
+    /// The intention is to check if a service name or IP address still valid
+    /// before its TTL expires.
+    VerifyResource(DnsResource),
+
     Exit(Sender<DaemonStatus>),
 }
 
@@ -2797,6 +2860,7 @@ impl fmt::Display for Command {
             Self::Unregister(_, _) => write!(f, "Command Unregister"),
             Self::UnregisterResend(_, _) => write!(f, "Command UnregisterResend"),
             Self::Resolve(_, _) => write!(f, "Command Resolve"),
+            Self::VerifyResource(_) => write!(f, "Command VerifyResource"),
         }
     }
 }

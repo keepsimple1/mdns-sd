@@ -449,6 +449,28 @@ impl DnsCache {
             .collect()
     }
 
+    /// Set SRV records with `instance_name` to expire at `expire_at` if it is
+    /// sooner than the current expire time.
+    pub(crate) fn expire_srv(&mut self, instance_name: &str, expire_at: u64) {
+        for record in self.srv.get_mut(instance_name).into_iter().flatten() {
+            let current_expire = record.get_expire();
+            if expire_at < current_expire {
+                record.set_expire(expire_at);
+            }
+        }
+    }
+
+    /// Set ADDR records with `hostname` to expire at `expire_at` if it is
+    /// sooner than the current expire time.
+    pub(crate) fn expire_addr(&mut self, hostname: &str, expire_at: u64) {
+        for record in self.addr.get_mut(hostname).into_iter().flatten() {
+            let current_expire = record.get_expire();
+            if expire_at < current_expire {
+                record.set_expire(expire_at);
+            }
+        }
+    }
+
     /// Returns a list of Known Answer for a given question of `name` with `qtype`.
     /// The timestamp `now` is passed in to check TTL.
     ///
