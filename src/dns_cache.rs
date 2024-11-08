@@ -456,6 +456,10 @@ impl DnsCache {
             let current_expire = record.get_expire();
             if expire_at < current_expire {
                 record.set_expire(expire_at);
+                debug!(
+                    "set SRV {} record expires at {expire_at}",
+                    record.get_name()
+                );
             }
         }
     }
@@ -467,6 +471,10 @@ impl DnsCache {
             let current_expire = record.get_expire();
             if expire_at < current_expire {
                 record.set_expire(expire_at);
+                println!(
+                    "set ADDR {} record expires at {expire_at}",
+                    record.get_name()
+                );
             }
         }
     }

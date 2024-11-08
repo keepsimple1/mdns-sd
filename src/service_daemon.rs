@@ -398,22 +398,17 @@ impl ServiceDaemon {
         )))
     }
 
-    /// Issues two queries one second apart for `resource`.
+    /// Proactively confirms whether a DNS resource record still valid.
+    ///
+    /// This call will issue two queries one second apart for `resource`.
     ///
     /// If no response is received within 10 seconds, the current resource
     /// record will be flushed, and if needed, `ServiceRemoved` event will be
     /// sent to active queriers.
-    pub fn verify_resource(&self, resource: DnsResource) -> Result<()> {
-        /*
-        https://datatracker.ietf.org/doc/html/rfc6762#section-10.4
-
-        When the cache receives this hint that it should reconfirm some
-        record, it MUST issue two or more queries for the resource record in
-        dispute.  If no response is received within ten seconds, then, even
-        though its TTL may indicate that it is not yet due to expire, that
-        record SHOULD be promptly flushed from the cache.
-         */
-        self.send_cmd(Command::VerifyResource(resource))
+    ///
+    /// Reference: [RFC 6762](https://datatracker.ietf.org/doc/html/rfc6762#section-10.4)
+    pub fn verify_resource(&self, resource: DnsResource, timeout: Duration) -> Result<()> {
+        self.send_cmd(Command::VerifyResource(resource, timeout))
     }
 
     fn daemon_thread(signal_sock: UdpSocket, poller: Poller, receiver: Receiver<Command>) {
@@ -683,8 +678,8 @@ impl ServiceDaemon {
                 zc.process_set_option(daemon_opt);
             }
 
-            Command::VerifyResource(resource) => {
-                zc.exec_command_verify_resource(resource);
+            Command::VerifyResource(resource, timeout) => {
+                zc.exec_command_verify_resource(resource, timeout, repeating);
             }
 
             _ => {
@@ -2643,24 +2638,45 @@ impl Zeroconf {
         self.increase_counter(Counter::RegisterResend, 1);
     }
 
-    fn exec_command_verify_resource(&mut self, resource: DnsResource) {
+    fn exec_command_verify_resource(
+        &mut self,
+        resource: DnsResource,
+        timeout: Duration,
+        repeating: bool,
+    ) {
+        /*
+        RFC 6762 section 10.4:
+        ...
+        When the cache receives this hint that it should reconfirm some
+        record, it MUST issue two or more queries for the resource record in
+        dispute.  If no response is received within ten seconds, then, even
+        though its TTL may indicate that it is not yet due to expire, that
+        record SHOULD be promptly flushed from the cache.
+        */
         let now = current_time_millis();
-        let expire_at = now + 10_000; // update the expire time to be 10 seconds.
+        let expire_at = now + timeout.as_millis() as u64;
 
         // send query for the resource and update expire time for records.
         match resource {
             DnsResource::Srv(ref service_name) => {
                 self.send_query(service_name, RR_TYPE_SRV);
-                self.cache.expire_srv(service_name, expire_at);
+                if !repeating {
+                    self.cache.expire_srv(service_name, expire_at);
+                }
             }
             DnsResource::Addr(ref hostname) => {
                 self.send_query_vec(&[(hostname, RR_TYPE_A), (hostname, RR_TYPE_AAAA)]);
-                self.cache.expire_addr(hostname, expire_at);
+                if !repeating {
+                    self.cache.expire_addr(hostname, expire_at);
+                }
             }
         }
 
         // schedule a resend 1 second later
-        self.add_retransmission(now + 1000, Command::VerifyResource(resource));
+        if !repeating {
+            self.add_timer(expire_at);
+            self.add_retransmission(now + 1000, Command::VerifyResource(resource, timeout));
+        }
     }
 
     /// Refresh cached service records with active queriers
@@ -2838,7 +2854,7 @@ enum Command {
     ///
     /// The intention is to check if a service name or IP address still valid
     /// before its TTL expires.
-    VerifyResource(DnsResource),
+    VerifyResource(DnsResource, Duration),
 
     Exit(Sender<DaemonStatus>),
 }
@@ -2860,7 +2876,7 @@ impl fmt::Display for Command {
             Self::Unregister(_, _) => write!(f, "Command Unregister"),
             Self::UnregisterResend(_, _) => write!(f, "Command UnregisterResend"),
             Self::Resolve(_, _) => write!(f, "Command Resolve"),
-            Self::VerifyResource(_) => write!(f, "Command VerifyResource"),
+            Self::VerifyResource(_, _) => write!(f, "Command VerifyResource"),
         }
     }
 }
@@ -3035,7 +3051,7 @@ fn send_packet(packet: &[u8], addr: SocketAddr, intf: &Interface, sock: &Socket)
     let sockaddr = SockAddr::from(addr);
     match sock.send_to(packet, &sockaddr) {
         Ok(sz) => debug!("sent out {} bytes on interface {:?}", sz, intf),
-        Err(e) => error!("Failed to send to {} via {:?}: {}", addr, &intf, e),
+        Err(e) => info!("Failed to send to {} via {:?}: {}", addr, &intf, e),
     }
 }
 
