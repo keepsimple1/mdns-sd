@@ -69,6 +69,10 @@ macro_rules! e_fmt {
 /// [RFC 6763 section 7.2](https://www.rfc-editor.org/rfc/rfc6763#section-7.2).
 pub const SERVICE_NAME_LEN_MAX_DEFAULT: u8 = 15;
 
+/// The default time out for [ServiceDaemon::verify_resource] is 10 seconds, per
+/// [RFC 6762 section 10.4](https://datatracker.ietf.org/doc/html/rfc6762#section-10.4)
+pub const VERIFY_RESOURCE_TIMEOUT_DEFAULT: Duration = Duration::from_secs(10);
+
 const MDNS_PORT: u16 = 5353;
 const GROUP_ADDR_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const GROUP_ADDR_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
@@ -401,8 +405,10 @@ impl ServiceDaemon {
     /// Proactively confirms whether a DNS resource record still valid.
     ///
     /// This call will issue two queries one second apart for `resource`.
+    /// For `timeout`, most users should use [VERIFY_RESOURCE_TIMEOUT_DEFAULT]
+    /// unless there is a reason not to follow RFC.
     ///
-    /// If no response is received within 10 seconds, the current resource
+    /// If no response is received within `timeout`, the current resource
     /// record will be flushed, and if needed, `ServiceRemoved` event will be
     /// sent to active queriers.
     ///
