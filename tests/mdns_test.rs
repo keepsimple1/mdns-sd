@@ -1908,15 +1908,20 @@ fn test_verify_addr() {
         )
         .unwrap();
     let timeout = Duration::from_secs(4);
+    let mut service_removed = false;
 
     while let Ok(event) = receiver.recv_timeout(timeout) {
         match event {
             ServiceEvent::ServiceRemoved(service_type, fullname) => {
                 println!("service removed: {service_type} : {fullname}");
+                service_removed = true;
+                break;
             }
             _ => {}
         }
     }
+
+    assert!(service_removed);
 }
 
 /// A helper function to include a timestamp for println.

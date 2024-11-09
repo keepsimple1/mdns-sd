@@ -603,7 +603,7 @@ impl ServiceDaemon {
                 );
                 let instances = zc.cache.get_instances_on_host(&hostname);
                 let instance_set: HashSet<String> = instances.into_iter().collect();
-                zc.resolve_updated_instances(instance_set);
+                zc.resolve_updated_instances(&instance_set);
             }
 
             // Send out probing queries.
@@ -965,6 +965,9 @@ struct Zeroconf {
 
     /// Service instances that are pending for resolving SRV and TXT.
     pending_resolves: HashSet<String>,
+
+    /// Service instances that are already resolved.
+    resolved: HashSet<String>,
 }
 
 impl Zeroconf {
@@ -1019,6 +1022,7 @@ impl Zeroconf {
             timers,
             status,
             pending_resolves: HashSet::new(),
+            resolved: HashSet::new(),
         }
     }
 
@@ -1745,6 +1749,7 @@ impl Zeroconf {
 
         for instance in resolved.drain() {
             self.pending_resolves.remove(&instance);
+            self.resolved.insert(instance);
         }
 
         for instance in unresolved.drain() {
@@ -1974,7 +1979,7 @@ impl Zeroconf {
             }
         }
 
-        self.resolve_updated_instances(updated_instances);
+        self.resolve_updated_instances(&updated_instances);
     }
 
     fn conflict_handler(&mut self, msg: &DnsIncoming, intf: &Interface) {
@@ -2085,9 +2090,10 @@ impl Zeroconf {
     /// instance. For example, a regular service type PTR and a sub-type
     /// service type PTR can both point to the same service instance.
     /// This loop automatically handles the sub-type PTRs.
-    fn resolve_updated_instances(&mut self, updated_instances: HashSet<String>) {
+    fn resolve_updated_instances(&mut self, updated_instances: &HashSet<String>) {
         let mut resolved: HashSet<String> = HashSet::new();
         let mut unresolved: HashSet<String> = HashSet::new();
+        let mut removed_instances = HashMap::new();
 
         for (ty_domain, records) in self.cache.all_ptr().iter() {
             if !self.service_queriers.contains_key(ty_domain) {
@@ -2109,6 +2115,12 @@ impl Zeroconf {
                                     ServiceEvent::ServiceResolved(info),
                                 );
                             } else {
+                                if self.resolved.remove(&dns_ptr.alias) {
+                                    removed_instances
+                                        .entry(ty_domain.to_string())
+                                        .or_insert_with(HashSet::new)
+                                        .insert(dns_ptr.alias.clone());
+                                }
                                 unresolved.insert(dns_ptr.alias.clone());
                             }
                         }
@@ -2119,11 +2131,14 @@ impl Zeroconf {
 
         for instance in resolved.drain() {
             self.pending_resolves.remove(&instance);
+            self.resolved.insert(instance);
         }
 
         for instance in unresolved.drain() {
             self.add_pending_resolve(instance);
         }
+
+        self.notify_service_removal(removed_instances);
     }
 
     /// Handle incoming query packets, figure out whether and what to respond.

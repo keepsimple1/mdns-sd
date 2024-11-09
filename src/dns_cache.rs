@@ -243,6 +243,7 @@ impl DnsCache {
                 let expired = addr.get_record().is_expired(now);
                 if expired {
                     if let Some(addr_record) = addr.any().downcast_ref::<DnsAddress>() {
+                        debug!("evict expired ADDR: {:?}", addr_record);
                         removed
                             .entry(addr.get_name().to_string())
                             .or_insert_with(HashSet::new)
