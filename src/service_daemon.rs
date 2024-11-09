@@ -69,9 +69,9 @@ macro_rules! e_fmt {
 /// [RFC 6763 section 7.2](https://www.rfc-editor.org/rfc/rfc6763#section-7.2).
 pub const SERVICE_NAME_LEN_MAX_DEFAULT: u8 = 15;
 
-/// The default time out for [ServiceDaemon::verify_resource] is 10 seconds, per
+/// The default time out for [ServiceDaemon::verify] is 10 seconds, per
 /// [RFC 6762 section 10.4](https://datatracker.ietf.org/doc/html/rfc6762#section-10.4)
-pub const VERIFY_RESOURCE_TIMEOUT_DEFAULT: Duration = Duration::from_secs(10);
+pub const VERIFY_TIMEOUT_DEFAULT: Duration = Duration::from_secs(10);
 
 const MDNS_PORT: u16 = 5353;
 const GROUP_ADDR_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
@@ -406,7 +406,7 @@ impl ServiceDaemon {
     ///
     /// This call will issue queries for a service instance's SRV record and Address records.
     ///
-    /// For `timeout`, most users should use [VERIFY_RESOURCE_TIMEOUT_DEFAULT]
+    /// For `timeout`, most users should use [VERIFY_TIMEOUT_DEFAULT]
     /// unless there is a reason not to follow RFC.
     ///
     /// If no response is received within `timeout`, the current resource
@@ -685,8 +685,8 @@ impl ServiceDaemon {
                 zc.process_set_option(daemon_opt);
             }
 
-            Command::Verify(resource, timeout) => {
-                zc.exec_command_verify_resource(resource, timeout, repeating);
+            Command::Verify(instance_fullname, timeout) => {
+                zc.exec_command_verify(instance_fullname, timeout, repeating);
             }
 
             _ => {
@@ -2649,12 +2649,7 @@ impl Zeroconf {
         self.increase_counter(Counter::RegisterResend, 1);
     }
 
-    fn exec_command_verify_resource(
-        &mut self,
-        instance: String,
-        timeout: Duration,
-        repeating: bool,
-    ) {
+    fn exec_command_verify(&mut self, instance: String, timeout: Duration, repeating: bool) {
         /*
         RFC 6762 section 10.4:
         ...

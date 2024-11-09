@@ -159,7 +159,7 @@ pub use error::{Error, Result};
 pub use service_daemon::{
     DaemonEvent, DaemonStatus, DnsNameChange, HostnameResolutionEvent, IfKind, Metrics,
     ServiceDaemon, ServiceEvent, UnregisterStatus, SERVICE_NAME_LEN_MAX_DEFAULT,
-    VERIFY_RESOURCE_TIMEOUT_DEFAULT,
+    VERIFY_TIMEOUT_DEFAULT,
 };
 pub use service_info::{AsIpAddrs, IntoTxtProperties, ServiceInfo, TxtProperties, TxtProperty};
 
