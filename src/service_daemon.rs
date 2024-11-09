@@ -413,8 +413,8 @@ impl ServiceDaemon {
     /// sent to active queriers.
     ///
     /// Reference: [RFC 6762](https://datatracker.ietf.org/doc/html/rfc6762#section-10.4)
-    pub fn verify_resource(&self, resource: DnsResource, timeout: Duration) -> Result<()> {
-        self.send_cmd(Command::VerifyResource(resource, timeout))
+    pub fn verify_resource(&self, service_instance: String, timeout: Duration) -> Result<()> {
+        self.send_cmd(Command::Verify(service_instance, timeout))
     }
 
     fn daemon_thread(signal_sock: UdpSocket, poller: Poller, receiver: Receiver<Command>) {
@@ -684,7 +684,7 @@ impl ServiceDaemon {
                 zc.process_set_option(daemon_opt);
             }
 
-            Command::VerifyResource(resource, timeout) => {
+            Command::Verify(resource, timeout) => {
                 zc.exec_command_verify_resource(resource, timeout, repeating);
             }
 
@@ -693,17 +693,6 @@ impl ServiceDaemon {
             }
         }
     }
-}
-
-/// Different kinds of resources for DNS.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum DnsResource {
-    /// Service instance with its full name.
-    Srv(String),
-
-    /// Address records for a host.
-    Addr(String),
 }
 
 /// Creates a new UDP socket that uses `intf` to send and recv multicast.
@@ -2661,7 +2650,7 @@ impl Zeroconf {
 
     fn exec_command_verify_resource(
         &mut self,
-        resource: DnsResource,
+        instance: String,
         timeout: Duration,
         repeating: bool,
     ) {
@@ -2675,28 +2664,27 @@ impl Zeroconf {
         record SHOULD be promptly flushed from the cache.
         */
         let now = current_time_millis();
-        let expire_at = now + timeout.as_millis() as u64;
+        let expire_at = if repeating {
+            None
+        } else {
+            Some(now + timeout.as_millis() as u64)
+        };
 
-        // send query for the resource and update expire time for records.
-        match resource {
-            DnsResource::Srv(ref service_name) => {
-                self.send_query(service_name, RR_TYPE_SRV);
-                if !repeating {
-                    self.cache.expire_srv(service_name, expire_at);
-                }
-            }
-            DnsResource::Addr(ref hostname) => {
-                self.send_query_vec(&[(hostname, RR_TYPE_A), (hostname, RR_TYPE_AAAA)]);
-                if !repeating {
-                    self.cache.expire_addr(hostname, expire_at);
-                }
-            }
-        }
+        // send query for the resource records.
+        let resource_vec = self.cache.service_flush(&instance, expire_at);
 
-        // schedule a resend 1 second later
-        if !repeating {
-            self.add_timer(expire_at);
-            self.add_retransmission(now + 1000, Command::VerifyResource(resource, timeout));
+        if !resource_vec.is_empty() {
+            let query_vec: Vec<(&str, u16)> = resource_vec
+                .iter()
+                .map(|(record, rr_type)| (record.as_str(), *rr_type))
+                .collect();
+            self.send_query_vec(&query_vec);
+
+            // schedule a resend 1 second later
+            if let Some(new_expire) = expire_at {
+                self.add_timer(new_expire);
+                self.add_retransmission(now + 1000, Command::Verify(instance, timeout));
+            }
         }
     }
 
@@ -2875,7 +2863,7 @@ enum Command {
     ///
     /// The intention is to check if a service name or IP address still valid
     /// before its TTL expires.
-    VerifyResource(DnsResource, Duration),
+    Verify(String, Duration),
 
     Exit(Sender<DaemonStatus>),
 }
@@ -2897,7 +2885,7 @@ impl fmt::Display for Command {
             Self::Unregister(_, _) => write!(f, "Command Unregister"),
             Self::UnregisterResend(_, _) => write!(f, "Command UnregisterResend"),
             Self::Resolve(_, _) => write!(f, "Command Resolve"),
-            Self::VerifyResource(_, _) => write!(f, "Command VerifyResource"),
+            Self::Verify(_, _) => write!(f, "Command VerifyResource"),
         }
     }
 }

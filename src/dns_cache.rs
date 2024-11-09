@@ -108,6 +108,43 @@ impl DnsCache {
             .collect()
     }
 
+    /// Returns a list of resource records (name, rr_type) that need to flush (verify).
+    pub(crate) fn service_flush(
+        &mut self,
+        instance: &str,
+        expire_at: Option<u64>,
+    ) -> Vec<(String, u16)> {
+        let Some(srv_vec) = self.srv.get_mut(instance) else {
+            return Vec::new();
+        };
+
+        let mut query_vec = vec![(instance.to_string(), RR_TYPE_SRV)];
+
+        for srv in srv_vec {
+            if let Some(new_expire) = expire_at {
+                srv.set_expire_sooner(new_expire);
+            }
+
+            let Some(srv_record) = srv.any().downcast_ref::<DnsSrv>() else {
+                continue;
+            };
+
+            // Will verify addresses for the hostname.
+            query_vec.push((srv_record.host.clone(), RR_TYPE_A));
+            query_vec.push((srv_record.host.clone(), RR_TYPE_AAAA));
+
+            if let Some(new_expire) = expire_at {
+                if let Some(addrs) = self.addr.get_mut(&srv_record.host) {
+                    for addr in addrs {
+                        addr.set_expire_sooner(new_expire);
+                    }
+                }
+            }
+        }
+
+        query_vec
+    }
+
     /// Update a DNSRecord TTL if already exists, otherwise insert a new record.
     ///
     /// Returns `None` if `incoming` is invalid / unrecognized, otherwise returns
@@ -448,36 +485,6 @@ impl DnsCache {
                 ))
             })
             .collect()
-    }
-
-    /// Set SRV records with `instance_name` to expire at `expire_at` if it is
-    /// sooner than the current expire time.
-    pub(crate) fn expire_srv(&mut self, instance_name: &str, expire_at: u64) {
-        for record in self.srv.get_mut(instance_name).into_iter().flatten() {
-            let current_expire = record.get_expire();
-            if expire_at < current_expire {
-                record.set_expire(expire_at);
-                debug!(
-                    "set SRV {} record expires at {expire_at}",
-                    record.get_name()
-                );
-            }
-        }
-    }
-
-    /// Set ADDR records with `hostname` to expire at `expire_at` if it is
-    /// sooner than the current expire time.
-    pub(crate) fn expire_addr(&mut self, hostname: &str, expire_at: u64) {
-        for record in self.addr.get_mut(hostname).into_iter().flatten() {
-            let current_expire = record.get_expire();
-            if expire_at < current_expire {
-                record.set_expire(expire_at);
-                println!(
-                    "set ADDR {} record expires at {expire_at}",
-                    record.get_name()
-                );
-            }
-        }
     }
 
     /// Returns a list of Known Answer for a given question of `name` with `qtype`.

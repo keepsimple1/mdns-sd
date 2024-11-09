@@ -1,7 +1,7 @@
 use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
-    DaemonEvent, DaemonStatus, DnsResource, HostnameResolutionEvent, IfKind, IntoTxtProperties,
-    ServiceDaemon, ServiceEvent, ServiceInfo, UnregisterStatus,
+    DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, IntoTxtProperties, ServiceDaemon,
+    ServiceEvent, ServiceInfo, UnregisterStatus,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -1832,7 +1832,7 @@ fn test_verify_srv() {
 
     // check `ServiceRemoved`
     client
-        .verify_resource(DnsResource::Srv(fullname), Duration::from_secs(3))
+        .verify_resource(fullname, Duration::from_secs(3))
         .unwrap();
     let timeout = Duration::from_secs(4);
     let mut service_removal = false;
@@ -1849,79 +1849,6 @@ fn test_verify_srv() {
     }
 
     assert!(service_removal);
-}
-
-#[test]
-fn test_verify_addr() {
-    // start a server
-    let ty_domain = "_verify-addr._udp.local.";
-    let host_name = "verify_addr.local.";
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap();
-    let instance_name = now.as_micros().to_string(); // Create a unique name.
-    let port = 5200;
-
-    // Get a single IPv4 address
-    let ip_addr1 = my_ip_interfaces()
-        .iter()
-        .find(|iface| iface.ip().is_ipv4())
-        .map(|iface| iface.ip())
-        .unwrap();
-
-    // Register the service.
-    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
-        .expect("valid service info");
-
-    let server1 = ServiceDaemon::new().expect("failed to start server");
-    server1
-        .register(service1)
-        .expect("Failed to register service1");
-
-    // wait for the service announced.
-    sleep(Duration::from_secs(1));
-
-    // start a client
-    let client = ServiceDaemon::new().expect("failed to start client");
-    let receiver = client.browse(ty_domain).unwrap();
-    let timeout = Duration::from_secs(2);
-
-    while let Ok(event) = receiver.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceResolved(info) => {
-                println!("service resolved: {:?}", info);
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    // kill the server without unregister (i.e. not-graceful-shutdown)
-    server1.shutdown().unwrap();
-    sleep(Duration::from_secs(1));
-
-    // check `ServiceRemoved`
-    client
-        .verify_resource(
-            DnsResource::Addr(host_name.to_string()),
-            Duration::from_secs(3),
-        )
-        .unwrap();
-    let timeout = Duration::from_secs(4);
-    let mut service_removed = false;
-
-    while let Ok(event) = receiver.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceRemoved(service_type, fullname) => {
-                println!("service removed: {service_type} : {fullname}");
-                service_removed = true;
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    assert!(service_removed);
 }
 
 /// A helper function to include a timestamp for println.
