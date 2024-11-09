@@ -1831,9 +1831,7 @@ fn test_verify_srv() {
     sleep(Duration::from_secs(1));
 
     // check `ServiceRemoved`
-    client
-        .verify_resource(fullname, Duration::from_secs(3))
-        .unwrap();
+    client.verify(fullname, Duration::from_secs(3)).unwrap();
     let timeout = Duration::from_secs(4);
     let mut service_removal = false;
 

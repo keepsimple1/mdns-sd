@@ -402,19 +402,20 @@ impl ServiceDaemon {
         )))
     }
 
-    /// Proactively confirms whether a DNS resource record still valid.
+    /// Proactively confirms whether a service instance still valid.
     ///
-    /// This call will issue two queries one second apart for `resource`.
+    /// This call will issue queries for a service instance's SRV record and Address records.
+    ///
     /// For `timeout`, most users should use [VERIFY_RESOURCE_TIMEOUT_DEFAULT]
     /// unless there is a reason not to follow RFC.
     ///
     /// If no response is received within `timeout`, the current resource
-    /// record will be flushed, and if needed, `ServiceRemoved` event will be
+    /// records will be flushed, and if needed, `ServiceRemoved` event will be
     /// sent to active queriers.
     ///
     /// Reference: [RFC 6762](https://datatracker.ietf.org/doc/html/rfc6762#section-10.4)
-    pub fn verify_resource(&self, service_instance: String, timeout: Duration) -> Result<()> {
-        self.send_cmd(Command::Verify(service_instance, timeout))
+    pub fn verify(&self, instance_fullname: String, timeout: Duration) -> Result<()> {
+        self.send_cmd(Command::Verify(instance_fullname, timeout))
     }
 
     fn daemon_thread(signal_sock: UdpSocket, poller: Poller, receiver: Receiver<Command>) {
