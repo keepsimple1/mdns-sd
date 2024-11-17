@@ -28,8 +28,28 @@ This implementation is based on the following RFCs:
 
 This is still beta software. We focus on the common use cases at hand. And we tested with some existing common tools (e.g. `Avahi` on Linux, `dns-sd` on MacOS, and `Bonjour` library on iOS) to verify the basic compatibility.
 
-Currently this library has the following limitations:
-- Only support multicast, no unicast send/recv.
+The following table shows how much this implementation is compliant with RFCs regarding major features:
+
+| Feature | RFC section | Compliance | Notes |
+| ------- | ----------- | ---------- | ----- |
+| One-Shot Multicast DNS Queries | RFC 6762 [section 5.1][ref1] | ❌ | because we don't support Unicast yet. |
+| Unicast Responses | RFC 6762 [section 5.4][ref2] | ❌ |
+| Known-Answer Suppression | RFC 6762 [section 7.1][ref3] | ✅ |
+| Multipacket Known Answer Suppression querier | RFC 6762 [section 7.2][ref4] | ✅ |
+| Multipacket Known Answer Suppression responder | RFC 6762 [section 7.2][ref4] | ❌ | because we don't support Unicast yet. |
+| Probing | RFC 6762 [section 8.1][ref5] | ✅ |
+| Simultaneous Probe Tiebreaking | RFC 6762 [section 8.2][ref6] | ✅ |
+| Conflict Resolution | RFC 6762 [section 9][ref7] | ✅ | see `DnsNameChange` type |
+| Cache Flush on Failure Indication | RFC 6762 [section 10.4][ref8] | ✅ | API: `ServiceDaemon::verify()` |
+
+[ref1]: https://datatracker.ietf.org/doc/html/rfc6762#section-5.1
+[ref2]: https://datatracker.ietf.org/doc/html/rfc6762#section-5.4
+[ref3]: https://datatracker.ietf.org/doc/html/rfc6762#section-7.1
+[ref4]: https://datatracker.ietf.org/doc/html/rfc6762#section-7.2
+[ref5]: https://datatracker.ietf.org/doc/html/rfc6762#section-8.1
+[ref6]: https://datatracker.ietf.org/doc/html/rfc6762#section-8.1
+[ref7]: https://datatracker.ietf.org/doc/html/rfc6762#section-8.1
+[ref8]: https://datatracker.ietf.org/doc/html/rfc6762#section-8.1
 
 ## License
 
