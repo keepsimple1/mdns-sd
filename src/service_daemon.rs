@@ -69,6 +69,10 @@ macro_rules! e_fmt {
 /// [RFC 6763 section 7.2](https://www.rfc-editor.org/rfc/rfc6763#section-7.2).
 pub const SERVICE_NAME_LEN_MAX_DEFAULT: u8 = 15;
 
+/// The default time out for [ServiceDaemon::verify] is 10 seconds, per
+/// [RFC 6762 section 10.4](https://datatracker.ietf.org/doc/html/rfc6762#section-10.4)
+pub const VERIFY_TIMEOUT_DEFAULT: Duration = Duration::from_secs(10);
+
 const MDNS_PORT: u16 = 5353;
 const GROUP_ADDR_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const GROUP_ADDR_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
@@ -398,6 +402,22 @@ impl ServiceDaemon {
         )))
     }
 
+    /// Proactively confirms whether a service instance still valid.
+    ///
+    /// This call will issue queries for a service instance's SRV record and Address records.
+    ///
+    /// For `timeout`, most users should use [VERIFY_TIMEOUT_DEFAULT]
+    /// unless there is a reason not to follow RFC.
+    ///
+    /// If no response is received within `timeout`, the current resource
+    /// records will be flushed, and if needed, `ServiceRemoved` event will be
+    /// sent to active queriers.
+    ///
+    /// Reference: [RFC 6762](https://datatracker.ietf.org/doc/html/rfc6762#section-10.4)
+    pub fn verify(&self, instance_fullname: String, timeout: Duration) -> Result<()> {
+        self.send_cmd(Command::Verify(instance_fullname, timeout))
+    }
+
     fn daemon_thread(signal_sock: UdpSocket, poller: Poller, receiver: Receiver<Command>) {
         let zc = Zeroconf::new(signal_sock, poller);
 
@@ -590,7 +610,7 @@ impl ServiceDaemon {
                 );
                 let instances = zc.cache.get_instances_on_host(&hostname);
                 let instance_set: HashSet<String> = instances.into_iter().collect();
-                zc.resolve_updated_instances(instance_set);
+                zc.resolve_updated_instances(&instance_set);
             }
 
             // Send out probing queries.
@@ -663,6 +683,10 @@ impl ServiceDaemon {
 
             Command::SetOption(daemon_opt) => {
                 zc.process_set_option(daemon_opt);
+            }
+
+            Command::Verify(instance_fullname, timeout) => {
+                zc.exec_command_verify(instance_fullname, timeout, repeating);
             }
 
             _ => {
@@ -937,6 +961,9 @@ struct Zeroconf {
 
     /// Service instances that are pending for resolving SRV and TXT.
     pending_resolves: HashSet<String>,
+
+    /// Service instances that are already resolved.
+    resolved: HashSet<String>,
 }
 
 impl Zeroconf {
@@ -991,6 +1018,7 @@ impl Zeroconf {
             timers,
             status,
             pending_resolves: HashSet::new(),
+            resolved: HashSet::new(),
         }
     }
 
@@ -1717,6 +1745,7 @@ impl Zeroconf {
 
         for instance in resolved.drain() {
             self.pending_resolves.remove(&instance);
+            self.resolved.insert(instance);
         }
 
         for instance in unresolved.drain() {
@@ -1946,7 +1975,7 @@ impl Zeroconf {
             }
         }
 
-        self.resolve_updated_instances(updated_instances);
+        self.resolve_updated_instances(&updated_instances);
     }
 
     fn conflict_handler(&mut self, msg: &DnsIncoming, intf: &Interface) {
@@ -2057,9 +2086,10 @@ impl Zeroconf {
     /// instance. For example, a regular service type PTR and a sub-type
     /// service type PTR can both point to the same service instance.
     /// This loop automatically handles the sub-type PTRs.
-    fn resolve_updated_instances(&mut self, updated_instances: HashSet<String>) {
+    fn resolve_updated_instances(&mut self, updated_instances: &HashSet<String>) {
         let mut resolved: HashSet<String> = HashSet::new();
         let mut unresolved: HashSet<String> = HashSet::new();
+        let mut removed_instances = HashMap::new();
 
         for (ty_domain, records) in self.cache.all_ptr().iter() {
             if !self.service_queriers.contains_key(ty_domain) {
@@ -2081,6 +2111,12 @@ impl Zeroconf {
                                     ServiceEvent::ServiceResolved(info),
                                 );
                             } else {
+                                if self.resolved.remove(&dns_ptr.alias) {
+                                    removed_instances
+                                        .entry(ty_domain.to_string())
+                                        .or_insert_with(HashSet::new)
+                                        .insert(dns_ptr.alias.clone());
+                                }
                                 unresolved.insert(dns_ptr.alias.clone());
                             }
                         }
@@ -2091,11 +2127,14 @@ impl Zeroconf {
 
         for instance in resolved.drain() {
             self.pending_resolves.remove(&instance);
+            self.resolved.insert(instance);
         }
 
         for instance in unresolved.drain() {
             self.add_pending_resolve(instance);
         }
+
+        self.notify_service_removal(removed_instances);
     }
 
     /// Handle incoming query packets, figure out whether and what to respond.
@@ -2610,6 +2649,42 @@ impl Zeroconf {
         self.increase_counter(Counter::RegisterResend, 1);
     }
 
+    fn exec_command_verify(&mut self, instance: String, timeout: Duration, repeating: bool) {
+        /*
+        RFC 6762 section 10.4:
+        ...
+        When the cache receives this hint that it should reconfirm some
+        record, it MUST issue two or more queries for the resource record in
+        dispute.  If no response is received within ten seconds, then, even
+        though its TTL may indicate that it is not yet due to expire, that
+        record SHOULD be promptly flushed from the cache.
+        */
+        let now = current_time_millis();
+        let expire_at = if repeating {
+            None
+        } else {
+            Some(now + timeout.as_millis() as u64)
+        };
+
+        // send query for the resource records.
+        let record_vec = self.cache.service_verify_queries(&instance, expire_at);
+
+        if !record_vec.is_empty() {
+            let query_vec: Vec<(&str, u16)> = record_vec
+                .iter()
+                .map(|(record, rr_type)| (record.as_str(), *rr_type))
+                .collect();
+            self.send_query_vec(&query_vec);
+
+            if let Some(new_expire) = expire_at {
+                self.add_timer(new_expire); // ensure a check for the new expire time.
+
+                // schedule a resend 1 second later
+                self.add_retransmission(now + 1000, Command::Verify(instance, timeout));
+            }
+        }
+    }
+
     /// Refresh cached service records with active queriers
     fn refresh_active_services(&mut self) {
         let mut query_ptr_count = 0;
@@ -2658,12 +2733,16 @@ impl Zeroconf {
 pub enum ServiceEvent {
     /// Started searching for a service type.
     SearchStarted(String),
+
     /// Found a specific (service_type, fullname).
     ServiceFound(String, String),
+
     /// Resolved a service instance with detailed info.
     ServiceResolved(ServiceInfo),
+
     /// A service instance (service_type, fullname) was removed.
     ServiceRemoved(String, String),
+
     /// Stopped searching for a service type.
     SearchStopped(String),
 }
@@ -2777,6 +2856,12 @@ enum Command {
 
     SetOption(DaemonOption),
 
+    /// Proactively confirm a DNS resource record.
+    ///
+    /// The intention is to check if a service name or IP address still valid
+    /// before its TTL expires.
+    Verify(String, Duration),
+
     Exit(Sender<DaemonStatus>),
 }
 
@@ -2797,6 +2882,7 @@ impl fmt::Display for Command {
             Self::Unregister(_, _) => write!(f, "Command Unregister"),
             Self::UnregisterResend(_, _) => write!(f, "Command UnregisterResend"),
             Self::Resolve(_, _) => write!(f, "Command Resolve"),
+            Self::Verify(_, _) => write!(f, "Command VerifyResource"),
         }
     }
 }
@@ -2971,7 +3057,7 @@ fn send_packet(packet: &[u8], addr: SocketAddr, intf: &Interface, sock: &Socket)
     let sockaddr = SockAddr::from(addr);
     match sock.send_to(packet, &sockaddr) {
         Ok(sz) => debug!("sent out {} bytes on interface {:?}", sz, intf),
-        Err(e) => error!("Failed to send to {} via {:?}: {}", addr, &intf, e),
+        Err(e) => info!("Failed to send to {} via {:?}: {}", addr, &intf, e),
     }
 }
 
@@ -3495,8 +3581,8 @@ mod tests {
         // Shutdown the server so no more responses / refreshes for addresses.
         server.shutdown().unwrap();
 
-        // Wait till hostname address record expires.
-        let timeout = Duration::from_secs(addr_ttl as u64);
+        // Wait till hostname address record expires, with 1 second grace period.
+        let timeout = Duration::from_secs(addr_ttl as u64 + 1);
         let removed = loop {
             match event_receiver.recv_timeout(timeout) {
                 Ok(HostnameResolutionEvent::AddressesRemoved(removed_host, addresses)) => {

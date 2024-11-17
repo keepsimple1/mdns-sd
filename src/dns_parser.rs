@@ -378,6 +378,13 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
         self.get_record_mut().set_expire(expire_at);
     }
 
+    /// Set expire as `expire_at` if it is sooner than the current `expire`.
+    fn set_expire_sooner(&mut self, expire_at: u64) {
+        if expire_at < self.get_expire() {
+            self.get_record_mut().set_expire(expire_at);
+        }
+    }
+
     /// Given `now`, if the record is due to refresh, this method updates the refresh time
     /// and returns the new refresh time. Otherwise, returns None.
     fn updated_refresh_time(&mut self, now: u64) -> Option<u64> {

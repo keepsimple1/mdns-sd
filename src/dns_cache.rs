@@ -108,6 +108,46 @@ impl DnsCache {
             .collect()
     }
 
+    /// Returns a list of resource records (name, rr_type) that need to be queried in order to
+    /// verify the `instance`.
+    ///
+    /// If `expire_at` is not None, the resource records' expire time will be updated.
+    pub(crate) fn service_verify_queries(
+        &mut self,
+        instance: &str,
+        expire_at: Option<u64>,
+    ) -> Vec<(String, u16)> {
+        let Some(srv_vec) = self.srv.get_mut(instance) else {
+            return Vec::new();
+        };
+
+        let mut query_vec = vec![(instance.to_string(), RR_TYPE_SRV)];
+
+        for srv in srv_vec {
+            if let Some(new_expire) = expire_at {
+                srv.set_expire_sooner(new_expire);
+            }
+
+            let Some(srv_record) = srv.any().downcast_ref::<DnsSrv>() else {
+                continue;
+            };
+
+            // Will verify addresses for the hostname.
+            query_vec.push((srv_record.host.clone(), RR_TYPE_A));
+            query_vec.push((srv_record.host.clone(), RR_TYPE_AAAA));
+
+            if let Some(new_expire) = expire_at {
+                if let Some(addrs) = self.addr.get_mut(&srv_record.host) {
+                    for addr in addrs {
+                        addr.set_expire_sooner(new_expire);
+                    }
+                }
+            }
+        }
+
+        query_vec
+    }
+
     /// Update a DNSRecord TTL if already exists, otherwise insert a new record.
     ///
     /// Returns `None` if `incoming` is invalid / unrecognized, otherwise returns
@@ -243,6 +283,7 @@ impl DnsCache {
                 let expired = addr.get_record().is_expired(now);
                 if expired {
                     if let Some(addr_record) = addr.any().downcast_ref::<DnsAddress>() {
+                        debug!("evict expired ADDR: {:?}", addr_record);
                         removed
                             .entry(addr.get_name().to_string())
                             .or_insert_with(HashSet::new)
