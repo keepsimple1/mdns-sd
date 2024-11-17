@@ -108,8 +108,11 @@ impl DnsCache {
             .collect()
     }
 
-    /// Returns a list of resource records (name, rr_type) that need to flush (verify).
-    pub(crate) fn service_flush(
+    /// Returns a list of resource records (name, rr_type) that need to be queried in order to
+    /// verify the `instance`.
+    ///
+    /// If `expire_at` is not None, the resource records' expire time will be updated.
+    pub(crate) fn service_verify_queries(
         &mut self,
         instance: &str,
         expire_at: Option<u64>,

@@ -2667,18 +2667,19 @@ impl Zeroconf {
         };
 
         // send query for the resource records.
-        let resource_vec = self.cache.service_flush(&instance, expire_at);
+        let record_vec = self.cache.service_verify_queries(&instance, expire_at);
 
-        if !resource_vec.is_empty() {
-            let query_vec: Vec<(&str, u16)> = resource_vec
+        if !record_vec.is_empty() {
+            let query_vec: Vec<(&str, u16)> = record_vec
                 .iter()
                 .map(|(record, rr_type)| (record.as_str(), *rr_type))
                 .collect();
             self.send_query_vec(&query_vec);
 
-            // schedule a resend 1 second later
             if let Some(new_expire) = expire_at {
-                self.add_timer(new_expire);
+                self.add_timer(new_expire); // ensure a check for the new expire time.
+
+                // schedule a resend 1 second later
                 self.add_retransmission(now + 1000, Command::Verify(instance, timeout));
             }
         }
