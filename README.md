@@ -32,7 +32,7 @@ The following table shows how much this implementation is compliant with RFCs re
 
 | Feature | RFC section | Compliance | Notes |
 | ------- | ----------- | ---------- | ----- |
-| One-Shot Multicast DNS Queries | RFC 6762 [section 5.1][ref1] | ❌ | because we don't support Unicast yet. |
+| One-Shot Multicast DNS Queries (i.e. Legacy Unicast Responses) | RFC 6762 [section 5.1][ref1] [section 6.7][ref9] | ❌ | because we don't support Unicast yet. |
 | Unicast Responses | RFC 6762 [section 5.4][ref2] | ❌ |
 | Known-Answer Suppression | RFC 6762 [section 7.1][ref3] | ✅ |
 | Multipacket Known Answer Suppression querier | RFC 6762 [section 7.2][ref4] | ✅ |
@@ -40,6 +40,8 @@ The following table shows how much this implementation is compliant with RFCs re
 | Probing | RFC 6762 [section 8.1][ref5] | ✅ |
 | Simultaneous Probe Tiebreaking | RFC 6762 [section 8.2][ref6] | ✅ |
 | Conflict Resolution | RFC 6762 [section 9][ref7] | ✅ | see `DnsNameChange` type |
+| Goodbye Packets | RFC 6762 [section 10.1][ref10] | ✅ |
+| Announcements to Flush Outdated Cache Entries | RFC 6762 [section 10.2][ref11] | ✅ | i.e. `cache-flush` bit |
 | Cache Flush on Failure Indication | RFC 6762 [section 10.4][ref8] | ✅ | API: `ServiceDaemon::verify()` |
 
 [ref1]: https://datatracker.ietf.org/doc/html/rfc6762#section-5.1
@@ -47,9 +49,12 @@ The following table shows how much this implementation is compliant with RFCs re
 [ref3]: https://datatracker.ietf.org/doc/html/rfc6762#section-7.1
 [ref4]: https://datatracker.ietf.org/doc/html/rfc6762#section-7.2
 [ref5]: https://datatracker.ietf.org/doc/html/rfc6762#section-8.1
-[ref6]: https://datatracker.ietf.org/doc/html/rfc6762#section-8.1
-[ref7]: https://datatracker.ietf.org/doc/html/rfc6762#section-8.1
-[ref8]: https://datatracker.ietf.org/doc/html/rfc6762#section-8.1
+[ref6]: https://datatracker.ietf.org/doc/html/rfc6762#section-8.2
+[ref7]: https://datatracker.ietf.org/doc/html/rfc6762#section-9
+[ref8]: https://datatracker.ietf.org/doc/html/rfc6762#section-10.4
+[ref9]: https://datatracker.ietf.org/doc/html/rfc6762#section-6.7
+[ref10]: https://datatracker.ietf.org/doc/html/rfc6762#section-10.1
+[ref11]: https://datatracker.ietf.org/doc/html/rfc6762#section-10.2
 
 ## License
 
