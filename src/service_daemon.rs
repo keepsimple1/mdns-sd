@@ -1081,7 +1081,7 @@ impl Zeroconf {
 
     /// Insert a new interface into the poll map and return its key.
     ///
-    /// This exist to satisfy the borrow checker
+    /// This exists to satisfy the borrow checker
     fn add_poll_impl(
         poll_ids: &mut HashMap<usize, Interface>,
         poll_id_count: &mut usize,
@@ -2929,7 +2929,7 @@ fn check_domain_suffix(name: &str) -> Result<()> {
 /// The only `<Domain>` supported are "._tcp.local." and "._udp.local.".
 ///
 /// Note: this function does not check for the length of the service name.
-/// Instead `register_service` method will check the length.
+/// Instead, `register_service` method will check the length.
 fn check_service_name(fullname: &str) -> Result<()> {
     check_domain_suffix(fullname)?;
 
