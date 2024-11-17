@@ -3581,8 +3581,8 @@ mod tests {
         // Shutdown the server so no more responses / refreshes for addresses.
         server.shutdown().unwrap();
 
-        // Wait till hostname address record expires.
-        let timeout = Duration::from_secs(addr_ttl as u64);
+        // Wait till hostname address record expires, with 1 second grace period.
+        let timeout = Duration::from_secs(addr_ttl as u64 + 1);
         let removed = loop {
             match event_receiver.recv_timeout(timeout) {
                 Ok(HostnameResolutionEvent::AddressesRemoved(removed_host, addresses)) => {
