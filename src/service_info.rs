@@ -608,23 +608,21 @@ impl fmt::Debug for TxtProperty {
     }
 }
 
-const HEX_TABLE: [u8; 16] = [
-    b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'a', b'b', b'c', b'd', b'e', b'f',
+const HEX_TABLE: [char; 16] = [
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
 ];
 
 /// Create a hex string from `slice`, with a "0x" prefix.
 ///
 /// For example, [1u8, 2u8] -> "0x0102"
 fn u8_slice_to_hex(slice: &[u8]) -> String {
-    let mut hex = Vec::with_capacity(slice.len() * 2 + 2);
-    hex.push(b'0');
-    hex.push(b'x');
-    for b in slice.iter() {
+    let mut hex = String::with_capacity(slice.len() * 2 + 2);
+    hex.push_str("0x");
+    for b in slice {
         hex.push(HEX_TABLE[(b >> 4) as usize]);
         hex.push(HEX_TABLE[(b & 0x0F) as usize]);
     }
-
-    String::from_utf8(hex).unwrap()
+    hex
 }
 
 /// This trait allows for converting inputs into [`TxtProperties`].
