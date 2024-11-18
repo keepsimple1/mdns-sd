@@ -104,6 +104,12 @@ pub const FLAGS_TC: u16 = 0x0200;
 
 pub(crate) type DnsRecordBox = Box<dyn DnsRecordExt>;
 
+impl Clone for DnsRecordBox {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
 const U16_SIZE: usize = 2;
 
 #[inline]
@@ -412,12 +418,6 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
     }
 
     fn clone_box(&self) -> DnsRecordBox;
-}
-
-impl Clone for DnsRecordBox {
-    fn clone(&self) -> Self {
-        self.clone_box()
-    }
 }
 
 #[derive(Debug, Clone)]
