@@ -153,7 +153,7 @@ impl DnsCache {
     /// Returns `None` if `incoming` is invalid / unrecognized, otherwise returns
     /// (a new record, true) or (existing record with TTL updated, false).
     ///
-    /// If need to add new timers for related records, push into `timers`.
+    /// If you need to add new timers for related records, push into `timers`.
     pub(crate) fn add_or_update(
         &mut self,
         intf: &Interface,
