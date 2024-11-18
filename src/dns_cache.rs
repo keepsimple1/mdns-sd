@@ -373,18 +373,7 @@ impl DnsCache {
     pub(crate) fn refresh_due_srv(&mut self, ty_domain: &str) -> (HashSet<String>, HashSet<u64>) {
         let now = current_time_millis();
 
-        let mut instances = vec![];
-
-        // find instance names for ty_domain.
-        for record in self.ptr.get_mut(ty_domain).into_iter().flatten() {
-            if record.get_record().is_expired(now) {
-                continue;
-            }
-
-            if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
-                instances.push(ptr.alias.clone());
-            }
-        }
+        let instances = Self::find_instance_names(&mut self.ptr, ty_domain, now);
 
         // Check SRV records.
         let mut refresh_due = HashSet::new();
@@ -392,19 +381,29 @@ impl DnsCache {
         for instance in instances {
             let refresh_timers: HashSet<u64> = self
                 .srv
-                .get_mut(&instance)
+                .get_mut(instance)
                 .into_iter()
                 .flatten()
                 .filter_map(|record| record.updated_refresh_time(now))
                 .collect();
 
             if !refresh_timers.is_empty() {
-                refresh_due.insert(instance);
+                refresh_due.insert(instance.clone());
                 new_timers.extend(refresh_timers);
             }
         }
 
         (refresh_due, new_timers)
+    }
+    
+    fn find_instance_names<'a>(from: &'a HashMap<String, Vec<DnsRecordBox>>, name: &str, now: u64) -> Vec<&'a String> {
+        from.get(name)
+            .into_iter()
+            .flatten()
+            .filter(|record| record.get_record().is_expired(now))
+            .flat_map(|record| record.any().downcast_ref::<DnsPointer>())
+            .map(|ptr| &ptr.alias)
+            .collect()
     }
 
     /// Returns the set of `host`, where refreshing the A / AAAA records is due
@@ -412,25 +411,14 @@ impl DnsCache {
     pub(crate) fn refresh_due_hosts(&mut self, ty_domain: &str) -> (HashSet<String>, HashSet<u64>) {
         let now = current_time_millis();
 
-        let mut instances = vec![];
-
-        // find instance names for ty_domain.
-        for record in self.ptr.get_mut(ty_domain).into_iter().flatten() {
-            if record.get_record().is_expired(now) {
-                continue;
-            }
-
-            if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
-                instances.push(ptr.alias.clone());
-            }
-        }
+        let instances = Self::find_instance_names(&self.ptr, ty_domain, now);
 
         // Collect hostnames we have browsers for by SRV records.
         let mut hostnames_browsed = HashSet::new();
         for instance in instances {
             let hosts: HashSet<String> = self
                 .srv
-                .get(&instance)
+                .get(instance)
                 .into_iter()
                 .flatten()
                 .filter_map(|record| {
