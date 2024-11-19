@@ -104,6 +104,12 @@ pub const FLAGS_TC: u16 = 0x0200;
 
 pub(crate) type DnsRecordBox = Box<dyn DnsRecordExt>;
 
+impl Clone for DnsRecordBox {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
 const U16_SIZE: usize = 2;
 
 #[inline]
@@ -411,13 +417,7 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
         false
     }
 
-    fn clone_box(&self) -> Box<dyn DnsRecordExt>;
-}
-
-impl Clone for Box<dyn DnsRecordExt> {
-    fn clone(&self) -> Box<dyn DnsRecordExt> {
-        self.clone_box()
-    }
+    fn clone_box(&self) -> DnsRecordBox;
 }
 
 #[derive(Debug, Clone)]
@@ -484,7 +484,7 @@ impl DnsRecordExt for DnsAddress {
         format!("{}", self.address)
     }
 
-    fn clone_box(&self) -> Box<dyn DnsRecordExt> {
+    fn clone_box(&self) -> DnsRecordBox {
         Box::new(self.clone())
     }
 }
@@ -546,7 +546,7 @@ impl DnsRecordExt for DnsPointer {
         self.alias.clone()
     }
 
-    fn clone_box(&self) -> Box<dyn DnsRecordExt> {
+    fn clone_box(&self) -> DnsRecordBox {
         Box::new(self.clone())
     }
 }
@@ -664,7 +664,7 @@ impl DnsRecordExt for DnsSrv {
         )
     }
 
-    fn clone_box(&self) -> Box<dyn DnsRecordExt> {
+    fn clone_box(&self) -> DnsRecordBox {
         Box::new(self.clone())
     }
 }
@@ -737,7 +737,7 @@ impl DnsRecordExt for DnsTxt {
         format!("{:?}", decode_txt(&self.text))
     }
 
-    fn clone_box(&self) -> Box<dyn DnsRecordExt> {
+    fn clone_box(&self) -> DnsRecordBox {
         Box::new(self.clone())
     }
 }
@@ -818,7 +818,7 @@ impl DnsRecordExt for DnsHostInfo {
         format!("cpu: {}, os: {}", self.cpu, self.os)
     }
 
-    fn clone_box(&self) -> Box<dyn DnsRecordExt> {
+    fn clone_box(&self) -> DnsRecordBox {
         Box::new(self.clone())
     }
 }
@@ -928,7 +928,7 @@ impl DnsRecordExt for DnsNSec {
         )
     }
 
-    fn clone_box(&self) -> Box<dyn DnsRecordExt> {
+    fn clone_box(&self) -> DnsRecordBox {
         Box::new(self.clone())
     }
 }
