@@ -373,7 +373,7 @@ impl DnsCache {
     pub(crate) fn refresh_due_srv(&mut self, ty_domain: &str) -> (HashSet<String>, HashSet<u64>) {
         let now = current_time_millis();
 
-        let instances = Self::find_instance_names(&mut self.ptr, ty_domain, now);
+        let instances = Self::find_instance_names(&self.ptr, ty_domain, now);
 
         // Check SRV records.
         let mut refresh_due = HashSet::new();
