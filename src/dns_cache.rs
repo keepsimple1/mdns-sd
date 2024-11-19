@@ -400,7 +400,7 @@ impl DnsCache {
         from.get(name)
             .into_iter()
             .flatten()
-            .filter(|record| record.get_record().is_expired(now))
+            .filter(|record| !record.get_record().is_expired(now))
             .flat_map(|record| record.any().downcast_ref::<DnsPointer>())
             .map(|ptr| &ptr.alias)
             .collect()
