@@ -396,8 +396,8 @@ impl DnsCache {
         (refresh_due, new_timers)
     }
     
-    fn find_instance_names<'a>(from: &'a HashMap<String, Vec<DnsRecordBox>>, name: &str, now: u64) -> Vec<&'a String> {
-        from.get(name)
+    fn find_instance_names<'a>(from: &'a HashMap<String, Vec<DnsRecordBox>>, ty_domain: &str, now: u64) -> Vec<&'a String> {
+        from.get(ty_domain)
             .into_iter()
             .flatten()
             .filter(|record| !record.get_record().is_expired(now))
