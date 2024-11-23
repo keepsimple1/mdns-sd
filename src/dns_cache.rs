@@ -373,7 +373,18 @@ impl DnsCache {
     pub(crate) fn refresh_due_srv(&mut self, ty_domain: &str) -> (HashSet<String>, HashSet<u64>) {
         let now = current_time_millis();
 
-        let instances = Self::find_instance_names(&self.ptr, ty_domain, now);
+        let instances: Vec<&String> = self
+            .ptr
+            .get(ty_domain)
+            .into_iter()
+            .flatten()
+            .filter_map(|record| {
+                record
+                    .any()
+                    .downcast_ref::<DnsPointer>()
+                    .map(|ptr| &ptr.alias)
+            })
+            .collect();
 
         // Check SRV records.
         let mut refresh_due = HashSet::new();
@@ -396,26 +407,23 @@ impl DnsCache {
         (refresh_due, new_timers)
     }
 
-    fn find_instance_names<'a>(
-        from: &'a HashMap<String, Vec<DnsRecordBox>>,
-        ty_domain: &str,
-        now: u64,
-    ) -> Vec<&'a String> {
-        from.get(ty_domain)
-            .into_iter()
-            .flatten()
-            .filter(|record| !record.get_record().is_expired(now))
-            .flat_map(|record| record.any().downcast_ref::<DnsPointer>())
-            .map(|ptr| &ptr.alias)
-            .collect()
-    }
-
     /// Returns the set of `host`, where refreshing the A / AAAA records is due
     /// for a `ty_domain`.
     pub(crate) fn refresh_due_hosts(&mut self, ty_domain: &str) -> (HashSet<String>, HashSet<u64>) {
         let now = current_time_millis();
 
-        let instances = Self::find_instance_names(&self.ptr, ty_domain, now);
+        let instances: Vec<&String> = self
+            .ptr
+            .get(ty_domain)
+            .into_iter()
+            .flatten()
+            .filter_map(|record| {
+                record
+                    .any()
+                    .downcast_ref::<DnsPointer>()
+                    .map(|ptr| &ptr.alias)
+            })
+            .collect();
 
         // Collect hostnames we have browsers for by SRV records.
         let mut hostnames_browsed = HashSet::new();
