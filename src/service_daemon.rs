@@ -563,7 +563,7 @@ impl ServiceDaemon {
                     zc.status = DaemonStatus::Shutdown;
                     return Some(command);
                 }
-                Self::exec_command(&mut zc, command, false);
+                zc.exec_command(command, false);
             }
 
             // check for repeated commands and run them if their time is up.
@@ -571,7 +571,7 @@ impl ServiceDaemon {
             while i < zc.retransmissions.len() {
                 if now >= zc.retransmissions[i].next_time {
                     let rerun = zc.retransmissions.remove(i);
-                    Self::exec_command(&mut zc, rerun.command, true);
+                    zc.exec_command(rerun.command, true);
                 } else {
                     i += 1;
                 }
@@ -621,76 +621,6 @@ impl ServiceDaemon {
                 next_ip_check = now + IP_CHECK_INTERVAL_MILLIS;
                 zc.check_ip_changes();
                 zc.add_timer(next_ip_check);
-            }
-        }
-    }
-
-    /// The entry point that executes all commands received by the daemon.
-    ///
-    /// `repeating`: whether this is a retransmission.
-    fn exec_command(zc: &mut Zeroconf, command: Command, repeating: bool) {
-        match command {
-            Command::Browse(ty, next_delay, listener) => {
-                zc.exec_command_browse(repeating, ty, next_delay, listener);
-            }
-
-            Command::ResolveHostname(hostname, next_delay, listener, timeout) => {
-                zc.exec_command_resolve_hostname(
-                    repeating, hostname, next_delay, listener, timeout,
-                );
-            }
-
-            Command::Register(service_info) => {
-                zc.register_service(service_info);
-                zc.increase_counter(Counter::Register, 1);
-            }
-
-            Command::RegisterResend(fullname, intf) => {
-                debug!("register-resend service: {fullname} on {:?}", &intf.addr);
-                zc.exec_command_register_resend(fullname, intf);
-            }
-
-            Command::Unregister(fullname, resp_s) => {
-                debug!("unregister service {} repeat {}", &fullname, &repeating);
-                zc.exec_command_unregister(repeating, fullname, resp_s);
-            }
-
-            Command::UnregisterResend(packet, ip) => {
-                zc.exec_command_unregister_resend(packet, ip);
-            }
-
-            Command::StopBrowse(ty_domain) => zc.exec_command_stop_browse(ty_domain),
-
-            Command::StopResolveHostname(hostname) => {
-                zc.exec_command_stop_resolve_hostname(hostname)
-            }
-
-            Command::Resolve(instance, try_count) => zc.exec_command_resolve(instance, try_count),
-
-            Command::GetMetrics(resp_s) => match resp_s.send(zc.counters.clone()) {
-                Ok(()) => debug!("Sent metrics to the client"),
-                Err(e) => error!("Failed to send metrics: {}", e),
-            },
-
-            Command::GetStatus(resp_s) => match resp_s.send(zc.status.clone()) {
-                Ok(()) => debug!("Sent status to the client"),
-                Err(e) => error!("Failed to send status: {}", e),
-            },
-
-            Command::Monitor(resp_s) => {
-                zc.monitors.push(resp_s);
-            }
-
-            Command::SetOption(daemon_opt) => {
-                zc.process_set_option(daemon_opt);
-            }
-
-            Command::Verify(instance_fullname, timeout) => {
-                zc.exec_command_verify(instance_fullname, timeout, repeating);
-            }
-
-            _ => {
-                error!("unexpected command: {:?}", &command);
             }
         }
     }
@@ -2398,6 +2328,76 @@ impl Zeroconf {
                         Err(e) => error!("Failed to send event: {}", e),
                     }
                 }
+            }
+        }
+    }
+
+    /// The entry point that executes all commands received by the daemon.
+    ///
+    /// `repeating`: whether this is a retransmission.
+    fn exec_command(&mut self, command: Command, repeating: bool) {
+        match command {
+            Command::Browse(ty, next_delay, listener) => {
+                self.exec_command_browse(repeating, ty, next_delay, listener);
+            }
+
+            Command::ResolveHostname(hostname, next_delay, listener, timeout) => {
+                self.exec_command_resolve_hostname(
+                    repeating, hostname, next_delay, listener, timeout,
+                );
+            }
+
+            Command::Register(service_info) => {
+                self.register_service(service_info);
+                self.increase_counter(Counter::Register, 1);
+            }
+
+            Command::RegisterResend(fullname, intf) => {
+                debug!("register-resend service: {fullname} on {:?}", &intf.addr);
+                self.exec_command_register_resend(fullname, intf);
+            }
+
+            Command::Unregister(fullname, resp_s) => {
+                debug!("unregister service {} repeat {}", &fullname, &repeating);
+                self.exec_command_unregister(repeating, fullname, resp_s);
+            }
+
+            Command::UnregisterResend(packet, ip) => {
+                self.exec_command_unregister_resend(packet, ip);
+            }
+
+            Command::StopBrowse(ty_domain) => self.exec_command_stop_browse(ty_domain),
+
+            Command::StopResolveHostname(hostname) => {
+                self.exec_command_stop_resolve_hostname(hostname)
+            }
+
+            Command::Resolve(instance, try_count) => self.exec_command_resolve(instance, try_count),
+
+            Command::GetMetrics(resp_s) => match resp_s.send(self.counters.clone()) {
+                Ok(()) => debug!("Sent metrics to the client"),
+                Err(e) => error!("Failed to send metrics: {}", e),
+            },
+
+            Command::GetStatus(resp_s) => match resp_s.send(self.status.clone()) {
+                Ok(()) => debug!("Sent status to the client"),
+                Err(e) => error!("Failed to send status: {}", e),
+            },
+
+            Command::Monitor(resp_s) => {
+                self.monitors.push(resp_s);
+            }
+
+            Command::SetOption(daemon_opt) => {
+                self.process_set_option(daemon_opt);
+            }
+
+            Command::Verify(instance_fullname, timeout) => {
+                self.exec_command_verify(instance_fullname, timeout, repeating);
+            }
+
+            _ => {
+                error!("unexpected command: {:?}", &command);
             }
         }
     }
