@@ -25,6 +25,7 @@ use std::{
 /// DNS resource record types
 /// See [RFC 1035 section 3.2.2](https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.2)
 #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
+#[non_exhaustive]
 #[repr(u16)]
 pub enum RRType {
     /// DNS record type for IPv4 address
