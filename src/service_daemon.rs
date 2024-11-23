@@ -33,8 +33,8 @@ use crate::log::{debug, error, info, warn};
 use crate::{
     dns_cache::DnsCache,
     dns_parser::{
-        current_time_millis, ip_address_to_type, rr_type_name, split_sub_domain, DnsAddress,
-        DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, RRType,
+        current_time_millis, ip_address_to_type, split_sub_domain, DnsAddress, DnsIncoming,
+        DnsOutgoing, DnsPointer, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, RRType,
         CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
     },
     error::{Error, Result},
@@ -1302,7 +1302,7 @@ impl Zeroconf {
                         // move the record to active
                         expired_probe_names.push(name.clone());
                     } else {
-                        out.add_question(name, RRType::ANY as u16);
+                        out.add_question(name, RRType::ANY);
 
                         /*
                         RFC 6762 section 8.2: https://datatracker.ietf.org/doc/html/rfc6762#section-8.2
@@ -1422,7 +1422,7 @@ impl Zeroconf {
         out.add_answer_at_time(
             DnsPointer::new(
                 info.get_type(),
-                RRType::PTR as u16,
+                RRType::PTR,
                 CLASS_IN,
                 0,
                 info.get_fullname().to_string(),
@@ -1435,7 +1435,7 @@ impl Zeroconf {
             out.add_answer_at_time(
                 DnsPointer::new(
                     sub,
-                    RRType::PTR as u16,
+                    RRType::PTR,
                     CLASS_IN,
                     0,
                     info.get_fullname().to_string(),
@@ -1501,12 +1501,12 @@ impl Zeroconf {
     }
 
     /// Sends a multicast query for `name` with `qtype`.
-    fn send_query(&self, name: &str, qtype: u16) {
+    fn send_query(&self, name: &str, qtype: RRType) {
         self.send_query_vec(&[(name, qtype)]);
     }
 
     /// Sends out a list of `questions` (i.e. DNS questions) via multicast.
-    fn send_query_vec(&self, questions: &[(&str, u16)]) {
+    fn send_query_vec(&self, questions: &[(&str, RRType)]) {
         debug!("Sending query questions: {:?}", questions);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         let now = current_time_millis();
@@ -1618,16 +1618,13 @@ impl Zeroconf {
             for record in records {
                 if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
                     if self.cache.get_addr(&srv.host).is_none() {
-                        self.send_query_vec(&[
-                            (&srv.host, RRType::A as u16),
-                            (&srv.host, RRType::AAAA as u16),
-                        ]);
+                        self.send_query_vec(&[(&srv.host, RRType::A), (&srv.host, RRType::AAAA)]);
                         return true;
                     }
                 }
             }
         } else {
-            self.send_query(instance, RRType::ANY as u16);
+            self.send_query(instance, RRType::ANY);
             return true;
         }
 
@@ -1813,7 +1810,7 @@ impl Zeroconf {
 
         /// Represents a DNS record change that involves one service instance.
         struct InstanceChange {
-            ty: u16,      // The type of DNS record for the instance.
+            ty: RRType,   // The type of DNS record for the instance.
             name: String, // The name of the record.
         }
 
@@ -1839,7 +1836,7 @@ impl Zeroconf {
 
                     let ty = dns_record.get_type();
                     let name = dns_record.get_name();
-                    if ty == RRType::PTR as u16 {
+                    if ty == RRType::PTR {
                         if self.service_queriers.contains_key(name) {
                             timers.push(dns_record.get_record().get_refresh_time());
                         }
@@ -1879,7 +1876,7 @@ impl Zeroconf {
         // Go through remaining changes to see if any hostname resolutions were found or updated.
         changes
             .iter()
-            .filter(|change| change.ty == RRType::A as u16 || change.ty == RRType::AAAA as u16)
+            .filter(|change| change.ty == RRType::A || change.ty == RRType::AAAA)
             .map(|change| change.name.clone())
             .collect::<HashSet<String>>()
             .iter()
@@ -1895,12 +1892,11 @@ impl Zeroconf {
         // Identify the instances that need to be "resolved".
         let mut updated_instances = HashSet::new();
         for update in changes {
-            let rr_type = RRType::from_u16(update.ty);
-            match rr_type {
-                Some(RRType::PTR) | Some(RRType::SRV) | Some(RRType::TXT) => {
+            match update.ty {
+                RRType::PTR | RRType::SRV | RRType::TXT => {
                     updated_instances.insert(update.name);
                 }
-                Some(RRType::A) | Some(RRType::AAAA) => {
+                RRType::A | RRType::AAAA => {
                     let instances = self.cache.get_instances_on_host(&update.name);
                     updated_instances.extend(instances);
                 }
@@ -1925,7 +1921,7 @@ impl Zeroconf {
             };
 
             // check against possible multicast forwarding
-            if answer.get_type() == RRType::A as u16 || answer.get_type() == RRType::AAAA as u16 {
+            if answer.get_type() == RRType::A || answer.get_type() == RRType::AAAA {
                 if let Some(answer_addr) = answer.any().downcast_ref::<DnsAddress>() {
                     if !answer_addr.in_subnet(intf) {
                         info!(
@@ -1944,7 +1940,7 @@ impl Zeroconf {
                 {
                     info!(
                         "found conflict name: '{name}' record: {}: {} PEER: {}",
-                        rr_type_name(record.get_type()),
+                        record.get_type(),
                         record.rdata_print(),
                         answer.rdata_print()
                     );
@@ -1952,10 +1948,9 @@ impl Zeroconf {
                     // create a new name for this record
                     // then remove the old record in probing.
                     let mut new_record = record.clone();
-                    let rr_type = RRType::from_u16(record.get_type());
-                    let new_name = match rr_type {
-                        Some(RRType::A) => hostname_change(name),
-                        Some(RRType::AAAA) => hostname_change(name),
+                    let new_name = match record.get_type() {
+                        RRType::A => hostname_change(name),
+                        RRType::AAAA => hostname_change(name),
                         _ => name_change(name),
                     };
                     new_record.get_record_mut().set_new_name(new_name);
@@ -2005,7 +2000,7 @@ impl Zeroconf {
                 info!(
                     "insert record with new name '{}' {} into probe",
                     record.get_name(),
-                    rr_type_name(record.get_type())
+                    record.get_type()
                 );
                 new_probe.insert_record(record);
 
@@ -2091,10 +2086,7 @@ impl Zeroconf {
         for question in msg.questions.iter() {
             debug!("query question: {:?}", &question);
 
-            let Some(qtype) = RRType::from_u16(question.entry.ty) else {
-                debug!("skip query qtype unknown: {}", question.entry.ty);
-                continue;
-            };
+            let qtype = question.entry.ty;
 
             if qtype == RRType::PTR {
                 for service in self.my_services.values() {
@@ -2114,7 +2106,7 @@ impl Zeroconf {
                             &msg,
                             DnsPointer::new(
                                 &question.entry.name,
-                                RRType::PTR as u16,
+                                RRType::PTR,
                                 CLASS_IN,
                                 service.get_other_ttl(),
                                 service.get_type().to_string(),
@@ -2444,7 +2436,7 @@ impl Zeroconf {
             self.query_cache_for_service(&ty, &listener);
         }
 
-        self.send_query(&ty, RRType::PTR as u16);
+        self.send_query(&ty, RRType::PTR);
         self.increase_counter(Counter::Browse, 1);
 
         let next_time = current_time_millis() + (next_delay * 1000) as u64;
@@ -2478,10 +2470,7 @@ impl Zeroconf {
             self.query_cache_for_hostname(&hostname, listener.clone());
         }
 
-        self.send_query_vec(&[
-            (&hostname, RRType::A as u16),
-            (&hostname, RRType::AAAA as u16),
-        ]);
+        self.send_query_vec(&[(&hostname, RRType::A), (&hostname, RRType::AAAA)]);
         self.increase_counter(Counter::ResolveHostname, 1);
 
         let now = current_time_millis();
@@ -2681,7 +2670,7 @@ impl Zeroconf {
         let record_vec = self.cache.service_verify_queries(&instance, expire_at);
 
         if !record_vec.is_empty() {
-            let query_vec: Vec<(&str, u16)> = record_vec
+            let query_vec: Vec<(&str, RRType)> = record_vec
                 .iter()
                 .map(|(record, rr_type)| (record.as_str(), *rr_type))
                 .collect();
@@ -2707,7 +2696,7 @@ impl Zeroconf {
             let refreshed_timers = self.cache.refresh_due_ptr(ty_domain);
             if !refreshed_timers.is_empty() {
                 debug!("sending refresh query for PTR: {}", ty_domain);
-                self.send_query(ty_domain, RRType::PTR as u16);
+                self.send_query(ty_domain, RRType::PTR);
                 query_ptr_count += 1;
                 new_timers.extend(refreshed_timers);
             }
@@ -2715,17 +2704,14 @@ impl Zeroconf {
             let (instances, timers) = self.cache.refresh_due_srv(ty_domain);
             for instance in instances.iter() {
                 debug!("sending refresh query for SRV: {}", instance);
-                self.send_query(instance, RRType::SRV as u16);
+                self.send_query(instance, RRType::SRV);
                 query_srv_count += 1;
             }
             new_timers.extend(timers);
             let (hostnames, timers) = self.cache.refresh_due_hosts(ty_domain);
             for hostname in hostnames.iter() {
                 debug!("sending refresh queries for A and AAAA:  {}", hostname);
-                self.send_query_vec(&[
-                    (hostname, RRType::A as u16),
-                    (hostname, RRType::AAAA as u16),
-                ]);
+                self.send_query_vec(&[(hostname, RRType::A), (hostname, RRType::AAAA)]);
                 query_addr_count += 2;
             }
             new_timers.extend(timers);
@@ -2821,8 +2807,8 @@ pub struct DnsNameChange {
     /// - Host name `foo.local.` becomes `foo-2.local.`
     pub new_name: String,
 
-    /// The value is one of `RR_TYPE_` constants.
-    pub rr_type: u16,
+    /// The resource record type
+    pub rr_type: RRType,
 
     /// The interface where the name conflict and its change happened.
     pub intf_name: String,
@@ -3126,7 +3112,7 @@ fn prepare_announce(
     out.add_answer_at_time(
         DnsPointer::new(
             info.get_type(),
-            RRType::PTR as u16,
+            RRType::PTR,
             CLASS_IN,
             info.get_other_ttl(),
             service_fullname.to_string(),
@@ -3139,7 +3125,7 @@ fn prepare_announce(
         out.add_answer_at_time(
             DnsPointer::new(
                 sub,
-                RRType::PTR as u16,
+                RRType::PTR,
                 CLASS_IN,
                 info.get_other_ttl(),
                 service_fullname.to_string(),
@@ -3452,7 +3438,7 @@ mod tests {
         // Invalidate the ptr from the service to the host.
         let invalidate_ptr_packet = DnsPointer::new(
             my_service.get_type(),
-            RRType::PTR as u16,
+            RRType::PTR,
             CLASS_IN,
             0,
             my_service.get_fullname().to_string(),

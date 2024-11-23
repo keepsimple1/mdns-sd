@@ -24,7 +24,7 @@ use std::{
 
 /// DNS resource record types
 /// See [RFC 1035 section 3.2.2](https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.2)
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
 #[repr(u16)]
 pub enum RRType {
     /// DNS record type for IPv4 address
@@ -72,20 +72,19 @@ impl RRType {
     }
 }
 
-/// Returns the name string of a `rr_type`.
-pub(crate) const fn rr_type_name(value: u16) -> &'static str {
-    let rr_type = RRType::from_u16(value);
-    match rr_type {
-        Some(RRType::A) => "TYPE_A",
-        Some(RRType::CNAME) => "TYPE_CNAME",
-        Some(RRType::PTR) => "TYPE_PTR",
-        Some(RRType::HINFO) => "TYPE_HINFO",
-        Some(RRType::TXT) => "TYPE_TXT",
-        Some(RRType::AAAA) => "TYPE_AAAA",
-        Some(RRType::SRV) => "TYPE_SRV",
-        Some(RRType::NSEC) => "TYPE_NSEC",
-        Some(RRType::ANY) => "TYPE_ANY",
-        _ => "unknown",
+impl fmt::Display for RRType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RRType::A => write!(f, "TYPE_A"),
+            RRType::CNAME => write!(f, "TYPE_CNAME"),
+            RRType::PTR => write!(f, "TYPE_PTR"),
+            RRType::HINFO => write!(f, "TYPE_HINFO"),
+            RRType::TXT => write!(f, "TYPE_TXT"),
+            RRType::AAAA => write!(f, "TYPE_AAAA"),
+            RRType::SRV => write!(f, "TYPE_SRV"),
+            RRType::NSEC => write!(f, "TYPE_NSEC"),
+            RRType::ANY => write!(f, "TYPE_ANY"),
+        }
     }
 }
 
@@ -137,23 +136,23 @@ impl Clone for DnsRecordBox {
 const U16_SIZE: usize = 2;
 
 #[inline]
-pub const fn ip_address_to_type(address: &IpAddr) -> u16 {
+pub const fn ip_address_to_type(address: &IpAddr) -> RRType {
     match address {
-        IpAddr::V4(_) => RRType::A as u16,
-        IpAddr::V6(_) => RRType::AAAA as u16,
+        IpAddr::V4(_) => RRType::A,
+        IpAddr::V6(_) => RRType::AAAA,
     }
 }
 
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct DnsEntry {
     pub(crate) name: String, // always lower case.
-    pub(crate) ty: u16,
+    pub(crate) ty: RRType,
     class: u16,
     cache_flush: bool,
 }
 
 impl DnsEntry {
-    const fn new(name: String, ty: u16, class: u16) -> Self {
+    const fn new(name: String, ty: RRType, class: u16) -> Self {
         Self {
             name,
             ty,
@@ -188,7 +187,7 @@ pub struct DnsRecord {
 }
 
 impl DnsRecord {
-    fn new(name: &str, ty: u16, class: u16, ttl: u32) -> Self {
+    fn new(name: &str, ty: RRType, class: u16, ttl: u32) -> Self {
         let created = current_time_millis();
 
         // From RFC 6762 section 5.2:
@@ -386,7 +385,7 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
         self.get_record().get_name()
     }
 
-    fn get_type(&self) -> u16 {
+    fn get_type(&self) -> RRType {
         self.get_record().entry.ty
     }
 
@@ -451,7 +450,7 @@ pub struct DnsAddress {
 }
 
 impl DnsAddress {
-    pub(crate) fn new(name: &str, ty: u16, class: u16, ttl: u32, address: IpAddr) -> Self {
+    pub(crate) fn new(name: &str, ty: RRType, class: u16, ttl: u32, address: IpAddr) -> Self {
         let record = DnsRecord::new(name, ty, class, ttl);
         Self { record, address }
     }
@@ -521,7 +520,7 @@ pub struct DnsPointer {
 }
 
 impl DnsPointer {
-    pub(crate) fn new(name: &str, ty: u16, class: u16, ttl: u32, alias: String) -> Self {
+    pub(crate) fn new(name: &str, ty: RRType, class: u16, ttl: u32, alias: String) -> Self {
         let record = DnsRecord::new(name, ty, class, ttl);
         Self { record, alias }
     }
@@ -597,7 +596,7 @@ impl DnsSrv {
         port: u16,
         host: String,
     ) -> Self {
-        let record = DnsRecord::new(name, RRType::SRV as u16, class, ttl);
+        let record = DnsRecord::new(name, RRType::SRV, class, ttl);
         Self {
             record,
             priority,
@@ -713,7 +712,7 @@ pub struct DnsTxt {
 
 impl DnsTxt {
     pub(crate) fn new(name: &str, class: u16, ttl: u32, text: Vec<u8>) -> Self {
-        let record = DnsRecord::new(name, RRType::TXT as u16, class, ttl);
+        let record = DnsRecord::new(name, RRType::TXT, class, ttl);
         Self { record, text }
     }
 }
@@ -786,7 +785,7 @@ struct DnsHostInfo {
 }
 
 impl DnsHostInfo {
-    fn new(name: &str, ty: u16, class: u16, ttl: u32, cpu: String, os: String) -> Self {
+    fn new(name: &str, ty: RRType, class: u16, ttl: u32, cpu: String, os: String) -> Self {
         let record = DnsRecord::new(name, ty, class, ttl);
         Self { record, cpu, os }
     }
@@ -861,7 +860,7 @@ pub struct DnsNSec {
 
 impl DnsNSec {
     fn new(name: &str, class: u16, ttl: u32, next_domain: String, type_bitmap: Vec<u8>) -> Self {
-        let record = DnsRecord::new(name, RRType::NSEC as u16, class, ttl);
+        let record = DnsRecord::new(name, RRType::NSEC, class, ttl);
         Self {
             record,
             next_domain,
@@ -990,7 +989,7 @@ impl DnsOutPacket {
 
     fn write_question(&mut self, question: &DnsQuestion) {
         self.write_name(&question.entry.name);
-        self.write_short(question.entry.ty);
+        self.write_short(question.entry.ty as u16);
         self.write_short(question.entry.class);
     }
 
@@ -1003,7 +1002,7 @@ impl DnsOutPacket {
 
         let record = record_ext.get_record();
         self.write_name(record.get_name());
-        self.write_short(record.entry.ty);
+        self.write_short(record.entry.ty as u16);
         if record.entry.cache_flush {
             // check "multicast"
             self.write_short(record.entry.class | CLASS_CACHE_FLUSH);
@@ -1330,7 +1329,7 @@ impl DnsOutgoing {
             msg,
             DnsPointer::new(
                 service.get_type(),
-                RRType::PTR as u16,
+                RRType::PTR,
                 CLASS_IN,
                 service.get_other_ttl(),
                 service_fullname.to_string(),
@@ -1346,7 +1345,7 @@ impl DnsOutgoing {
             debug!("Adding subdomain {}", sub);
             self.add_additional_answer(DnsPointer::new(
                 sub,
-                RRType::PTR as u16,
+                RRType::PTR,
                 CLASS_IN,
                 service.get_other_ttl(),
                 service_fullname.to_string(),
@@ -1383,7 +1382,7 @@ impl DnsOutgoing {
         }
     }
 
-    pub(crate) fn add_question(&mut self, name: &str, qtype: u16) {
+    pub(crate) fn add_question(&mut self, name: &str, qtype: RRType) {
         let q = DnsQuestion {
             entry: DnsEntry::new(name.to_string(), qtype, CLASS_IN),
         };
@@ -1586,8 +1585,15 @@ impl DnsIncoming {
             let class = u16_from_be_slice(&data[2..4]);
             self.offset += 4;
 
+            let Some(rr_type) = RRType::from_u16(ty) else {
+                return Err(Error::Msg(format!(
+                    "DNS incoming: question idx {} qtype unknown: {}",
+                    i, ty
+                )));
+            };
+
             self.questions.push(DnsQuestion {
-                entry: DnsEntry::new(name, ty, class),
+                entry: DnsEntry::new(name, rr_type, class),
             });
         }
         Ok(())
@@ -1677,77 +1683,79 @@ impl DnsIncoming {
             }
 
             // decode RDATA based on the record type.
-            let rr_type = RRType::from_u16(ty);
-            let rec: Option<DnsRecordBox> = match rr_type {
-                Some(RRType::CNAME) | Some(RRType::PTR) => Some(Box::new(DnsPointer::new(
-                    &name,
-                    ty,
-                    class,
-                    ttl,
-                    self.read_name()?,
-                ))),
-                Some(RRType::TXT) => Some(Box::new(DnsTxt::new(
-                    &name,
-                    class,
-                    ttl,
-                    self.read_vec(rdata_len),
-                ))),
-                Some(RRType::SRV) => Some(Box::new(DnsSrv::new(
-                    &name,
-                    class,
-                    ttl,
-                    self.read_u16()?,
-                    self.read_u16()?,
-                    self.read_u16()?,
-                    self.read_name()?,
-                ))),
-                Some(RRType::HINFO) => Some(Box::new(DnsHostInfo::new(
-                    &name,
-                    ty,
-                    class,
-                    ttl,
-                    self.read_char_string(),
-                    self.read_char_string(),
-                ))),
-                Some(RRType::A) => Some(Box::new(DnsAddress::new(
-                    &name,
-                    ty,
-                    class,
-                    ttl,
-                    self.read_ipv4().into(),
-                ))),
-                Some(RRType::AAAA) => Some(Box::new(DnsAddress::new(
-                    &name,
-                    ty,
-                    class,
-                    ttl,
-                    self.read_ipv6().into(),
-                ))),
-                Some(RRType::NSEC) => Some(Box::new(DnsNSec::new(
-                    &name,
-                    class,
-                    ttl,
-                    self.read_name()?,
-                    self.read_type_bitmap()?,
-                ))),
-                _ => {
-                    debug!("Unknown DNS record type: {} name: {}", ty, &name);
-                    self.offset += rdata_len;
-                    None
-                }
-            };
+            let rec: Option<DnsRecordBox> = match RRType::from_u16(ty) {
+                None => None,
 
-            // sanity check.
-            if self.offset != next_offset {
-                return Err(Error::Msg(format!(
-                    "read_rr_records: decode offset error for RData type {} record: {:?} offset: {} expected offset: {}",
-                    ty, &rec, self.offset, next_offset,
-                )));
-            }
+                Some(rr_type) => match rr_type {
+                    RRType::CNAME | RRType::PTR => Some(Box::new(DnsPointer::new(
+                        &name,
+                        rr_type,
+                        class,
+                        ttl,
+                        self.read_name()?,
+                    ))),
+                    RRType::TXT => Some(Box::new(DnsTxt::new(
+                        &name,
+                        class,
+                        ttl,
+                        self.read_vec(rdata_len),
+                    ))),
+                    RRType::SRV => Some(Box::new(DnsSrv::new(
+                        &name,
+                        class,
+                        ttl,
+                        self.read_u16()?,
+                        self.read_u16()?,
+                        self.read_u16()?,
+                        self.read_name()?,
+                    ))),
+                    RRType::HINFO => Some(Box::new(DnsHostInfo::new(
+                        &name,
+                        rr_type,
+                        class,
+                        ttl,
+                        self.read_char_string(),
+                        self.read_char_string(),
+                    ))),
+                    RRType::A => Some(Box::new(DnsAddress::new(
+                        &name,
+                        rr_type,
+                        class,
+                        ttl,
+                        self.read_ipv4().into(),
+                    ))),
+                    RRType::AAAA => Some(Box::new(DnsAddress::new(
+                        &name,
+                        rr_type,
+                        class,
+                        ttl,
+                        self.read_ipv6().into(),
+                    ))),
+                    RRType::NSEC => Some(Box::new(DnsNSec::new(
+                        &name,
+                        class,
+                        ttl,
+                        self.read_name()?,
+                        self.read_type_bitmap()?,
+                    ))),
+                    _ => None,
+                },
+            };
 
             if let Some(record) = rec {
                 debug!("read_rr_records: {:?}", &record);
                 rr_records.push(record);
+            } else {
+                debug!("Unsupported DNS record type: {} name: {}", ty, &name);
+                self.offset += rdata_len;
+            }
+
+            // sanity check.
+            if self.offset != next_offset {
+                return Err(Error::Msg(format!(
+                    "read_rr_records: decode offset error for RData type {} offset: {} expected offset: {}",
+                    ty, self.offset, next_offset,
+                )));
             }
         }
 
@@ -1994,7 +2002,7 @@ mod tests {
     fn test_read_name_invalid_length() {
         let name = "test_read";
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
-        out.add_question(name, RRType::PTR as u16);
+        out.add_question(name, RRType::PTR);
         let data = out.to_data_on_wire().remove(0);
 
         // construct invalid data.
@@ -2033,7 +2041,7 @@ mod tests {
     fn test_read_name_compression_loop() {
         let name = "test_loop";
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
-        out.add_question(name, RRType::PTR as u16);
+        out.add_question(name, RRType::PTR);
         let mut data = out.to_data_on_wire().remove(0);
 
         let name_length_offset = 12; // start of the name in the message.
@@ -2216,7 +2224,7 @@ mod tests {
     #[test]
     fn test_packet_size() {
         let mut outgoing = DnsOutgoing::new(FLAGS_QR_QUERY);
-        outgoing.add_question("test_packet_size", RRType::PTR as u16);
+        outgoing.add_question("test_packet_size", RRType::PTR);
 
         let packet = outgoing.to_packets().remove(0);
         println!("packet size: {}", packet.size);
@@ -2230,12 +2238,12 @@ mod tests {
     fn test_querier_known_answer_multi_packet() {
         let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
         let name = "test_multi_packet._udp.local.";
-        query.add_question(name, RRType::PTR as u16);
+        query.add_question(name, RRType::PTR);
 
         let known_answer_count = 400;
         for i in 0..known_answer_count {
             let alias = format!("instance{}.{}", i, name);
-            let answer = DnsPointer::new(name, RRType::PTR as u16, CLASS_IN, 0, alias);
+            let answer = DnsPointer::new(name, RRType::PTR, CLASS_IN, 0, alias);
             query.add_additional_answer(answer);
         }
 

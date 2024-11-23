@@ -115,12 +115,12 @@ impl DnsCache {
         &mut self,
         instance: &str,
         expire_at: Option<u64>,
-    ) -> Vec<(String, u16)> {
+    ) -> Vec<(String, RRType)> {
         let Some(srv_vec) = self.srv.get_mut(instance) else {
             return Vec::new();
         };
 
-        let mut query_vec = vec![(instance.to_string(), RRType::SRV as u16)];
+        let mut query_vec = vec![(instance.to_string(), RRType::SRV)];
 
         for srv in srv_vec {
             if let Some(new_expire) = expire_at {
@@ -132,8 +132,8 @@ impl DnsCache {
             };
 
             // Will verify addresses for the hostname.
-            query_vec.push((srv_record.host.clone(), RRType::A as u16));
-            query_vec.push((srv_record.host.clone(), RRType::AAAA as u16));
+            query_vec.push((srv_record.host.clone(), RRType::A));
+            query_vec.push((srv_record.host.clone(), RRType::AAAA));
 
             if let Some(new_expire) = expire_at {
                 if let Some(addrs) = self.addr.get_mut(&srv_record.host) {
@@ -160,11 +160,10 @@ impl DnsCache {
         timers: &mut Vec<u64>,
     ) -> Option<(&DnsRecordBox, bool)> {
         let entry_name = incoming.get_name().to_string();
-        let incoming_rrtype = RRType::from_u16(incoming.get_type())?;
 
         // If it is PTR with subtype, store a mapping from the instance fullname
         // to the subtype in this cache.
-        if incoming_rrtype == RRType::PTR {
+        if incoming.get_type() == RRType::PTR {
             let (_, subtype_opt) = split_sub_domain(&entry_name);
             if let Some(subtype) = subtype_opt {
                 if let Some(ptr) = incoming.any().downcast_ref::<DnsPointer>() {
@@ -176,7 +175,7 @@ impl DnsCache {
         }
 
         // get the existing records for the type.
-        let record_vec = match incoming_rrtype {
+        let record_vec = match incoming.get_type() {
             RRType::PTR => self.ptr.entry(entry_name).or_default(),
             RRType::SRV => self.srv.entry(entry_name).or_default(),
             RRType::TXT => self.txt.entry(entry_name).or_default(),
@@ -208,7 +207,7 @@ impl DnsCache {
                     should_flush = true;
 
                     // additional checks for address records.
-                    if rtype == RRType::A as u16 || rtype == RRType::AAAA as u16 {
+                    if rtype == RRType::A || rtype == RRType::AAAA {
                         if let Some(addr) = r.any().downcast_ref::<DnsAddress>() {
                             if let Some(addr_b) = incoming.any().downcast_ref::<DnsAddress>() {
                                 should_flush =
@@ -254,11 +253,11 @@ impl DnsCache {
     pub(crate) fn remove(&mut self, record: &DnsRecordBox) -> bool {
         let mut found = false;
         let record_name = record.get_name();
-        let record_vec = match RRType::from_u16(record.get_type()) {
-            Some(RRType::PTR) => self.ptr.get_mut(record_name),
-            Some(RRType::SRV) => self.srv.get_mut(record_name),
-            Some(RRType::TXT) => self.txt.get_mut(record_name),
-            Some(RRType::A) | Some(RRType::AAAA) => self.addr.get_mut(record_name),
+        let record_vec = match record.get_type() {
+            RRType::PTR => self.ptr.get_mut(record_name),
+            RRType::SRV => self.srv.get_mut(record_name),
+            RRType::TXT => self.txt.get_mut(record_name),
+            RRType::A | RRType::AAAA => self.addr.get_mut(record_name),
             _ => return found,
         };
         if let Some(record_vec) = record_vec {
@@ -497,14 +496,10 @@ impl DnsCache {
     pub(crate) fn get_known_answers<'a>(
         &'a self,
         name: &str,
-        qtype: u16,
+        qtype: RRType,
         now: u64,
     ) -> Vec<&'a DnsRecordBox> {
-        let Some(rr_type) = RRType::from_u16(qtype) else {
-            return Vec::new();
-        };
-
-        let records_opt = match rr_type {
+        let records_opt = match qtype {
             RRType::PTR => self.get_ptr(name),
             RRType::SRV => self.get_srv(name),
             RRType::A | RRType::AAAA => self.get_addr(name),
