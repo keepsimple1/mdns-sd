@@ -378,6 +378,7 @@ impl DnsCache {
             .get(ty_domain)
             .into_iter()
             .flatten()
+            .filter(|record| !record.get_record().is_expired(now))
             .filter_map(|record| {
                 record
                     .any()
@@ -417,6 +418,7 @@ impl DnsCache {
             .get(ty_domain)
             .into_iter()
             .flatten()
+            .filter(|record| !record.get_record().is_expired(now))
             .filter_map(|record| {
                 record
                     .any()
