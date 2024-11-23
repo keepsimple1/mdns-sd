@@ -1654,9 +1654,14 @@ fn test_name_tiebreaking() {
     // Verify that we have resolve two services instead of one.
     assert_eq!(resolved_services.len(), 2);
 
-    // Verify that server2 was resolved first, i.e. won the tiebreaking.
-    let first_addrs = resolved_services[0].get_addresses();
-    assert_eq!(first_addrs.iter().next().unwrap(), &ip_addr2);
+    // Verify that server2 (its ip_addr2) won the tiebreaking for the hostname.
+    for resolved_service in resolved_services {
+        if resolved_service.get_hostname() == host_name {
+            let service_addr = resolved_service.get_addresses().iter().next().unwrap();
+            assert_eq!(service_addr, &ip_addr2);
+            println!("server2 won the tiebreaking");
+        }
+    }
 }
 
 #[test]
