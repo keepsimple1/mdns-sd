@@ -151,10 +151,7 @@ mod error;
 mod service_daemon;
 mod service_info;
 
-pub use dns_parser::{
-    RR_TYPE_A, RR_TYPE_AAAA, RR_TYPE_ANY, RR_TYPE_CNAME, RR_TYPE_HINFO, RR_TYPE_NSEC, RR_TYPE_PTR,
-    RR_TYPE_SRV, RR_TYPE_TXT,
-};
+pub use dns_parser::RRType;
 pub use error::{Error, Result};
 pub use service_daemon::{
     DaemonEvent, DaemonStatus, DnsNameChange, HostnameResolutionEvent, IfKind, Metrics,
