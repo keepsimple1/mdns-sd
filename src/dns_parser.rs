@@ -22,7 +22,8 @@ use std::{
     time::SystemTime,
 };
 
-/// DNS resource record types
+/// DNS resource record types, stored as `u16`. Can do `as u16` when needed.
+///
 /// See [RFC 1035 section 3.2.2](https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.2)
 #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
 #[non_exhaustive]
@@ -57,6 +58,7 @@ pub enum RRType {
 }
 
 impl RRType {
+    /// Converts `u16` into `RRType` if possible.
     pub const fn from_u16(value: u16) -> Option<RRType> {
         match value {
             1 => Some(RRType::A),
