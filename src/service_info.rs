@@ -3,7 +3,7 @@
 #[cfg(feature = "logging")]
 use crate::log::{error, info};
 use crate::{
-    dns_parser::{rr_type_name, split_sub_domain, DnsRecordBox, DnsRecordExt, DnsSrv, RR_TYPE_SRV},
+    dns_parser::{split_sub_domain, DnsRecordBox, DnsRecordExt, DnsSrv, RRType},
     Error, Result,
 };
 use if_addrs::{IfAddr, Interface};
@@ -938,7 +938,7 @@ impl DnsRegistry {
                 if answer.matches(record.as_ref()) {
                     info!(
                         "found active record {} {}",
-                        rr_type_name(answer.get_type()),
+                        answer.get_type(),
                         answer.get_name(),
                     );
                     return true;
@@ -960,7 +960,7 @@ impl DnsRegistry {
             if answer.matches(record.as_ref()) {
                 info!(
                     "found existing record {} in probe of '{}'",
-                    rr_type_name(answer.get_type()),
+                    answer.get_type(),
                     answer.get_name(),
                 );
                 probe.waiting_services.insert(service_name.to_string());
@@ -970,7 +970,7 @@ impl DnsRegistry {
 
         info!(
             "insert record {} into probe of {}",
-            rr_type_name(answer.get_type()),
+            answer.get_type(),
             answer.get_name(),
         );
         probe.insert_record(answer.clone_box());
@@ -993,7 +993,7 @@ impl DnsRegistry {
 
         for (_name, probe) in self.probing.iter_mut() {
             probe.records.retain(|record| {
-                if record.get_type() == RR_TYPE_SRV {
+                if record.get_type() == RRType::SRV {
                     if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
                         if srv.host == original {
                             let mut new_record = srv.clone();
@@ -1009,7 +1009,7 @@ impl DnsRegistry {
 
         for (_name, records) in self.active.iter_mut() {
             records.retain(|record| {
-                if record.get_type() == RR_TYPE_SRV {
+                if record.get_type() == RRType::SRV {
                     if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
                         if srv.host == original {
                             let mut new_record = srv.clone();
@@ -1041,7 +1041,7 @@ impl DnsRegistry {
 
             info!(
                 "insert record {} with new hostname {new_name} into probe for: {}",
-                rr_type_name(record.get_type()),
+                record.get_type(),
                 record.get_name()
             );
             probe.insert_record(Box::new(record));
