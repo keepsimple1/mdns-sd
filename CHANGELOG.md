@@ -7,6 +7,7 @@ There are no breaking changes in API. Bump the minor version due to new features
 * Support name probing and conflict resolution [RFC 6762](https://datatracker.ietf.org/doc/html/rfc6762#section-8)
 * Support service liveness checking via `verify` API. [RFC 6762](https://datatracker.ietf.org/doc/html/rfc6762#section-10.4)
 * rustc version changed to 1.65.0
+* performance improvements and doc updates.
 
 ## All changes
 
