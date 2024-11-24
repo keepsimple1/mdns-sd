@@ -1,3 +1,28 @@
+# Version 0.12.0 (2024-11-24)
+
+There are no breaking changes in API. Bump the minor version due to new features and the change of rustc version.
+
+## Highlights
+
+* Support name probing and conflict resolution [RFC 6762](https://datatracker.ietf.org/doc/html/rfc6762#section-8)
+* Support service liveness checking via `verify` API. [RFC 6762](https://datatracker.ietf.org/doc/html/rfc6762#section-10.4)
+* rustc version changed to 1.65.0
+
+## All changes
+
+* 7f6c5e9 perf: avoid cloning in filtering ptr (#272) (CosminPerRam)
+* e185d6f refactoring: define an enum for DNS resource record types (#274) (keepsimple1)
+* d117f4f refactoring: move exec_command into Zeroconf (#273) (keepsimple1)
+* 39acd80 feat: replace remaining Box<dyn DnsRecordExt> with type (#271) (CosminPerRam)
+* b50fe8c perf: optimize u8_slice_to_hex by replacing Vec with String (#270) (CosminPerRam)
+* db545b1 doc: some spelling fixes (#269) (CosminPerRam)
+* 7328f45 doc: add a table of RFC compliance details (#268) (keepsimple1)
+* 1ade666 feat: verify to support Cache Flush on Failure Indication (#267) (keepsimple1)
+* 8b63fd7 feat: support name probing and conflict resolution (#265) (keepsimple1)
+* 429ecde dev-test: enhance test case for ipv4 only auto addr (#263) (keepsimple1)
+* f902cf2 register service: apply interface selection for auto IP addr (#262) (keepsimple1)
+* 0381e30 dns_cache: address record should only flush on the same network  (#261) (keepsimple1)
+
 # Version 0.11.5 (2024-09-28)
 
 This is a bugfix release.
