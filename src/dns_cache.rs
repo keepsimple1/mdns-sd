@@ -3,7 +3,7 @@
 //! This is an internal implementation, not visible to the public API.
 
 #[cfg(feature = "logging")]
-use crate::log::debug;
+use crate::log::trace;
 use crate::{
     dns_parser::{
         current_time_millis, split_sub_domain, DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, RRType,
@@ -218,7 +218,7 @@ impl DnsCache {
                 }
 
                 if should_flush {
-                    debug!("FLUSH one record: {:?}", &r);
+                    trace!("FLUSH one record: {:?}", &r);
                     let new_expire = now + 1000;
                     r.set_expire(new_expire);
 
@@ -282,7 +282,7 @@ impl DnsCache {
                 let expired = addr.get_record().is_expired(now);
                 if expired {
                     if let Some(addr_record) = addr.any().downcast_ref::<DnsAddress>() {
-                        debug!("evict expired ADDR: {:?}", addr_record);
+                        trace!("evict expired ADDR: {:?}", addr_record);
                         removed
                             .entry(addr.get_name().to_string())
                             .or_insert_with(HashSet::new)
@@ -317,7 +317,7 @@ impl DnsCache {
                         srv_records.retain(|srv| {
                             let expired = srv.get_record().is_expired(now);
                             if expired {
-                                debug!("expired SRV: {}: {:?}", ty_domain, srv);
+                                trace!("expired SRV: {}: {:?}", ty_domain, srv);
                                 expired_instances
                                     .entry(ty_domain.to_string())
                                     .or_insert_with(HashSet::new)
@@ -339,7 +339,7 @@ impl DnsCache {
                 let expired = x.get_record().is_expired(now);
                 if expired {
                     if let Some(dns_ptr) = x.any().downcast_ref::<DnsPointer>() {
-                        debug!("expired PTR: domain:{ty_domain} record: {:?}", dns_ptr);
+                        trace!("expired PTR: domain:{ty_domain} record: {:?}", dns_ptr);
                         expired_instances
                             .entry(ty_domain.to_string())
                             .or_insert_with(HashSet::new)
