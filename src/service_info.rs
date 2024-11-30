@@ -1,7 +1,7 @@
 //! Define `ServiceInfo` to represent a service and its operations.
 
 #[cfg(feature = "logging")]
-use crate::log::{error, info};
+use crate::log::debug;
 use crate::{
     dns_parser::{split_sub_domain, DnsRecordBox, DnsRecordExt, DnsSrv, RRType},
     Error, Result,
@@ -715,7 +715,7 @@ pub(crate) fn decode_txt(txt: &[u8]) -> Vec<TxtProperty> {
 
         let offset_end = offset + length;
         if offset_end > txt.len() {
-            error!("DNS TXT record contains invalid data: Size given for property would be out of range. (offset={}, length={}, offset_end={}, record length={})", offset, length, offset_end, txt.len());
+            debug!("DNS TXT record contains invalid data: Size given for property would be out of range. (offset={}, length={}, offset_end={}, record length={})", offset, length, offset_end, txt.len());
             break; // Skipping the rest of the record content, as the size for this property would already be out of range.
         }
         let kv_bytes = &txt[offset..offset_end];
@@ -734,7 +734,7 @@ pub(crate) fn decode_txt(txt: &[u8]) -> Vec<TxtProperty> {
                     val: v,
                 });
             }
-            Err(e) => error!("failed to convert to String from key: {}", e),
+            Err(e) => debug!("failed to convert to String from key: {}", e),
         }
 
         offset += length;
@@ -936,7 +936,7 @@ impl DnsRegistry {
         if let Some(active_records) = self.active.get(answer.get_name()) {
             for record in active_records.iter() {
                 if answer.matches(record.as_ref()) {
-                    info!(
+                    debug!(
                         "found active record {} {}",
                         answer.get_type(),
                         answer.get_name(),
@@ -950,7 +950,7 @@ impl DnsRegistry {
             .probing
             .entry(answer.get_name().to_string())
             .or_insert_with(|| {
-                info!("new probe of {}", answer.get_name());
+                debug!("new probe of {}", answer.get_name());
                 Probe::new(start_time)
             });
 
@@ -958,7 +958,7 @@ impl DnsRegistry {
 
         for record in probe.records.iter() {
             if answer.matches(record.as_ref()) {
-                info!(
+                debug!(
                     "found existing record {} in probe of '{}'",
                     answer.get_type(),
                     answer.get_name(),
@@ -968,7 +968,7 @@ impl DnsRegistry {
             }
         }
 
-        info!(
+        debug!(
             "insert record {} into probe of {}",
             answer.get_type(),
             answer.get_name(),
@@ -1039,7 +1039,7 @@ impl DnsRegistry {
                 }
             };
 
-            info!(
+            debug!(
                 "insert record {} with new hostname {new_name} into probe for: {}",
                 record.get_type(),
                 record.get_name()

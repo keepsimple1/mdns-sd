@@ -5,7 +5,7 @@
 //! [DnsOutPacket] is the encoded one packet for [DnsOutgoing].
 
 #[cfg(feature = "logging")]
-use crate::log::debug;
+use crate::log::trace;
 use crate::{
     service_info::{decode_txt, valid_ip_on_intf, DnsRegistry},
     Error, Result, ServiceInfo,
@@ -248,9 +248,10 @@ impl DnsRecord {
             return false;
         }
 
-        debug!(
+        trace!(
             "{} qtype {} is due to refresh",
-            &self.entry.name, self.entry.ty
+            &self.entry.name,
+            self.entry.ty
         );
 
         // From RFC 6762 section 5.2:
@@ -1252,7 +1253,7 @@ impl DnsOutgoing {
 
     //    o  All address records (type "A" and "AAAA") named in the SRV rdata.
     pub(crate) fn add_additional_answer(&mut self, answer: impl DnsRecordExt + 'static) {
-        debug!("add_additional_answer: {:?}", &answer);
+        trace!("add_additional_answer: {:?}", &answer);
         self.additionals.push(Box::new(answer));
     }
 
@@ -1272,9 +1273,9 @@ impl DnsOutgoing {
         msg: &DnsIncoming,
         answer: impl DnsRecordExt + Send + 'static,
     ) -> bool {
-        debug!("Check for add_answer");
+        trace!("Check for add_answer");
         if answer.suppressed_by(msg) {
-            debug!("my answer is suppressed by incoming msg");
+            trace!("my answer is suppressed by incoming msg");
             self.known_answer_count += 1;
             return false;
         }
@@ -1291,7 +1292,7 @@ impl DnsOutgoing {
         now: u64,
     ) -> bool {
         if now == 0 || !answer.get_record().is_expired(now) {
-            debug!("add_answer push: {:?}", &answer);
+            trace!("add_answer push: {:?}", &answer);
             self.answers.push((Box::new(answer), now));
             return true;
         }
@@ -1313,7 +1314,7 @@ impl DnsOutgoing {
     ) {
         let intf_addrs = service.get_addrs_on_intf(intf);
         if intf_addrs.is_empty() {
-            debug!("No addrs on LAN of intf {:?}", intf);
+            trace!("No addrs on LAN of intf {:?}", intf);
             return;
         }
 
@@ -1340,12 +1341,12 @@ impl DnsOutgoing {
         );
 
         if !ptr_added {
-            debug!("answer was not added for msg {:?}", msg);
+            trace!("answer was not added for msg {:?}", msg);
             return;
         }
 
         if let Some(sub) = service.get_subtype() {
-            debug!("Adding subdomain {}", sub);
+            trace!("Adding subdomain {}", sub);
             self.add_additional_answer(DnsPointer::new(
                 sub,
                 RRType::PTR,
@@ -1560,7 +1561,7 @@ impl DnsIncoming {
 
         self.offset = MSG_HEADER_LEN;
 
-        debug!(
+        trace!(
             "read_header: id {}, {} questions {} answers {} authorities {} additionals",
             self.id,
             self.num_questions,
@@ -1572,7 +1573,7 @@ impl DnsIncoming {
     }
 
     fn read_questions(&mut self) -> Result<()> {
-        debug!("read_questions: {}", &self.num_questions);
+        trace!("read_questions: {}", &self.num_questions);
         for i in 0..self.num_questions {
             let name = self.read_name()?;
 
@@ -1619,7 +1620,7 @@ impl DnsIncoming {
 
     /// Decodes a sequence of RR records (in answers, authorities and additionals).
     fn read_rr_records(&mut self, count: u16) -> Result<Vec<DnsRecordBox>> {
-        debug!("read_rr_records: {}", count);
+        trace!("read_rr_records: {}", count);
         let mut rr_records = Vec::new();
 
         // RFC 1035: https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.1
@@ -1746,10 +1747,10 @@ impl DnsIncoming {
             };
 
             if let Some(record) = rec {
-                debug!("read_rr_records: {:?}", &record);
+                trace!("read_rr_records: {:?}", &record);
                 rr_records.push(record);
             } else {
-                debug!("Unsupported DNS record type: {} name: {}", ty, &name);
+                trace!("Unsupported DNS record type: {} name: {}", ty, &name);
                 self.offset += rdata_len;
             }
 
