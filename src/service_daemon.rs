@@ -43,7 +43,7 @@ use crate::{
 };
 use flume::{bounded, Sender, TrySendError};
 use if_addrs::{IfAddr, Interface};
-use polling::Poller;
+use polling::{Events, Poller};
 use socket2::{SockAddr, Socket};
 use std::{
     cmp::{self, Reverse},
@@ -436,7 +436,7 @@ impl ServiceDaemon {
         }
     }
 
-    fn handle_poller_events(zc: &mut Zeroconf, events: &[polling::Event]) {
+    fn handle_poller_events(zc: &mut Zeroconf, events: &Events) {
         for ev in events.iter() {
             trace!("event received with key {}", ev.key);
             if ev.key == SIGNAL_SOCK_EVENT_KEY {
@@ -482,10 +482,13 @@ impl ServiceDaemon {
     /// 5. process retransmissions if any.
     fn run(mut zc: Zeroconf, receiver: Receiver<Command>) -> Option<Command> {
         // Add the daemon's signal socket to the poller.
-        if let Err(e) = zc.poller.add(
-            &zc.signal_sock,
-            polling::Event::readable(SIGNAL_SOCK_EVENT_KEY),
-        ) {
+        #[allow(unsafe_code)]
+        if let Err(e) = unsafe {
+            zc.poller.add(
+                &zc.signal_sock,
+                polling::Event::readable(SIGNAL_SOCK_EVENT_KEY),
+            )
+        } {
             debug!("failed to add signal socket to the poller: {}", e);
             return None;
         }
@@ -494,7 +497,8 @@ impl ServiceDaemon {
         for (intf, sock) in zc.intf_socks.iter() {
             let key =
                 Zeroconf::add_poll_impl(&mut zc.poll_ids, &mut zc.poll_id_count, intf.clone());
-            if let Err(e) = zc.poller.add(sock, polling::Event::readable(key)) {
+            #[allow(unsafe_code)]
+            if let Err(e) = unsafe { zc.poller.add(sock, polling::Event::readable(key)) } {
                 debug!("add socket of {:?} to poller: {}", intf, e);
                 return None;
             }
@@ -507,7 +511,7 @@ impl ServiceDaemon {
 
         // Start the run loop.
 
-        let mut events = Vec::new();
+        let mut events = Events::new();
         loop {
             let now = current_time_millis();
 
@@ -1149,7 +1153,8 @@ impl Zeroconf {
 
         // Add the new interface into the poller.
         let key = self.add_poll(intf.clone());
-        if let Err(e) = self.poller.add(&sock, polling::Event::readable(key)) {
+        #[allow(unsafe_code)]
+        if let Err(e) = unsafe { self.poller.add(&sock, polling::Event::readable(key)) } {
             debug!("check_ip_changes: poller add ip {}: {}", new_ip, e);
             return;
         }

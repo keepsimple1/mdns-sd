@@ -128,7 +128,7 @@
 //! ```
 //!
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![allow(clippy::single_component_path_imports)]
 
 // log for logging (optional).
