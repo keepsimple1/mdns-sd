@@ -43,7 +43,7 @@ use crate::{
 };
 use flume::{bounded, Sender, TrySendError};
 use if_addrs::{IfAddr, Interface};
-use polling::Poller;
+use mio::Poll;
 use socket2::{SockAddr, Socket};
 use std::{
     cmp::{self, Reverse},
@@ -179,7 +179,7 @@ impl ServiceDaemon {
             .set_nonblocking(true)
             .map_err(|e| e_fmt!("failed to set nonblocking for signal socket: {}", e))?;
 
-        let poller = Poller::new().map_err(|e| e_fmt!("Failed to create Poller: {}", e))?;
+        let poller = Poll::new().map_err(|e| e_fmt!("failed to create mio Poll: {e}"))?;
 
         let (sender, receiver) = bounded(100);
 
@@ -417,7 +417,7 @@ impl ServiceDaemon {
         self.send_cmd(Command::Verify(instance_fullname, timeout))
     }
 
-    fn daemon_thread(signal_sock: UdpSocket, poller: Poller, receiver: Receiver<Command>) {
+    fn daemon_thread(signal_sock: UdpSocket, poller: Poll, receiver: Receiver<Command>) {
         let zc = Zeroconf::new(signal_sock, poller);
 
         if let Some(cmd) = Self::run(zc, receiver) {
@@ -436,16 +436,16 @@ impl ServiceDaemon {
         }
     }
 
-    fn handle_poller_events(zc: &mut Zeroconf, events: &[polling::Event]) {
+    fn handle_poller_events(zc: &mut Zeroconf, events: &mio::Events) {
         for ev in events.iter() {
-            trace!("event received with key {}", ev.key);
+            trace!("event received with key {:?}", ev.token());
             if ev.key == SIGNAL_SOCK_EVENT_KEY {
                 // Drain signals as we will drain commands as well.
                 zc.signal_sock_drain();
 
                 if let Err(e) = zc
                     .poller
-                    .modify(&zc.signal_sock, polling::Event::readable(ev.key))
+                    .registry().reregister(&mut zc.signal_sock, ev.token(), mio::Interest::READABLE)
                 {
                     debug!("failed to modify poller for signal socket: {}", e);
                 }
@@ -464,7 +464,7 @@ impl ServiceDaemon {
 
             // we continue to monitor this socket.
             if let Some(sock) = zc.intf_socks.get(&intf) {
-                if let Err(e) = zc.poller.modify(sock, polling::Event::readable(ev.key)) {
+                if let Err(e) = zc.poller.registry().reregister(sock, ev.token(), mio::Interest::READABLE) {
                     debug!("modify poller for interface {:?}: {}", &intf, e);
                     break;
                 }
@@ -482,22 +482,27 @@ impl ServiceDaemon {
     /// 5. process retransmissions if any.
     fn run(mut zc: Zeroconf, receiver: Receiver<Command>) -> Option<Command> {
         // Add the daemon's signal socket to the poller.
-        if let Err(e) = zc.poller.add(
-            &zc.signal_sock,
-            polling::Event::readable(SIGNAL_SOCK_EVENT_KEY),
+        if let Err(e) = zc.poller.registry().register(
+            &mut zc.signal_sock,
+            mio::Token(SIGNAL_SOCK_EVENT_KEY), mio::Interest::READABLE
         ) {
             debug!("failed to add signal socket to the poller: {}", e);
             return None;
         }
 
         // Add mDNS sockets to the poller.
-        for (intf, sock) in zc.intf_socks.iter() {
+        for (intf, sock) in zc.intf_socks.iter_mut() {
             let key =
                 Zeroconf::add_poll_impl(&mut zc.poll_ids, &mut zc.poll_id_count, intf.clone());
-            if let Err(e) = zc.poller.add(sock, polling::Event::readable(key)) {
-                debug!("add socket of {:?} to poller: {}", intf, e);
+
+            if let Err(e) = zc.poller.registry().register(sock, mio::Token(key), mio::Interest::READABLE) {
+                println!("add socket of {:?} to poller: {e}", intf);
                 return None;
             }
+            // if let Err(e) = zc.poller.add(sock, polling::Event::readable(key)) {
+            //     debug!("add socket of {:?} to poller: {}", intf, e);
+            //     return None;
+            // }
         }
 
         // Setup timer for IP checks.
@@ -507,7 +512,7 @@ impl ServiceDaemon {
 
         // Start the run loop.
 
-        let mut events = Vec::new();
+        let mut events = mio::Events::with_capacity(1024);
         loop {
             let now = current_time_millis();
 
@@ -520,7 +525,7 @@ impl ServiceDaemon {
 
             // Process incoming packets, command events and optional timeout.
             events.clear();
-            match zc.poller.wait(&mut events, timeout) {
+            match zc.poller.poll(&mut events, timeout) {
                 Ok(_) => Self::handle_poller_events(&mut zc, &events),
                 Err(e) => debug!("failed to select from sockets: {}", e),
             }
@@ -865,7 +870,7 @@ struct Zeroconf {
     counters: Metrics,
 
     /// Waits for incoming packets.
-    poller: Poller,
+    poller: Poll,
 
     /// Channels to notify events.
     monitors: Vec<Sender<DaemonEvent>>,
@@ -896,7 +901,7 @@ struct Zeroconf {
 }
 
 impl Zeroconf {
-    fn new(signal_sock: UdpSocket, poller: Poller) -> Self {
+    fn new(signal_sock: UdpSocket, poller: Poll) -> Self {
         // Get interfaces.
         let my_ifaddrs = my_ip_interfaces();
 
