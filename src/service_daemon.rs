@@ -3321,41 +3321,6 @@ fn hostname_change(original: &str) -> String {
     parts.join(".")
 }
 
-// #[derive(Debug)]
-// struct MySocket(Socket);
-
-// impl mio::event::Source for MySocket {
-//     fn register(
-//         &mut self,
-//         registry: &mio::Registry,
-//         token: mio::Token,
-//         interests: mio::Interest,
-//     ) -> std::io::Result<()> {
-//         let owned_fd = self.0.as_fd().try_clone_to_owned()?;
-//         let mut mio_socket = mio::net::UdpSocket::from(owned_fd);
-//         // let mut mio_stream = mio::net::TcpStream::from(owned_fd);
-//         registry.register(&mut mio_socket, token, interests)
-//     }
-
-//     fn deregister(&mut self, registry: &mio::Registry) -> std::io::Result<()> {
-//         let my_fd = self.0.as_fd().try_clone_to_owned()?;
-//         let mut mio_socket = mio::net::UdpSocket::from(my_fd);
-//         // let mut mio_stream = mio::net::TcpStream::from(my_fd);
-//         registry.deregister(&mut mio_socket)
-//     }
-
-//     fn reregister(
-//         &mut self,
-//         registry: &mio::Registry,
-//         token: mio::Token,
-//         interests: mio::Interest,
-//     ) -> std::io::Result<()> {
-//         let my_fd = self.0.as_fd().try_clone_to_owned()?;
-//         let mut mio_socket = mio::net::UdpSocket::from(my_fd);
-//         registry.reregister(&mut mio_socket, token, interests)
-//     }
-// }
-
 #[cfg(test)]
 mod tests {
     use super::{
