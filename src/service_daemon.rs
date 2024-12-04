@@ -43,7 +43,7 @@ use crate::{
 };
 use flume::{bounded, Sender, TrySendError};
 use if_addrs::{IfAddr, Interface};
-use mio::Poll;
+use mio::{net::UdpSocket as MioUdpSocket, Poll};
 use socket2::Socket;
 use std::{
     cmp::{self, Reverse},
@@ -183,7 +183,7 @@ impl ServiceDaemon {
         let (sender, receiver) = bounded(100);
 
         // Spawn the daemon thread
-        let mio_sock = mio::net::UdpSocket::from_std(signal_sock);
+        let mio_sock = MioUdpSocket::from_std(signal_sock);
         thread::Builder::new()
             .name("mDNS_daemon".to_string())
             .spawn(move || Self::daemon_thread(mio_sock, poller, receiver))
@@ -417,7 +417,7 @@ impl ServiceDaemon {
         self.send_cmd(Command::Verify(instance_fullname, timeout))
     }
 
-    fn daemon_thread(signal_sock: mio::net::UdpSocket, poller: Poll, receiver: Receiver<Command>) {
+    fn daemon_thread(signal_sock: MioUdpSocket, poller: Poll, receiver: Receiver<Command>) {
         let zc = Zeroconf::new(signal_sock, poller);
 
         if let Some(cmd) = Self::run(zc, receiver) {
@@ -637,7 +637,7 @@ impl ServiceDaemon {
 }
 
 /// Creates a new UDP socket that uses `intf` to send and recv multicast.
-fn new_socket_bind(intf: &Interface) -> Result<UdpSocket> {
+fn new_socket_bind(intf: &Interface) -> Result<MioUdpSocket> {
     // Use the same socket for receiving and sending multicast packets.
     // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
     let intf_ip = &intf.ip();
@@ -661,7 +661,7 @@ fn new_socket_bind(intf: &Interface) -> Result<UdpSocket> {
                 sock.send_to(&packet, &multicast_addr)
                     .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
             }
-            Ok(UdpSocket::from(sock))
+            Ok(MioUdpSocket::from_std(UdpSocket::from(sock)))
         }
         IpAddr::V6(ip) => {
             let addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), MDNS_PORT, 0, 0);
@@ -679,7 +679,7 @@ fn new_socket_bind(intf: &Interface) -> Result<UdpSocket> {
             // be many IPv6 interfaces on a host and could cause such send error:
             // "No buffer space available (os error 55)".
 
-            Ok(UdpSocket::from(sock))
+            Ok(MioUdpSocket::from_std(UdpSocket::from(sock)))
         }
     }
 }
@@ -845,7 +845,7 @@ struct IfSelection {
 /// A struct holding the state. It was inspired by `zeroconf` package in Python.
 struct Zeroconf {
     /// Local interfaces with sockets to recv/send on these interfaces.
-    intf_socks: HashMap<Interface, mio::net::UdpSocket>,
+    intf_socks: HashMap<Interface, MioUdpSocket>,
 
     /// Map poll id to Interface.
     poll_ids: HashMap<usize, Interface>,
@@ -888,7 +888,7 @@ struct Zeroconf {
     if_selections: Vec<IfSelection>,
 
     /// Socket for signaling.
-    signal_sock: mio::net::UdpSocket,
+    signal_sock: MioUdpSocket,
 
     /// Timestamps marking where we need another iteration of the run loop,
     /// to react to events like retransmissions, cache refreshes, interface IP address changes, etc.
@@ -907,7 +907,7 @@ struct Zeroconf {
 }
 
 impl Zeroconf {
-    fn new(signal_sock: mio::net::UdpSocket, poller: Poll) -> Self {
+    fn new(signal_sock: MioUdpSocket, poller: Poll) -> Self {
         // Get interfaces.
         let my_ifaddrs = my_ip_interfaces();
 
@@ -928,7 +928,7 @@ impl Zeroconf {
 
             dns_registry_map.insert(intf.clone(), DnsRegistry::new());
 
-            intf_socks.insert(intf, mio::net::UdpSocket::from_std(sock));
+            intf_socks.insert(intf, sock);
         }
 
         let monitors = Vec::new();
@@ -1151,7 +1151,7 @@ impl Zeroconf {
         // Bind the new interface.
         let new_ip = intf.ip();
         let mut sock = match new_socket_bind(&intf) {
-            Ok(s) => mio::net::UdpSocket::from_std(s),
+            Ok(s) => s,
             Err(e) => {
                 debug!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
                 return;
@@ -1436,7 +1436,7 @@ impl Zeroconf {
         &self,
         info: &ServiceInfo,
         intf: &Interface,
-        sock: &mio::net::UdpSocket,
+        sock: &MioUdpSocket,
     ) -> Vec<u8> {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         out.add_answer_at_time(
@@ -1602,8 +1602,7 @@ impl Zeroconf {
             match new_socket_bind(intf) {
                 Ok(new_sock) => {
                     trace!("reset socket for IP {}", intf.ip());
-                    self.intf_socks
-                        .insert(intf.clone(), mio::net::UdpSocket::from_std(new_sock));
+                    self.intf_socks.insert(intf.clone(), new_sock);
                 }
                 Err(e) => debug!("re-bind a socket to {:?}: {}", intf, e),
             }
@@ -3040,11 +3039,7 @@ fn my_ip_interfaces() -> Vec<Interface> {
 }
 
 /// Send an outgoing mDNS query or response, and returns the packet bytes.
-fn send_dns_outgoing(
-    out: &DnsOutgoing,
-    intf: &Interface,
-    sock: &mio::net::UdpSocket,
-) -> Vec<Vec<u8>> {
+fn send_dns_outgoing(out: &DnsOutgoing, intf: &Interface, sock: &MioUdpSocket) -> Vec<Vec<u8>> {
     let qtype = if out.is_query() { "query" } else { "response" };
     trace!(
         "send outgoing {}: {} questions {} answers {} authorities {} additional",
@@ -3062,7 +3057,7 @@ fn send_dns_outgoing(
 }
 
 /// Sends a multicast packet, and returns the packet bytes.
-fn multicast_on_intf(packet: &[u8], intf: &Interface, socket: &mio::net::UdpSocket) {
+fn multicast_on_intf(packet: &[u8], intf: &Interface, socket: &MioUdpSocket) {
     if packet.len() > MAX_MSG_ABSOLUTE {
         debug!("Drop over-sized packet ({})", packet.len());
         return;
@@ -3081,7 +3076,7 @@ fn multicast_on_intf(packet: &[u8], intf: &Interface, socket: &mio::net::UdpSock
 }
 
 /// Sends out `packet` to `addr` on the socket in `intf_sock`.
-fn send_packet(packet: &[u8], addr: SocketAddr, intf: &Interface, sock: &mio::net::UdpSocket) {
+fn send_packet(packet: &[u8], addr: SocketAddr, intf: &Interface, sock: &MioUdpSocket) {
     match sock.send_to(packet, addr) {
         Ok(sz) => trace!("sent out {} bytes on interface {:?}", sz, intf),
         Err(e) => debug!("Failed to send to {} via {:?}: {}", addr, &intf, e),
@@ -3248,7 +3243,7 @@ fn announce_service_on_intf(
     dns_registry: &mut DnsRegistry,
     info: &ServiceInfo,
     intf: &Interface,
-    sock: &mio::net::UdpSocket,
+    sock: &MioUdpSocket,
 ) -> bool {
     if let Some(out) = prepare_announce(info, intf, dns_registry) {
         send_dns_outgoing(&out, intf, sock);
@@ -3476,8 +3471,7 @@ mod tests {
 
         for intf in intfs {
             let sock = new_socket_bind(&intf).unwrap();
-            let udp_sock = mio::net::UdpSocket::from_std(sock);
-            send_dns_outgoing(&packet_buffer, &intf, &udp_sock);
+            send_dns_outgoing(&packet_buffer, &intf, &sock);
         }
 
         println!(
@@ -3667,7 +3661,7 @@ mod tests {
 
         let mdns_client = ServiceDaemon::new().expect("Failed to create mdns client");
         let browse_chan = mdns_client.browse(service_type).unwrap();
-        let timeout = Duration::from_secs(2);
+        let timeout = Duration::from_secs(1);
         let mut resolved = false;
 
         // resolve the service first.
