@@ -438,7 +438,7 @@ impl ServiceDaemon {
 
     fn handle_poller_events(zc: &mut Zeroconf, events: &mio::Events) {
         for ev in events.iter() {
-            debug!("event received with key {:?}", ev.token());
+            trace!("event received with key {:?}", ev.token());
             if ev.token().0 == SIGNAL_SOCK_EVENT_KEY {
                 // Drain signals as we will drain commands as well.
                 zc.signal_sock_drain();
@@ -1527,7 +1527,7 @@ impl Zeroconf {
 
     /// Sends out a list of `questions` (i.e. DNS questions) via multicast.
     fn send_query_vec(&self, questions: &[(&str, RRType)]) {
-        debug!("Sending query questions: {:?}", questions);
+        trace!("Sending query questions: {:?}", questions);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         let now = current_time_millis();
 
@@ -2106,7 +2106,7 @@ impl Zeroconf {
         };
 
         for question in msg.questions.iter() {
-            debug!("query question: {:?}", &question);
+            trace!("query question: {:?}", &question);
 
             let qtype = question.entry.ty;
 
