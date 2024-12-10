@@ -401,9 +401,20 @@ impl ServiceDaemon {
         )))
     }
 
-    /// Enable or disable the loopback for locally sent multicast packets.
+    /// Enable or disable the loopback for locally sent multicast packets in IPv4.
     ///
-    /// When disabled, a local querier will not receive announcements from a local responder.
+    /// When disabled, a querier will not receive announcements from a responder on the same host.
+    ///
+    /// Reference: https://learn.microsoft.com/en-us/windows/win32/winsock/ip-multicast-2
+    ///
+    /// "The Winsock version of the IP_MULTICAST_LOOP option is semantically different than
+    /// the UNIX version of the IP_MULTICAST_LOOP option:
+    ///
+    /// In Winsock, the IP_MULTICAST_LOOP option applies only to the receive path.
+    /// In the UNIX version, the IP_MULTICAST_LOOP option applies to the send path."
+    ///
+    /// Which means, in order NOT to receive localhost announcements, you want to call
+    /// this API on the querier side on Windows, but on the responder side on Unix.
     pub fn set_multicast_loop_v4(&self, on: bool) -> Result<()> {
         self.send_cmd(Command::SetOption(DaemonOption::MulticastLoopV4(on)))
     }
