@@ -1888,6 +1888,10 @@ fn test_multicast_loop_v4() {
     // start a client i.e. querier.
     let mut resolved = false;
     let client = ServiceDaemon::new().expect("failed to create mdns client");
+
+    // For Windows, IP_MULTICAST_LOOP option works only on the receive path.
+    client.set_multicast_loop_v4(false).unwrap();
+
     let receiver = client.browse(ty_domain).unwrap();
 
     let timeout = Duration::from_secs(2);
@@ -1911,6 +1915,8 @@ fn test_multicast_loop_v4() {
 
     // enable loopback and try again.
     server.set_multicast_loop_v4(true).unwrap();
+    client.set_multicast_loop_v4(true).unwrap();
+    let receiver = client.browse(ty_domain).unwrap();
 
     while let Ok(event) = receiver.recv_timeout(timeout) {
         match event {
