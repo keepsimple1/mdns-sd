@@ -403,7 +403,8 @@ impl ServiceDaemon {
 
     /// Enable or disable the loopback for locally sent multicast packets in IPv4.
     ///
-    /// When disabled, a querier will not receive announcements from a responder on the same host.
+    /// By default, multicast loop is enabled for IPv4. When disabled, a querier will not
+    /// receive announcements from a responder on the same host.
     ///
     /// Reference: https://learn.microsoft.com/en-us/windows/win32/winsock/ip-multicast-2
     ///
@@ -421,7 +422,8 @@ impl ServiceDaemon {
 
     /// Enable or disable the loopback for locally sent multicast packets in IPv6.
     ///
-    /// When disabled, a querier will not receive announcements from a responder on the same host.
+    /// By default, multicast loop is enabled for IPv6. When disabled, a querier will not
+    /// receive announcements from a responder on the same host.
     ///
     /// Reference: https://learn.microsoft.com/en-us/windows/win32/winsock/ip-multicast-2
     ///
