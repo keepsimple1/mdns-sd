@@ -1854,6 +1854,173 @@ fn test_verify_srv() {
     assert!(service_removal);
 }
 
+#[test]
+fn test_multicast_loop_v4() {
+    let ty_domain = "_loop_v4._udp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string(); // Create a unique name.
+    let host_name = "loop_v4_host.local.";
+    let port = 5200;
+
+    // Register the first service.
+    let server = ServiceDaemon::new().expect("failed to start server");
+    server.set_multicast_loop_v4(false).unwrap();
+
+    // Get a single IPv4 address
+    let ip_addr1 = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv4())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    // Publish the service on server
+    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
+        .expect("valid service info");
+    server
+        .register(service1)
+        .expect("Failed to register service1");
+
+    // wait for the service announced.
+    sleep(Duration::from_secs(1));
+
+    // start a client i.e. querier.
+    let mut resolved = false;
+    let client = ServiceDaemon::new().expect("failed to create mdns client");
+
+    // For Windows, IP_MULTICAST_LOOP option works only on the receive path.
+    client.set_multicast_loop_v4(false).unwrap();
+
+    let receiver = client.browse(ty_domain).unwrap();
+
+    let timeout = Duration::from_secs(2);
+    while let Ok(event) = receiver.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                println!(
+                    "Resolved a service: {} host {} IP {:?}",
+                    info.get_fullname(),
+                    info.get_hostname(),
+                    info.get_addresses_v4()
+                );
+                resolved = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(resolved, false);
+
+    // enable loopback and try again.
+    server.set_multicast_loop_v4(true).unwrap();
+    client.set_multicast_loop_v4(true).unwrap();
+    let receiver = client.browse(ty_domain).unwrap();
+
+    while let Ok(event) = receiver.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                println!(
+                    "Resolved a service: {} host {} IP {:?}",
+                    info.get_fullname(),
+                    info.get_hostname(),
+                    info.get_addresses_v4()
+                );
+                resolved = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(resolved);
+}
+
+#[test]
+fn test_multicast_loop_v6() {
+    let ty_domain = "_loop_v6._udp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string(); // Create a unique name.
+    let host_name = "loop_v6_host.local.";
+    let port = 5200;
+
+    // Register the first service.
+    let server = ServiceDaemon::new().expect("failed to start server");
+    server.set_multicast_loop_v6(false).unwrap();
+
+    // Get a single IPv4 address
+    let ip_addr1 = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv6())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    // Publish the service on server
+    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
+        .expect("valid service info");
+    server
+        .register(service1)
+        .expect("Failed to register service1");
+
+    // wait for the service announced.
+    sleep(Duration::from_secs(1));
+
+    // start a client i.e. querier.
+    let mut resolved = false;
+    let client = ServiceDaemon::new().expect("failed to create mdns client");
+
+    // For Windows, IP_MULTICAST_LOOP option works only on the receive path.
+    client.set_multicast_loop_v6(false).unwrap();
+
+    let receiver = client.browse(ty_domain).unwrap();
+
+    let timeout = Duration::from_secs(2);
+    while let Ok(event) = receiver.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                println!(
+                    "Resolved a service: {} host {} IP {:?}",
+                    info.get_fullname(),
+                    info.get_hostname(),
+                    info.get_addresses()
+                );
+                resolved = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(resolved, false);
+
+    // enable loopback and try again.
+    server.set_multicast_loop_v6(true).unwrap();
+    client.set_multicast_loop_v6(true).unwrap();
+
+    let receiver = client.browse(ty_domain).unwrap();
+
+    while let Ok(event) = receiver.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                println!(
+                    "Resolved a service: {} host {} IP {:?}",
+                    info.get_fullname(),
+                    info.get_hostname(),
+                    info.get_addresses()
+                );
+                resolved = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(resolved);
+}
+
 /// A helper function to include a timestamp for println.
 fn timed_println(msg: String) {
     let now = SystemTime::now();

@@ -401,6 +401,44 @@ impl ServiceDaemon {
         )))
     }
 
+    /// Enable or disable the loopback for locally sent multicast packets in IPv4.
+    ///
+    /// By default, multicast loop is enabled for IPv4. When disabled, a querier will not
+    /// receive announcements from a responder on the same host.
+    ///
+    /// Reference: https://learn.microsoft.com/en-us/windows/win32/winsock/ip-multicast-2
+    ///
+    /// "The Winsock version of the IP_MULTICAST_LOOP option is semantically different than
+    /// the UNIX version of the IP_MULTICAST_LOOP option:
+    ///
+    /// In Winsock, the IP_MULTICAST_LOOP option applies only to the receive path.
+    /// In the UNIX version, the IP_MULTICAST_LOOP option applies to the send path."
+    ///
+    /// Which means, in order NOT to receive localhost announcements, you want to call
+    /// this API on the querier side on Windows, but on the responder side on Unix.
+    pub fn set_multicast_loop_v4(&self, on: bool) -> Result<()> {
+        self.send_cmd(Command::SetOption(DaemonOption::MulticastLoopV4(on)))
+    }
+
+    /// Enable or disable the loopback for locally sent multicast packets in IPv6.
+    ///
+    /// By default, multicast loop is enabled for IPv6. When disabled, a querier will not
+    /// receive announcements from a responder on the same host.
+    ///
+    /// Reference: https://learn.microsoft.com/en-us/windows/win32/winsock/ip-multicast-2
+    ///
+    /// "The Winsock version of the IP_MULTICAST_LOOP option is semantically different than
+    /// the UNIX version of the IP_MULTICAST_LOOP option:
+    ///
+    /// In Winsock, the IP_MULTICAST_LOOP option applies only to the receive path.
+    /// In the UNIX version, the IP_MULTICAST_LOOP option applies to the send path."
+    ///
+    /// Which means, in order NOT to receive localhost announcements, you want to call
+    /// this API on the querier side on Windows, but on the responder side on Unix.
+    pub fn set_multicast_loop_v6(&self, on: bool) -> Result<()> {
+        self.send_cmd(Command::SetOption(DaemonOption::MulticastLoopV6(on)))
+    }
+
     /// Proactively confirms whether a service instance still valid.
     ///
     /// This call will issue queries for a service instance's SRV record and Address records.
@@ -637,7 +675,7 @@ impl ServiceDaemon {
 }
 
 /// Creates a new UDP socket that uses `intf` to send and recv multicast.
-fn new_socket_bind(intf: &Interface) -> Result<MioUdpSocket> {
+fn new_socket_bind(intf: &Interface, should_loop: bool) -> Result<MioUdpSocket> {
     // Use the same socket for receiving and sending multicast packets.
     // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
     let intf_ip = &intf.ip();
@@ -653,6 +691,11 @@ fn new_socket_bind(intf: &Interface) -> Result<MioUdpSocket> {
             // Set IP_MULTICAST_IF to send packets.
             sock.set_multicast_if_v4(ip)
                 .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
+
+            if !should_loop {
+                sock.set_multicast_loop_v4(false)
+                    .map_err(|e| e_fmt!("failed to set multicast loop v4 for {ip}: {e}"))?;
+            }
 
             // Test if we can send packets successfully.
             let multicast_addr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
@@ -904,6 +947,10 @@ struct Zeroconf {
 
     /// Service instances that are already resolved.
     resolved: HashSet<String>,
+
+    multicast_loop_v4: bool,
+
+    multicast_loop_v6: bool,
 }
 
 impl Zeroconf {
@@ -918,7 +965,7 @@ impl Zeroconf {
         let mut dns_registry_map = HashMap::new();
 
         for intf in my_ifaddrs {
-            let sock = match new_socket_bind(&intf) {
+            let sock = match new_socket_bind(&intf, true) {
                 Ok(s) => s,
                 Err(e) => {
                     trace!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
@@ -959,6 +1006,8 @@ impl Zeroconf {
             status,
             pending_resolves: HashSet::new(),
             resolved: HashSet::new(),
+            multicast_loop_v4: true,
+            multicast_loop_v6: true,
         }
     }
 
@@ -967,6 +1016,8 @@ impl Zeroconf {
             DaemonOption::ServiceNameLenMax(length) => self.service_name_len_max = length,
             DaemonOption::EnableInterface(if_kind) => self.enable_interface(if_kind),
             DaemonOption::DisableInterface(if_kind) => self.disable_interface(if_kind),
+            DaemonOption::MulticastLoopV4(on) => self.set_multicast_loop_v4(on),
+            DaemonOption::MulticastLoopV6(on) => self.set_multicast_loop_v6(on),
         }
     }
 
@@ -990,6 +1041,22 @@ impl Zeroconf {
         }
 
         self.apply_intf_selections(my_ip_interfaces());
+    }
+
+    fn set_multicast_loop_v4(&mut self, on: bool) {
+        for (_, sock) in self.intf_socks.iter_mut() {
+            if let Err(e) = sock.set_multicast_loop_v4(on) {
+                debug!("failed to set multicast loop v4: {e}");
+            }
+        }
+    }
+
+    fn set_multicast_loop_v6(&mut self, on: bool) {
+        for (_, sock) in self.intf_socks.iter_mut() {
+            if let Err(e) = sock.set_multicast_loop_v6(on) {
+                debug!("failed to set multicast loop v6: {e}");
+            }
+        }
     }
 
     fn notify_monitors(&mut self, event: DaemonEvent) {
@@ -1150,7 +1217,12 @@ impl Zeroconf {
     fn add_new_interface(&mut self, intf: Interface) {
         // Bind the new interface.
         let new_ip = intf.ip();
-        let mut sock = match new_socket_bind(&intf) {
+        let should_loop = if new_ip.is_ipv4() {
+            self.multicast_loop_v4
+        } else {
+            self.multicast_loop_v6
+        };
+        let mut sock = match new_socket_bind(&intf, should_loop) {
             Ok(s) => s,
             Err(e) => {
                 debug!("bind a socket to {}: {}. Skipped.", &intf.ip(), e);
@@ -1599,13 +1671,19 @@ impl Zeroconf {
             }
 
             // Replace the closed socket with a new one.
-            match new_socket_bind(intf) {
+            let should_loop = if intf.ip().is_ipv4() {
+                self.multicast_loop_v4
+            } else {
+                self.multicast_loop_v6
+            };
+            match new_socket_bind(intf, should_loop) {
                 Ok(new_sock) => {
                     trace!("reset socket for IP {}", intf.ip());
                     self.intf_socks.insert(intf.clone(), new_sock);
                 }
                 Err(e) => debug!("re-bind a socket to {:?}: {}", intf, e),
             }
+
             return false;
         }
 
@@ -2915,6 +2993,8 @@ enum DaemonOption {
     ServiceNameLenMax(u8),
     EnableInterface(Vec<IfKind>),
     DisableInterface(Vec<IfKind>),
+    MulticastLoopV4(bool),
+    MulticastLoopV6(bool),
 }
 
 /// The length of Service Domain name supported in this lib.
@@ -3470,7 +3550,7 @@ mod tests {
         packet_buffer.add_additional_answer(invalidate_ptr_packet);
 
         for intf in intfs {
-            let sock = new_socket_bind(&intf).unwrap();
+            let sock = new_socket_bind(&intf, true).unwrap();
             send_dns_outgoing(&packet_buffer, &intf, &sock);
         }
 
