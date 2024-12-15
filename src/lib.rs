@@ -146,12 +146,10 @@ mod log {
 }
 
 mod dns_cache;
-mod dns_parser;
 mod error;
 mod service_daemon;
 mod service_info;
 
-pub use dns_parser::RRType;
 pub use error::{Error, Result};
 pub use service_daemon::{
     DaemonEvent, DaemonStatus, DnsNameChange, HostnameResolutionEvent, IfKind, Metrics,
@@ -162,3 +160,6 @@ pub use service_info::{AsIpAddrs, IntoTxtProperties, ServiceInfo, TxtProperties,
 
 /// A handler to receive messages from [ServiceDaemon]. Re-export from `flume` crate.
 pub use flume::Receiver;
+
+/// Re-export to keep backward compatiable.
+pub use mdns_parser::RRType;

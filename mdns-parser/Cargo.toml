@@ -1,0 +1,13 @@
+[package]
+name = "mdns-parser"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+logging = ["log"]
+
+[dependencies]
+log = { version = "0.4", optional = true }             # logging
+
+[dev-dependencies]
+fastrand = "2.1"

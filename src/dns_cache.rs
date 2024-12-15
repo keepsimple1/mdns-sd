@@ -4,16 +4,13 @@
 
 #[cfg(feature = "logging")]
 use crate::log::trace;
-use crate::{
-    dns_parser::{
-        current_time_millis, split_sub_domain, DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, RRType,
-    },
-    service_info::valid_two_addrs_on_intf,
-};
+use crate::service_info::{split_sub_domain, valid_two_addrs_on_intf};
 use if_addrs::Interface;
+use mdns_parser::{DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, RRType};
 use std::{
     collections::{HashMap, HashSet},
     net::IpAddr,
+    time::SystemTime,
 };
 
 /// A cache for all types of DNS records.
@@ -82,7 +79,7 @@ impl DnsCache {
             .filter_map(|(instance, srv_list)| {
                 if let Some(item) = srv_list.first() {
                     if let Some(dns_srv) = item.any().downcast_ref::<DnsSrv>() {
-                        if dns_srv.host == host {
+                        if dns_srv.host() == host {
                             return Some(instance.clone());
                         }
                     }
@@ -102,7 +99,7 @@ impl DnsCache {
                 record
                     .any()
                     .downcast_ref::<DnsAddress>()
-                    .map(|addr| addr.address)
+                    .map(|addr| addr.address())
             })
             .collect()
     }
@@ -132,11 +129,11 @@ impl DnsCache {
             };
 
             // Will verify addresses for the hostname.
-            query_vec.push((srv_record.host.clone(), RRType::A));
-            query_vec.push((srv_record.host.clone(), RRType::AAAA));
+            query_vec.push((srv_record.host().to_string(), RRType::A));
+            query_vec.push((srv_record.host().to_string(), RRType::AAAA));
 
             if let Some(new_expire) = expire_at {
-                if let Some(addrs) = self.addr.get_mut(&srv_record.host) {
+                if let Some(addrs) = self.addr.get_mut(srv_record.host()) {
                     for addr in addrs {
                         addr.set_expire_sooner(new_expire);
                     }
@@ -167,8 +164,9 @@ impl DnsCache {
             let (_, subtype_opt) = split_sub_domain(&entry_name);
             if let Some(subtype) = subtype_opt {
                 if let Some(ptr) = incoming.any().downcast_ref::<DnsPointer>() {
-                    if !self.subtype.contains_key(&ptr.alias) {
-                        self.subtype.insert(ptr.alias.clone(), subtype.to_string());
+                    if !self.subtype.contains_key(ptr.alias()) {
+                        self.subtype
+                            .insert(ptr.alias().to_string(), subtype.to_string());
                     }
                 }
             }
@@ -210,8 +208,11 @@ impl DnsCache {
                     if rtype == RRType::A || rtype == RRType::AAAA {
                         if let Some(addr) = r.any().downcast_ref::<DnsAddress>() {
                             if let Some(addr_b) = incoming.any().downcast_ref::<DnsAddress>() {
-                                should_flush =
-                                    valid_two_addrs_on_intf(&addr.address, &addr_b.address, intf);
+                                should_flush = valid_two_addrs_on_intf(
+                                    &addr.address(),
+                                    &addr_b.address(),
+                                    intf,
+                                );
                             }
                         }
                     }
@@ -286,7 +287,7 @@ impl DnsCache {
                         removed
                             .entry(addr.get_name().to_string())
                             .or_insert_with(HashSet::new)
-                            .insert(addr_record.address);
+                            .insert(addr_record.address());
                     }
                 }
                 !expired
@@ -310,7 +311,7 @@ impl DnsCache {
         for (ty_domain, ptr_records) in self.ptr.iter_mut() {
             for ptr in ptr_records.iter() {
                 if let Some(dns_ptr) = ptr.any().downcast_ref::<DnsPointer>() {
-                    let instance_name = &dns_ptr.alias;
+                    let instance_name = dns_ptr.alias();
 
                     // evict expired SRV records of this instance
                     if let Some(srv_records) = self.srv.get_mut(instance_name) {
@@ -343,7 +344,7 @@ impl DnsCache {
                         expired_instances
                             .entry(ty_domain.to_string())
                             .or_insert_with(HashSet::new)
-                            .insert(dns_ptr.alias.clone());
+                            .insert(dns_ptr.alias().to_string());
                     }
                 }
                 !expired
@@ -372,7 +373,7 @@ impl DnsCache {
     pub(crate) fn refresh_due_srv(&mut self, ty_domain: &str) -> (HashSet<String>, HashSet<u64>) {
         let now = current_time_millis();
 
-        let instances: Vec<&String> = self
+        let instances: Vec<_> = self
             .ptr
             .get(ty_domain)
             .into_iter()
@@ -382,7 +383,7 @@ impl DnsCache {
                 record
                     .any()
                     .downcast_ref::<DnsPointer>()
-                    .map(|ptr| &ptr.alias)
+                    .map(|ptr| ptr.alias())
             })
             .collect();
 
@@ -399,7 +400,7 @@ impl DnsCache {
                 .collect();
 
             if !refresh_timers.is_empty() {
-                refresh_due.insert(instance.clone());
+                refresh_due.insert(instance.to_string());
                 new_timers.extend(refresh_timers);
             }
         }
@@ -412,7 +413,7 @@ impl DnsCache {
     pub(crate) fn refresh_due_hosts(&mut self, ty_domain: &str) -> (HashSet<String>, HashSet<u64>) {
         let now = current_time_millis();
 
-        let instances: Vec<&String> = self
+        let instances: Vec<_> = self
             .ptr
             .get(ty_domain)
             .into_iter()
@@ -422,7 +423,7 @@ impl DnsCache {
                 record
                     .any()
                     .downcast_ref::<DnsPointer>()
-                    .map(|ptr| &ptr.alias)
+                    .map(|ptr| ptr.alias())
             })
             .collect();
 
@@ -438,7 +439,7 @@ impl DnsCache {
                     record
                         .any()
                         .downcast_ref::<DnsSrv>()
-                        .map(|srv| srv.host.clone())
+                        .map(|srv| srv.host().to_string())
                 })
                 .collect();
 
@@ -485,7 +486,7 @@ impl DnsCache {
 
                 Some((
                     hostname.to_owned(),
-                    record.any().downcast_ref::<DnsAddress>().unwrap().address,
+                    record.any().downcast_ref::<DnsAddress>().unwrap().address(),
                 ))
             })
             .collect()
@@ -525,4 +526,12 @@ impl DnsCache {
             .filter(move |r| !r.get_record().is_unique() && !r.get_record().halflife_passed(now))
             .collect()
     }
+}
+
+/// Returns UNIX time in millis
+pub(crate) fn current_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("failed to get current UNIX time")
+        .as_millis() as u64
 }
