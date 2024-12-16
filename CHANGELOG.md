@@ -1,3 +1,20 @@
+# Version 0.13.0 (2024-12-15)
+
+There are no breaking changes in API. Bump the minor version due to the change of rustc version to Rust 1.70.0.
+
+## Highlights
+
+* Use `mio` instead of `polling` to poll sockets.
+* New API `set_multicast_loop_v4` and `set_multicast_loop_v6` of `ServiceDaemon`.
+* All logging are updated to be `debug` or `trace` levels only.
+
+## All changes
+
+* 489ef5a test: fix a flaky test (#283) (keepsimple1)
+* 1ddae63 feat: new API to set multicast loop for ServiceDaemon (#281) (keepsimple1)
+* fcd31f3 dependency: use mio to replace polling (#280) (keepsimple1)
+* 99483b7 reduce logging levels (#277) (keepsimple1)
+
 # Version 0.12.0 (2024-11-24)
 
 There are no breaking changes in API. Bump the minor version due to new features and the change of rustc version.
