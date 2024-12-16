@@ -1468,7 +1468,8 @@ impl Zeroconf {
                     "try to announce service {service_name} on intf {}",
                     intf.ip()
                 );
-                if let Some(info) = self.my_services.get_mut(&service_name) {
+                // service names are lowercase
+                if let Some(info) = self.my_services.get_mut(&service_name.to_lowercase()) {
                     if info.get_status(intf) == ServiceStatus::Announced {
                         debug!("service {} already announced", info.get_fullname());
                         continue;
