@@ -1,3 +1,12 @@
+# Version 0.13.1 (2024-12-16)
+
+This is a bugfix release. Fixed a bug where upper case service names failed to publish.
+
+## All changes
+
+* 71647a1 test: cover upper case in service name (#288) (keepsimple1)
+* 6ff9b52 fix: service keys must be lowercase (#286) (Jesper L. Nielsen)
+
 # Version 0.13.0 (2024-12-15)
 
 There are no breaking changes in API. Bump the minor version due to the change of rustc version to Rust 1.70.0.
