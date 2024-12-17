@@ -476,6 +476,7 @@ fn test_into_txt_properties() {
 }
 
 /// Test enabling an interface using its name, for example "en0".
+/// Also tests an instance name with Upper Case.
 #[test]
 fn service_with_named_interface_only() {
     // Create a daemon
@@ -491,7 +492,7 @@ fn service_with_named_interface_only() {
     let port = 5202;
     let my_service = ServiceInfo::new(
         my_ty_domain,
-        "my_instance",
+        "UpperCaseInstance",
         host_name,
         host_ipv4,
         port,
