@@ -1793,6 +1793,16 @@ impl DnsIncoming {
         //   o The Type Bit Map block length byte is a value in the range 1-32.
         //   o The Type Bit Map data is 1-32 bytes, as indicated by length
         //     byte.
+
+        // Sanity check: at least 2 bytes to read.
+        if self.data.len() < self.offset + 2 {
+            return Err(Error::Msg(format!(
+                "DnsIncoming is too short: {} at NSEC Type Bit Map offset {}",
+                self.data.len(),
+                self.offset
+            )));
+        }
+
         let block_num = self.data[self.offset];
         self.offset += 1;
         if block_num != 0 {
