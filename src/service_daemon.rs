@@ -31,18 +31,20 @@
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace};
 use crate::{
-    dns_cache::DnsCache,
-    dns_parser::{
-        current_time_millis, ip_address_to_type, split_sub_domain, DnsAddress, DnsIncoming,
-        DnsOutgoing, DnsPointer, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, RRType,
-        CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
-    },
+    dns_cache::{current_time_millis, DnsCache},
     error::{Error, Result},
-    service_info::{DnsRegistry, Probe, ServiceInfo, ServiceStatus},
+    service_info::{
+        split_sub_domain, valid_ip_on_intf, DnsRegistry, Probe, ServiceInfo, ServiceStatus,
+    },
     Receiver,
 };
 use flume::{bounded, Sender, TrySendError};
 use if_addrs::{IfAddr, Interface};
+use mdns_parser::{
+    ip_address_rr_type, DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer,
+    DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA,
+    FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
+};
 use mio::{net::UdpSocket as MioUdpSocket, Poll};
 use socket2::Socket;
 use std::{
@@ -634,7 +636,7 @@ impl ServiceDaemon {
                 for (hostname, ip_addr) in
                     zc.cache.refresh_due_hostname_resolutions(hostname).iter()
                 {
-                    zc.send_query(hostname, ip_address_to_type(ip_addr));
+                    zc.send_query(hostname, ip_address_rr_type(ip_addr));
                     query_count += 1;
                 }
             }
@@ -1411,8 +1413,8 @@ impl Zeroconf {
             }
 
             // send probing.
-            if !out.questions.is_empty() {
-                debug!("sending out probing of {} questions", out.questions.len());
+            if !out.questions().is_empty() {
+                debug!("sending out probing of {} questions", out.questions().len());
                 send_dns_outgoing(&out, intf, sock);
             }
 
@@ -1563,7 +1565,7 @@ impl Zeroconf {
             out.add_answer_at_time(
                 DnsAddress::new(
                     info.get_hostname(),
-                    ip_address_to_type(&address),
+                    ip_address_rr_type(&address),
                     CLASS_IN | CLASS_CACHE_FLUSH,
                     0,
                     address,
@@ -1716,8 +1718,8 @@ impl Zeroconf {
         if let Some(records) = self.cache.get_srv(instance) {
             for record in records {
                 if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
-                    if self.cache.get_addr(&srv.host).is_none() {
-                        self.send_query_vec(&[(&srv.host, RRType::A), (&srv.host, RRType::AAAA)]);
+                    if self.cache.get_addr(srv.host()).is_none() {
+                        self.send_query_vec(&[(srv.host(), RRType::A), (srv.host(), RRType::AAAA)]);
                         return true;
                     }
                 }
@@ -1739,7 +1741,7 @@ impl Zeroconf {
         if let Some(records) = self.cache.get_ptr(ty_domain) {
             for record in records.iter() {
                 if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
-                    let info = match self.create_service_info_from_cache(ty_domain, &ptr.alias) {
+                    let info = match self.create_service_info_from_cache(ty_domain, ptr.alias()) {
                         Ok(ok) => ok,
                         Err(err) => {
                             debug!("Error while creating service info from cache: {}", err);
@@ -1749,9 +1751,9 @@ impl Zeroconf {
 
                     match sender.send(ServiceEvent::ServiceFound(
                         ty_domain.to_string(),
-                        ptr.alias.clone(),
+                        ptr.alias().to_string(),
                     )) {
-                        Ok(()) => trace!("send service found {}", &ptr.alias),
+                        Ok(()) => trace!("send service found {}", ptr.alias()),
                         Err(e) => {
                             debug!("failed to send service found: {}", e);
                             continue;
@@ -1759,13 +1761,13 @@ impl Zeroconf {
                     }
 
                     if info.is_ready() {
-                        resolved.insert(ptr.alias.clone());
+                        resolved.insert(ptr.alias().to_string());
                         match sender.send(ServiceEvent::ServiceResolved(info)) {
-                            Ok(()) => trace!("sent service resolved: {}", &ptr.alias),
+                            Ok(()) => trace!("sent service resolved: {}", ptr.alias()),
                             Err(e) => debug!("failed to send service resolved: {}", e),
                         }
                     } else {
-                        unresolved.insert(ptr.alias.clone());
+                        unresolved.insert(ptr.alias().to_string());
                     }
                 }
             }
@@ -1838,8 +1840,8 @@ impl Zeroconf {
         if let Some(records) = self.cache.get_srv(fullname) {
             if let Some(answer) = records.first() {
                 if let Some(dns_srv) = answer.any().downcast_ref::<DnsSrv>() {
-                    info.set_hostname(dns_srv.host.clone());
-                    info.set_port(dns_srv.port);
+                    info.set_hostname(dns_srv.host().to_string());
+                    info.set_port(dns_srv.port());
                 }
             }
         }
@@ -1848,7 +1850,7 @@ impl Zeroconf {
         if let Some(records) = self.cache.get_txt(fullname) {
             if let Some(record) = records.first() {
                 if let Some(dns_txt) = record.any().downcast_ref::<DnsTxt>() {
-                    info.set_properties_from_txt(&dns_txt.text);
+                    info.set_properties_from_txt(dns_txt.text());
                 }
             }
         }
@@ -1858,9 +1860,9 @@ impl Zeroconf {
             for answer in records.iter() {
                 if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {
                     if dns_a.get_record().is_expired(now) {
-                        trace!("Addr expired: {}", &dns_a.address);
+                        trace!("Addr expired: {}", dns_a.address());
                     } else {
-                        info.insert_ipaddr(dns_a.address);
+                        info.insert_ipaddr(dns_a.address());
                     }
                 }
             }
@@ -1874,9 +1876,9 @@ impl Zeroconf {
     fn handle_response(&mut self, mut msg: DnsIncoming, intf: &Interface) {
         trace!(
             "handle_response: {} answers {} authorities {} additionals",
-            &msg.answers.len(),
-            &msg.authorities.len(),
-            &msg.additional.len()
+            msg.answers().len(),
+            &msg.authorities().len(),
+            &msg.num_additionals()
         );
         let now = current_time_millis();
 
@@ -1895,16 +1897,16 @@ impl Zeroconf {
                         dns_ptr.get_name(),
                         ServiceEvent::ServiceRemoved(
                             dns_ptr.get_name().to_string(),
-                            dns_ptr.alias.clone(),
+                            dns_ptr.alias().to_string(),
                         ),
                     );
                 }
             }
             false
         };
-        msg.answers.retain(&mut record_predicate);
-        msg.authorities.retain(&mut record_predicate);
-        msg.additional.retain(&mut record_predicate);
+        msg.answers_mut().retain(&mut record_predicate);
+        msg.authorities_mut().retain(&mut record_predicate);
+        msg.additionals_mut().retain(&mut record_predicate);
 
         // check possible conflicts and handle them.
         self.conflict_handler(&msg, intf);
@@ -1924,12 +1926,7 @@ impl Zeroconf {
         // other.
         let mut changes = Vec::new();
         let mut timers = Vec::new();
-        for record in msg
-            .answers
-            .into_iter()
-            .chain(msg.authorities.into_iter())
-            .chain(msg.additional.into_iter())
-        {
+        for record in msg.all_records() {
             match self.cache.add_or_update(intf, record, &mut timers) {
                 Some((dns_record, true)) => {
                     timers.push(dns_record.get_record().get_expire_time());
@@ -1947,11 +1944,14 @@ impl Zeroconf {
                             call_service_listener(
                                 &self.service_queriers,
                                 name,
-                                ServiceEvent::ServiceFound(name.to_string(), dns_ptr.alias.clone()),
+                                ServiceEvent::ServiceFound(
+                                    name.to_string(),
+                                    dns_ptr.alias().to_string(),
+                                ),
                             );
                             changes.push(InstanceChange {
                                 ty,
-                                name: dns_ptr.alias.clone(),
+                                name: dns_ptr.alias().to_string(),
                             });
                         }
                     } else {
@@ -2013,7 +2013,7 @@ impl Zeroconf {
             return;
         };
 
-        for answer in msg.answers.iter() {
+        for answer in msg.answers().iter() {
             let mut new_records = Vec::new();
 
             let name = answer.get_name();
@@ -2024,7 +2024,7 @@ impl Zeroconf {
             // check against possible multicast forwarding
             if answer.get_type() == RRType::A || answer.get_type() == RRType::AAAA {
                 if let Some(answer_addr) = answer.any().downcast_ref::<DnsAddress>() {
-                    if !answer_addr.in_subnet(intf) {
+                    if !valid_ip_on_intf(&answer_addr.address(), intf) {
                         debug!(
                             "conflict handler: answer addr {:?} not in the subnet of {:?}",
                             answer_addr, intf
@@ -2129,25 +2129,25 @@ impl Zeroconf {
 
             for record in records.iter() {
                 if let Some(dns_ptr) = record.any().downcast_ref::<DnsPointer>() {
-                    if updated_instances.contains(&dns_ptr.alias) {
+                    if updated_instances.contains(dns_ptr.alias()) {
                         if let Ok(info) =
-                            self.create_service_info_from_cache(ty_domain, &dns_ptr.alias)
+                            self.create_service_info_from_cache(ty_domain, dns_ptr.alias())
                         {
                             if info.is_ready() {
-                                resolved.insert(dns_ptr.alias.clone());
+                                resolved.insert(dns_ptr.alias().to_string());
                                 call_service_listener(
                                     &self.service_queriers,
                                     ty_domain,
                                     ServiceEvent::ServiceResolved(info),
                                 );
                             } else {
-                                if self.resolved.remove(&dns_ptr.alias) {
+                                if self.resolved.remove(dns_ptr.alias()) {
                                     removed_instances
                                         .entry(ty_domain.to_string())
                                         .or_insert_with(HashSet::new)
-                                        .insert(dns_ptr.alias.clone());
+                                        .insert(dns_ptr.alias().to_string());
                                 }
-                                unresolved.insert(dns_ptr.alias.clone());
+                                unresolved.insert(dns_ptr.alias().to_string());
                             }
                         }
                     }
@@ -2184,10 +2184,10 @@ impl Zeroconf {
             return;
         };
 
-        for question in msg.questions.iter() {
+        for question in msg.questions().iter() {
             trace!("query question: {:?}", &question);
 
-            let qtype = question.entry.ty;
+            let qtype = question.entry_type();
 
             if qtype == RRType::PTR {
                 for service in self.my_services.values() {
@@ -2195,18 +2195,18 @@ impl Zeroconf {
                         continue;
                     }
 
-                    if question.entry.name == service.get_type()
+                    if question.entry_name() == service.get_type()
                         || service
                             .get_subtype()
                             .as_ref()
-                            .map_or(false, |v| v == &question.entry.name)
+                            .map_or(false, |v| v == question.entry_name())
                     {
-                        out.add_answer_with_additionals(&msg, service, intf, dns_registry);
-                    } else if question.entry.name == META_QUERY {
+                        add_answer_with_additionals(&mut out, &msg, service, intf, dns_registry);
+                    } else if question.entry_name() == META_QUERY {
                         let ptr_added = out.add_answer(
                             &msg,
                             DnsPointer::new(
-                                &question.entry.name,
+                                question.entry_name(),
                                 RRType::PTR,
                                 CLASS_IN,
                                 service.get_other_ttl(),
@@ -2220,8 +2220,8 @@ impl Zeroconf {
                 }
             } else {
                 // Simultaneous Probe Tiebreaking (RFC 6762 section 8.2)
-                if qtype == RRType::ANY && msg.num_authorities > 0 {
-                    let probe_name = &question.entry.name;
+                if qtype == RRType::ANY && msg.num_authorities() > 0 {
+                    let probe_name = question.entry_name();
 
                     if let Some(probe) = dns_registry.probing.get_mut(probe_name) {
                         let now = current_time_millis();
@@ -2231,7 +2231,7 @@ impl Zeroconf {
                         // was postponed.
                         if probe.start_time < now {
                             let incoming_records: Vec<_> = msg
-                                .authorities
+                                .authorities()
                                 .iter()
                                 .filter(|r| r.get_name() == probe_name)
                                 .collect();
@@ -2274,7 +2274,7 @@ impl Zeroconf {
                                 None => service.get_hostname(),
                             };
 
-                        if service_hostname.to_lowercase() == question.entry.name.to_lowercase() {
+                        if service_hostname.to_lowercase() == question.entry_name().to_lowercase() {
                             let intf_addrs = service.get_addrs_on_intf(intf);
                             if intf_addrs.is_empty()
                                 && (qtype == RRType::A || qtype == RRType::AAAA)
@@ -2295,8 +2295,8 @@ impl Zeroconf {
                                 out.add_answer(
                                     &msg,
                                     DnsAddress::new(
-                                        &question.entry.name,
-                                        ip_address_to_type(&address),
+                                        question.entry_name(),
+                                        ip_address_rr_type(&address),
                                         CLASS_IN | CLASS_CACHE_FLUSH,
                                         service.get_host_ttl(),
                                         address,
@@ -2307,7 +2307,7 @@ impl Zeroconf {
                     }
                 }
 
-                let query_name = question.entry.name.to_lowercase();
+                let query_name = question.entry_name().to_lowercase();
                 let service_opt = self
                     .my_services
                     .iter()
@@ -2332,7 +2332,7 @@ impl Zeroconf {
                     out.add_answer(
                         &msg,
                         DnsSrv::new(
-                            &question.entry.name,
+                            question.entry_name(),
                             CLASS_IN | CLASS_CACHE_FLUSH,
                             service.get_host_ttl(),
                             service.get_priority(),
@@ -2347,7 +2347,7 @@ impl Zeroconf {
                     out.add_answer(
                         &msg,
                         DnsTxt::new(
-                            &question.entry.name,
+                            question.entry_name(),
                             CLASS_IN | CLASS_CACHE_FLUSH,
                             service.get_host_ttl(),
                             service.generate_txt(),
@@ -2367,7 +2367,7 @@ impl Zeroconf {
                     for address in intf_addrs {
                         out.add_additional_answer(DnsAddress::new(
                             service.get_hostname(),
-                            ip_address_to_type(&address),
+                            ip_address_rr_type(&address),
                             CLASS_IN | CLASS_CACHE_FLUSH,
                             service.get_host_ttl(),
                             address,
@@ -2377,15 +2377,15 @@ impl Zeroconf {
             }
         }
 
-        if !out.answers.is_empty() {
-            out.id = msg.id;
+        if !out.answers_count() > 0 {
+            out.set_id(msg.id());
             send_dns_outgoing(&out, intf, sock);
 
             self.increase_counter(Counter::Respond, 1);
             self.notify_monitors(DaemonEvent::Respond(intf.ip()));
         }
 
-        self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count);
+        self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count());
     }
 
     /// Increases the value of `counter` by `count`.
@@ -3125,10 +3125,10 @@ fn send_dns_outgoing(out: &DnsOutgoing, intf: &Interface, sock: &MioUdpSocket) -
     trace!(
         "send outgoing {}: {} questions {} answers {} authorities {} additional",
         qtype,
-        out.questions.len(),
-        out.answers.len(),
-        out.authorities.len(),
-        out.additionals.len()
+        out.questions().len(),
+        out.answers_count(),
+        out.authorities().len(),
+        out.additionals().len()
     );
     let packet_list = out.to_data_on_wire();
     for packet in packet_list.iter() {
@@ -3292,7 +3292,7 @@ fn prepare_announce(
     for address in intf_addrs {
         let mut dns_addr = DnsAddress::new(
             hostname,
-            ip_address_to_type(&address),
+            ip_address_rr_type(&address),
             CLASS_IN | CLASS_CACHE_FLUSH,
             info.get_host_ttl(),
             address,
@@ -3397,6 +3397,87 @@ fn hostname_change(original: &str) -> String {
     parts.join(".")
 }
 
+fn add_answer_with_additionals(
+    out: &mut DnsOutgoing,
+    msg: &DnsIncoming,
+    service: &ServiceInfo,
+    intf: &Interface,
+    dns_registry: &DnsRegistry,
+) {
+    let intf_addrs = service.get_addrs_on_intf(intf);
+    if intf_addrs.is_empty() {
+        trace!("No addrs on LAN of intf {:?}", intf);
+        return;
+    }
+
+    // check if we changed our name due to conflicts.
+    let service_fullname = match dns_registry.name_changes.get(service.get_fullname()) {
+        Some(new_name) => new_name,
+        None => service.get_fullname(),
+    };
+
+    let hostname = match dns_registry.name_changes.get(service.get_hostname()) {
+        Some(new_name) => new_name,
+        None => service.get_hostname(),
+    };
+
+    let ptr_added = out.add_answer(
+        msg,
+        DnsPointer::new(
+            service.get_type(),
+            RRType::PTR,
+            CLASS_IN,
+            service.get_other_ttl(),
+            service_fullname.to_string(),
+        ),
+    );
+
+    if !ptr_added {
+        trace!("answer was not added for msg {:?}", msg);
+        return;
+    }
+
+    if let Some(sub) = service.get_subtype() {
+        trace!("Adding subdomain {}", sub);
+        out.add_additional_answer(DnsPointer::new(
+            sub,
+            RRType::PTR,
+            CLASS_IN,
+            service.get_other_ttl(),
+            service_fullname.to_string(),
+        ));
+    }
+
+    // Add recommended additional answers according to
+    // https://tools.ietf.org/html/rfc6763#section-12.1.
+    out.add_additional_answer(DnsSrv::new(
+        service_fullname,
+        CLASS_IN | CLASS_CACHE_FLUSH,
+        service.get_host_ttl(),
+        service.get_priority(),
+        service.get_weight(),
+        service.get_port(),
+        hostname.to_string(),
+    ));
+
+    out.add_additional_answer(DnsTxt::new(
+        service_fullname,
+        CLASS_IN | CLASS_CACHE_FLUSH,
+        service.get_host_ttl(),
+        service.generate_txt(),
+    ));
+
+    for address in intf_addrs {
+        out.add_additional_answer(DnsAddress::new(
+            hostname,
+            ip_address_rr_type(&address),
+            CLASS_IN | CLASS_CACHE_FLUSH,
+            service.get_host_ttl(),
+            address,
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -3405,10 +3486,8 @@ mod tests {
         HostnameResolutionEvent, ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4,
         MDNS_PORT,
     };
-    use crate::{
-        dns_parser::{DnsOutgoing, DnsPointer, RRType, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE},
-        service_daemon::check_hostname,
-    };
+    use crate::service_daemon::check_hostname;
+    use mdns_parser::{DnsOutgoing, DnsPointer, RRType, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE};
     use std::{
         net::{SocketAddr, SocketAddrV4},
         time::Duration,

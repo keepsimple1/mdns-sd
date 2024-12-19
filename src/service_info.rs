@@ -2,11 +2,9 @@
 
 #[cfg(feature = "logging")]
 use crate::log::debug;
-use crate::{
-    dns_parser::{split_sub_domain, DnsRecordBox, DnsRecordExt, DnsSrv, RRType},
-    Error, Result,
-};
+use crate::{Error, Result};
 use if_addrs::{IfAddr, Interface};
+use mdns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, RRType};
 use std::{
     cmp,
     collections::{HashMap, HashSet},
@@ -995,9 +993,9 @@ impl DnsRegistry {
             probe.records.retain(|record| {
                 if record.get_type() == RRType::SRV {
                     if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
-                        if srv.host == original {
+                        if srv.host() == original {
                             let mut new_record = srv.clone();
-                            new_record.host = new_name.to_string();
+                            new_record.set_host(new_name.to_string());
                             found_records.push(new_record);
                             return false;
                         }
@@ -1011,9 +1009,9 @@ impl DnsRegistry {
             records.retain(|record| {
                 if record.get_type() == RRType::SRV {
                     if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
-                        if srv.host == original {
+                        if srv.host() == original {
                             let mut new_record = srv.clone();
-                            new_record.host = new_name.to_string();
+                            new_record.set_host(new_name.to_string());
                             found_records.push(new_record);
                             return false;
                         }
@@ -1048,6 +1046,15 @@ impl DnsRegistry {
         }
 
         new_timer_added
+    }
+}
+
+/// Returns a tuple of (service_type_domain, optional_sub_domain)
+pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
+    if let Some((_, ty_domain)) = domain.rsplit_once("._sub.") {
+        (ty_domain, Some(domain))
+    } else {
+        (domain, None)
     }
 }
 

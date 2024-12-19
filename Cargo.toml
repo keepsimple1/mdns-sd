@@ -23,6 +23,7 @@ if-addrs = { version = "0.13", features = ["link-local"] } # get local IP addres
 log = { version = "0.4", optional = true }             # logging
 mio = { version = "1.0", features = ["os-poll", "net"] }  # select/poll sockets
 socket2 = { version = "0.5.5", features = ["all"] }      # socket APIs
+mdns-parser = { path = "mdns-parser"}
 
 [dev-dependencies]
 env_logger = { version = "= 0.10.2", default-features = false, features= ["humantime"] }
