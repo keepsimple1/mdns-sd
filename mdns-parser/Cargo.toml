@@ -5,6 +5,8 @@ edition = "2018"
 rust-version = "1.65.0"
 authors = ["keepsimple <keepsimple@gmail.com>"]
 keywords = ["mdns", "service-discovery", "zeroconf", "dns-sd"]
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/keepsimple1/mdns-sd"
 description = "DNS message parsing for mDNS Service Discovery"
 
 [features]
