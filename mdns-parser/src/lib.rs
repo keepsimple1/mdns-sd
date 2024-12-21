@@ -1,8 +1,7 @@
-//! DNS parsing utility.
+//! DNS parsing utility with a focus on mDNS service discovery.
 //!
-//! [DnsIncoming] is the logic representation of an incoming DNS packet.
-//! [DnsOutgoing] is the logic representation of an outgoing DNS message of one or more packets.
-//! [DnsOutPacket] is the encoded one packet for [DnsOutgoing].
+//! - [DnsIncoming] is the logic representation of an incoming DNS message.
+//! - [DnsOutgoing] is the logic representation of an outgoing DNS message.
 
 // log for logging (optional).
 #[cfg(feature = "logging")]

@@ -92,7 +92,7 @@ pub const CLASS_MASK: u16 = 0x7FFF;
 pub const CLASS_CACHE_FLUSH: u16 = 0x8000;
 
 /// Max size of UDP datagram payload: 9000 bytes - IP header 20 bytes - UDP header 8 bytes.
-/// Reference: RFC6762: https://datatracker.ietf.org/doc/html/rfc6762#section-17
+/// Reference: [RFC6762 section 17](https://datatracker.ietf.org/doc/html/rfc6762#section-17)
 pub const MAX_MSG_ABSOLUTE: usize = 8972;
 
 const MSG_HEADER_LEN: usize = 12;
@@ -464,6 +464,7 @@ pub trait DnsRecordExt: fmt::Debug {
     fn clone_box(&self) -> DnsRecordBox;
 }
 
+/// Resource Record for IPv4 address or IPv6 address.
 #[derive(Debug, Clone)]
 pub struct DnsAddress {
     pub(crate) record: DnsRecord,
@@ -532,7 +533,7 @@ impl DnsRecordExt for DnsAddress {
     }
 }
 
-/// A DNS pointer record
+/// Resource Record for a DNS pointer
 #[derive(Debug, Clone)]
 pub struct DnsPointer {
     record: DnsRecord,
@@ -598,7 +599,7 @@ impl DnsRecordExt for DnsPointer {
     }
 }
 
-// In common cases, there is one and only one SRV record for a particular fullname.
+/// Resource Record for a DNS service.
 #[derive(Debug, Clone)]
 pub struct DnsSrv {
     pub(crate) record: DnsRecord,
@@ -726,18 +727,20 @@ impl DnsRecordExt for DnsSrv {
     }
 }
 
-// From RFC 6763 section 6:
-//
-// The format of each constituent string within the DNS TXT record is a
-// single length byte, followed by 0-255 bytes of text data.
-//
-// DNS-SD uses DNS TXT records to store arbitrary key/value pairs
-//    conveying additional information about the named service.  Each
-//    key/value pair is encoded as its own constituent string within the
-//    DNS TXT record, in the form "key=value" (without the quotation
-//    marks).  Everything up to the first '=' character is the key (Section
-//    6.4).  Everything after the first '=' character to the end of the
-//    string (including subsequent '=' characters, if any) is the value
+/// Resource Record for a DNS TXT record.
+/// 
+/// From [RFC 6763 section 6]:
+///
+/// The format of each constituent string within the DNS TXT record is a
+/// single length byte, followed by 0-255 bytes of text data.
+///
+/// DNS-SD uses DNS TXT records to store arbitrary key/value pairs
+///    conveying additional information about the named service.  Each
+///    key/value pair is encoded as its own constituent string within the
+///    DNS TXT record, in the form "key=value" (without the quotation
+///    marks).  Everything up to the first '=' character is the key (Section
+///    6.4).  Everything after the first '=' character to the end of the
+///    string (including subsequent '=' characters, if any) is the value
 #[derive(Clone)]
 pub struct DnsTxt {
     pub(crate) record: DnsRecord,
@@ -1041,7 +1044,7 @@ impl DnsRecordExt for DnsHostInfo {
     }
 }
 
-/// Record for negative responses
+/// Resource Record for negative responses
 ///
 /// [RFC4034 section 4.1](https://datatracker.ietf.org/doc/html/rfc4034#section-4.1)
 /// and
@@ -1389,8 +1392,7 @@ impl DnsOutPacket {
     }
 }
 
-/// Representation of one or more outgoing packet(s). The actual encoded packet
-/// is [DnsOutPacket].
+/// Representation of one outgoing DNS message that could be sent in one or more packet(s).
 pub struct DnsOutgoing {
     flags: u16,
     id: u16,
@@ -1616,6 +1618,7 @@ impl DnsOutgoing {
     }
 }
 
+/// An incoming DNS message. It could be a query or a response.
 #[derive(Debug)]
 pub struct DnsIncoming {
     offset: usize,
