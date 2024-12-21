@@ -87,11 +87,16 @@ impl fmt::Display for RRType {
     }
 }
 
+/// The class value for the Internet.
 pub const CLASS_IN: u16 = 1;
 pub const CLASS_MASK: u16 = 0x7FFF;
+
+/// Cache-flush bit: the most significant bit of the rrclass field of the resource record.  
 pub const CLASS_CACHE_FLUSH: u16 = 0x8000;
 
-/// Max size of UDP datagram payload: 9000 bytes - IP header 20 bytes - UDP header 8 bytes.
+/// Max size of UDP datagram payload.
+///
+/// It is calculated as: 9000 bytes - IP header 20 bytes - UDP header 8 bytes.
 /// Reference: [RFC6762 section 17](https://datatracker.ietf.org/doc/html/rfc6762#section-17)
 pub const MAX_MSG_ABSOLUTE: usize = 8972;
 
@@ -106,10 +111,14 @@ const MSG_HEADER_LEN: usize = 12;
 // |QR|   Opcode  |AA|TC|RD|RA|   Z    |   RCODE   |
 //
 pub const FLAGS_QR_MASK: u16 = 0x8000; // mask for query/response bit
+
+/// Flag bit to indicate a query
 pub const FLAGS_QR_QUERY: u16 = 0x0000;
+
+/// Flag bit to indicate a response
 pub const FLAGS_QR_RESPONSE: u16 = 0x8000;
 
-/// mask for Authoritative answer bit
+/// Flag bit for Authoritative Answer
 pub const FLAGS_AA: u16 = 0x0400;
 
 /// mask for TC(Truncated) bit
@@ -134,6 +143,7 @@ impl Clone for DnsRecordBox {
 
 const U16_SIZE: usize = 2;
 
+/// Returns `RRType` for a given IP address.
 #[inline]
 pub const fn ip_address_rr_type(address: &IpAddr) -> RRType {
     match address {
@@ -161,7 +171,7 @@ impl DnsEntry {
     }
 }
 
-/// Common method for all entries:  question and resource records.
+/// Common methods for all DNS entries:  questions and resource records.
 pub trait DnsEntryExt: fmt::Debug {
     fn entry_name(&self) -> &str;
 
@@ -349,6 +359,7 @@ impl PartialEq for DnsRecord {
     }
 }
 
+/// Common methods for DNS resource records.
 pub trait DnsRecordExt: fmt::Debug {
     fn get_record(&self) -> &DnsRecord;
     fn get_record_mut(&mut self) -> &mut DnsRecord;
@@ -728,7 +739,7 @@ impl DnsRecordExt for DnsSrv {
 }
 
 /// Resource Record for a DNS TXT record.
-/// 
+///
 /// From [RFC 6763 section 6]:
 ///
 /// The format of each constituent string within the DNS TXT record is a
