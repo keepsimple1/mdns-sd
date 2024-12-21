@@ -133,6 +133,7 @@ pub const FLAGS_AA: u16 = 0x0400;
 ///             both single packet and multi-packet.
 pub const FLAGS_TC: u16 = 0x0200;
 
+/// A convenience type alias for DNS record trait objects.
 pub type DnsRecordBox = Box<dyn DnsRecordExt>;
 
 impl Clone for DnsRecordBox {

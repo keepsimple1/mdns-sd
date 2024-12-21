@@ -2,6 +2,7 @@
 name = "mdns-parser"
 version = "0.1.0"
 edition = "2018"
+rust-version = "1.65.0"
 authors = ["keepsimple <keepsimple@gmail.com>"]
 keywords = ["mdns", "service-discovery", "zeroconf", "dns-sd"]
 description = "DNS message parsing for mDNS Service Discovery"
