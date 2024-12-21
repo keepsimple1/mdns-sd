@@ -6,11 +6,7 @@
 
 #[cfg(feature = "logging")]
 use crate::log::trace;
-use crate::{
-    service_info::{decode_txt, valid_ip_on_intf, DnsRegistry},
-    Error, Result, ServiceInfo,
-};
-use if_addrs::Interface;
+
 use std::{
     any::Any,
     cmp,
@@ -91,12 +87,17 @@ impl fmt::Display for RRType {
     }
 }
 
+/// The class value for the Internet.
 pub const CLASS_IN: u16 = 1;
 pub const CLASS_MASK: u16 = 0x7FFF;
+
+/// Cache-flush bit: the most significant bit of the rrclass field of the resource record.  
 pub const CLASS_CACHE_FLUSH: u16 = 0x8000;
 
-/// Max size of UDP datagram payload: 9000 bytes - IP header 20 bytes - UDP header 8 bytes.
-/// Reference: RFC6762: https://datatracker.ietf.org/doc/html/rfc6762#section-17
+/// Max size of UDP datagram payload.
+///
+/// It is calculated as: 9000 bytes - IP header 20 bytes - UDP header 8 bytes.
+/// Reference: [RFC6762 section 17](https://datatracker.ietf.org/doc/html/rfc6762#section-17)
 pub const MAX_MSG_ABSOLUTE: usize = 8972;
 
 const MSG_HEADER_LEN: usize = 12;
@@ -110,10 +111,14 @@ const MSG_HEADER_LEN: usize = 12;
 // |QR|   Opcode  |AA|TC|RD|RA|   Z    |   RCODE   |
 //
 pub const FLAGS_QR_MASK: u16 = 0x8000; // mask for query/response bit
+
+/// Flag bit to indicate a query
 pub const FLAGS_QR_QUERY: u16 = 0x0000;
+
+/// Flag bit to indicate a response
 pub const FLAGS_QR_RESPONSE: u16 = 0x8000;
 
-/// mask for Authoritative answer bit
+/// Flag bit for Authoritative Answer
 pub const FLAGS_AA: u16 = 0x0400;
 
 /// mask for TC(Truncated) bit
@@ -128,7 +133,8 @@ pub const FLAGS_AA: u16 = 0x0400;
 ///             both single packet and multi-packet.
 pub const FLAGS_TC: u16 = 0x0200;
 
-pub(crate) type DnsRecordBox = Box<dyn DnsRecordExt>;
+/// A convenience type alias for DNS record trait objects.
+pub type DnsRecordBox = Box<dyn DnsRecordExt>;
 
 impl Clone for DnsRecordBox {
     fn clone(&self) -> Self {
@@ -138,8 +144,9 @@ impl Clone for DnsRecordBox {
 
 const U16_SIZE: usize = 2;
 
+/// Returns `RRType` for a given IP address.
 #[inline]
-pub const fn ip_address_to_type(address: &IpAddr) -> RRType {
+pub const fn ip_address_rr_type(address: &IpAddr) -> RRType {
     match address {
         IpAddr::V4(_) => RRType::A,
         IpAddr::V6(_) => RRType::AAAA,
@@ -165,10 +172,27 @@ impl DnsEntry {
     }
 }
 
+/// Common methods for all DNS entries:  questions and resource records.
+pub trait DnsEntryExt: fmt::Debug {
+    fn entry_name(&self) -> &str;
+
+    fn entry_type(&self) -> RRType;
+}
+
 /// A DNS question entry
 #[derive(Debug)]
 pub struct DnsQuestion {
     pub(crate) entry: DnsEntry,
+}
+
+impl DnsEntryExt for DnsQuestion {
+    fn entry_name(&self) -> &str {
+        &self.entry.name
+    }
+
+    fn entry_type(&self) -> RRType {
+        self.entry.ty
+    }
 }
 
 /// A DNS Resource Record - like a DNS entry, but has a TTL.
@@ -210,40 +234,44 @@ impl DnsRecord {
         }
     }
 
-    pub(crate) const fn get_expire_time(&self) -> u64 {
+    pub const fn get_ttl(&self) -> u32 {
+        self.ttl
+    }
+
+    pub const fn get_expire_time(&self) -> u64 {
         self.expires
     }
 
-    pub(crate) const fn get_refresh_time(&self) -> u64 {
+    pub const fn get_refresh_time(&self) -> u64 {
         self.refresh
     }
 
-    pub(crate) const fn is_expired(&self, now: u64) -> bool {
+    pub const fn is_expired(&self, now: u64) -> bool {
         now >= self.expires
     }
 
-    pub(crate) const fn refresh_due(&self, now: u64) -> bool {
+    pub const fn refresh_due(&self, now: u64) -> bool {
         now >= self.refresh
     }
 
     /// Returns whether `now` (in millis) has passed half of TTL.
-    pub(crate) fn halflife_passed(&self, now: u64) -> bool {
+    pub fn halflife_passed(&self, now: u64) -> bool {
         let halflife = get_expiration_time(self.created, self.ttl, 50);
         now > halflife
     }
 
-    pub(crate) fn is_unique(&self) -> bool {
+    pub fn is_unique(&self) -> bool {
         self.entry.cache_flush
     }
 
     /// Updates the refresh time to be the same as the expire time so that
     /// this record will not refresh again and will just expire.
-    pub(crate) fn refresh_no_more(&mut self) {
+    pub fn refresh_no_more(&mut self) {
         self.refresh = get_expiration_time(self.created, self.ttl, 100);
     }
 
     /// Returns if this record is due for refresh. If yes, `refresh` time is updated.
-    pub(crate) fn refresh_maybe(&mut self, now: u64) -> bool {
+    pub fn refresh_maybe(&mut self, now: u64) -> bool {
         if self.is_expired(now) || !self.refresh_due(now) {
             return false;
         }
@@ -280,7 +308,7 @@ impl DnsRecord {
     }
 
     /// Return the absolute time for this record being created
-    const fn get_created(&self) -> u64 {
+    pub const fn get_created(&self) -> u64 {
         self.created
     }
 
@@ -297,14 +325,14 @@ impl DnsRecord {
     }
 
     /// Modify TTL to reflect the remaining life time from `now`.
-    pub(crate) fn update_ttl(&mut self, now: u64) {
+    pub fn update_ttl(&mut self, now: u64) {
         if now > self.created {
             let elapsed = now - self.created;
             self.ttl -= (elapsed / 1000) as u32;
         }
     }
 
-    pub(crate) fn set_new_name(&mut self, new_name: String) {
+    pub fn set_new_name(&mut self, new_name: String) {
         if new_name == self.entry.name {
             self.new_name = None;
         } else {
@@ -312,7 +340,7 @@ impl DnsRecord {
         }
     }
 
-    pub(crate) fn get_new_name(&self) -> Option<&str> {
+    pub fn get_new_name(&self) -> Option<&str> {
         self.new_name.as_deref()
     }
 
@@ -321,7 +349,7 @@ impl DnsRecord {
         self.new_name.as_deref().unwrap_or(&self.entry.name)
     }
 
-    pub(crate) fn get_original_name(&self) -> &str {
+    pub fn get_original_name(&self) -> &str {
         &self.entry.name
     }
 }
@@ -332,7 +360,8 @@ impl PartialEq for DnsRecord {
     }
 }
 
-pub(crate) trait DnsRecordExt: fmt::Debug {
+/// Common methods for DNS resource records.
+pub trait DnsRecordExt: fmt::Debug {
     fn get_record(&self) -> &DnsRecord;
     fn get_record_mut(&mut self) -> &mut DnsRecord;
     fn write(&self, packet: &mut DnsOutPacket);
@@ -447,21 +476,21 @@ pub(crate) trait DnsRecordExt: fmt::Debug {
     fn clone_box(&self) -> DnsRecordBox;
 }
 
+/// Resource Record for IPv4 address or IPv6 address.
 #[derive(Debug, Clone)]
 pub struct DnsAddress {
     pub(crate) record: DnsRecord,
-    pub(crate) address: IpAddr,
+    address: IpAddr,
 }
 
 impl DnsAddress {
-    pub(crate) fn new(name: &str, ty: RRType, class: u16, ttl: u32, address: IpAddr) -> Self {
+    pub fn new(name: &str, ty: RRType, class: u16, ttl: u32, address: IpAddr) -> Self {
         let record = DnsRecord::new(name, ty, class, ttl);
         Self { record, address }
     }
 
-    /// Returns whether this address is in the same subnet of `intf`.
-    pub(crate) fn in_subnet(&self, intf: &Interface) -> bool {
-        valid_ip_on_intf(&self.address, intf)
+    pub fn address(&self) -> IpAddr {
+        self.address
     }
 }
 
@@ -516,17 +545,21 @@ impl DnsRecordExt for DnsAddress {
     }
 }
 
-/// A DNS pointer record
+/// Resource Record for a DNS pointer
 #[derive(Debug, Clone)]
 pub struct DnsPointer {
     record: DnsRecord,
-    pub(crate) alias: String, // the full name of Service Instance
+    alias: String, // the full name of Service Instance
 }
 
 impl DnsPointer {
-    pub(crate) fn new(name: &str, ty: RRType, class: u16, ttl: u32, alias: String) -> Self {
+    pub fn new(name: &str, ty: RRType, class: u16, ttl: u32, alias: String) -> Self {
         let record = DnsRecord::new(name, ty, class, ttl);
         Self { record, alias }
+    }
+
+    pub fn alias(&self) -> &str {
+        &self.alias
     }
 }
 
@@ -578,20 +611,18 @@ impl DnsRecordExt for DnsPointer {
     }
 }
 
-// In common cases, there is one and only one SRV record for a particular fullname.
+/// Resource Record for a DNS service.
 #[derive(Debug, Clone)]
 pub struct DnsSrv {
     pub(crate) record: DnsRecord,
-    pub(crate) priority: u16,
-    // lower number means higher priority. Should be 0 in common cases.
-    pub(crate) weight: u16,
-    // Should be 0 in common cases
-    pub(crate) host: String,
-    pub(crate) port: u16,
+    pub(crate) priority: u16, // lower number means higher priority. Should be 0 in common cases.
+    pub(crate) weight: u16,   // Should be 0 in common cases
+    host: String,
+    port: u16,
 }
 
 impl DnsSrv {
-    pub(crate) fn new(
+    pub fn new(
         name: &str,
         class: u16,
         ttl: u32,
@@ -608,6 +639,18 @@ impl DnsSrv {
             host,
             port,
         }
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn set_host(&mut self, host: String) {
+        self.host = host;
     }
 }
 
@@ -696,28 +739,34 @@ impl DnsRecordExt for DnsSrv {
     }
 }
 
-// From RFC 6763 section 6:
-//
-// The format of each constituent string within the DNS TXT record is a
-// single length byte, followed by 0-255 bytes of text data.
-//
-// DNS-SD uses DNS TXT records to store arbitrary key/value pairs
-//    conveying additional information about the named service.  Each
-//    key/value pair is encoded as its own constituent string within the
-//    DNS TXT record, in the form "key=value" (without the quotation
-//    marks).  Everything up to the first '=' character is the key (Section
-//    6.4).  Everything after the first '=' character to the end of the
-//    string (including subsequent '=' characters, if any) is the value
+/// Resource Record for a DNS TXT record.
+///
+/// From [RFC 6763 section 6]:
+///
+/// The format of each constituent string within the DNS TXT record is a
+/// single length byte, followed by 0-255 bytes of text data.
+///
+/// DNS-SD uses DNS TXT records to store arbitrary key/value pairs
+///    conveying additional information about the named service.  Each
+///    key/value pair is encoded as its own constituent string within the
+///    DNS TXT record, in the form "key=value" (without the quotation
+///    marks).  Everything up to the first '=' character is the key (Section
+///    6.4).  Everything after the first '=' character to the end of the
+///    string (including subsequent '=' characters, if any) is the value
 #[derive(Clone)]
 pub struct DnsTxt {
     pub(crate) record: DnsRecord,
-    pub(crate) text: Vec<u8>,
+    text: Vec<u8>,
 }
 
 impl DnsTxt {
-    pub(crate) fn new(name: &str, class: u16, ttl: u32, text: Vec<u8>) -> Self {
+    pub fn new(name: &str, class: u16, ttl: u32, text: Vec<u8>) -> Self {
         let record = DnsRecord::new(name, RRType::TXT, class, ttl);
         Self { record, text }
+    }
+
+    pub fn text(&self) -> &[u8] {
+        &self.text
     }
 }
 
@@ -778,6 +827,163 @@ impl fmt::Debug for DnsTxt {
             self.record, properties
         )
     }
+}
+
+// Convert from DNS TXT record content to key/value pairs
+fn decode_txt(txt: &[u8]) -> Vec<TxtProperty> {
+    let mut properties = Vec::new();
+    let mut offset = 0;
+    while offset < txt.len() {
+        let length = txt[offset] as usize;
+        if length == 0 {
+            break; // reached the end
+        }
+        offset += 1; // move over the length byte
+
+        let offset_end = offset + length;
+        if offset_end > txt.len() {
+            trace!("ERROR: DNS TXT: size given for property is out of range. (offset={}, length={}, offset_end={}, record length={})", offset, length, offset_end, txt.len());
+            break; // Skipping the rest of the record content, as the size for this property would already be out of range.
+        }
+        let kv_bytes = &txt[offset..offset_end];
+
+        // split key and val using the first `=`
+        let (k, v) = kv_bytes.iter().position(|&x| x == b'=').map_or_else(
+            || (kv_bytes.to_vec(), None),
+            |idx| (kv_bytes[..idx].to_vec(), Some(kv_bytes[idx + 1..].to_vec())),
+        );
+
+        // Make sure the key can be stored in UTF-8.
+        match String::from_utf8(k) {
+            Ok(k_string) => {
+                properties.push(TxtProperty {
+                    key: k_string,
+                    val: v,
+                });
+            }
+            Err(e) => trace!("ERROR: convert to String from key: {}", e),
+        }
+
+        offset += length;
+    }
+
+    properties
+}
+
+/// Represents a property in a TXT record.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TxtProperty {
+    /// The name of the property. The original cases are kept.
+    key: String,
+
+    /// RFC 6763 says values are bytes, not necessarily UTF-8.
+    /// It is also possible that there is no value, in which case
+    /// the key is a boolean key.
+    val: Option<Vec<u8>>,
+}
+
+impl TxtProperty {
+    /// Returns the key of a property.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the value of a property, which could be `None`.
+    ///
+    /// To obtain a `&str` of the value, use `val_str()` instead.
+    pub fn val(&self) -> Option<&[u8]> {
+        self.val.as_deref()
+    }
+
+    /// Returns the value of a property as str.
+    pub fn val_str(&self) -> &str {
+        self.val
+            .as_ref()
+            .map_or("", |v| std::str::from_utf8(&v[..]).unwrap_or_default())
+    }
+}
+
+/// Supports constructing from a tuple.
+impl<K, V> From<&(K, V)> for TxtProperty
+where
+    K: ToString,
+    V: ToString,
+{
+    fn from(prop: &(K, V)) -> Self {
+        Self {
+            key: prop.0.to_string(),
+            val: Some(prop.1.to_string().into_bytes()),
+        }
+    }
+}
+
+impl<K, V> From<(K, V)> for TxtProperty
+where
+    K: ToString,
+    V: AsRef<[u8]>,
+{
+    fn from(prop: (K, V)) -> Self {
+        Self {
+            key: prop.0.to_string(),
+            val: Some(prop.1.as_ref().into()),
+        }
+    }
+}
+
+/// Support a property that has no value.
+impl From<&str> for TxtProperty {
+    fn from(key: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            val: None,
+        }
+    }
+}
+
+impl fmt::Display for TxtProperty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}={}", self.key, self.val_str())
+    }
+}
+
+/// Mimic the default debug output for a struct, with a twist:
+/// - If self.var is UTF-8, will output it as a string in double quotes.
+/// - If self.var is not UTF-8, will output its bytes as in hex.
+impl fmt::Debug for TxtProperty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let val_string = self.val.as_ref().map_or_else(
+            || "None".to_string(),
+            |v| {
+                std::str::from_utf8(&v[..]).map_or_else(
+                    |_| format!("Some({})", u8_slice_to_hex(&v[..])),
+                    |s| format!("Some(\"{}\")", s),
+                )
+            },
+        );
+
+        write!(
+            f,
+            "TxtProperty {{key: \"{}\", val: {}}}",
+            &self.key, &val_string,
+        )
+    }
+}
+
+const HEX_TABLE: [char; 16] = [
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+];
+
+/// Create a hex string from `slice`, with a "0x" prefix.
+///
+/// For example, [1u8, 2u8] -> "0x0102"
+fn u8_slice_to_hex(slice: &[u8]) -> String {
+    let mut hex = String::with_capacity(slice.len() * 2 + 2);
+    hex.push_str("0x");
+    for b in slice {
+        hex.push(HEX_TABLE[(b >> 4) as usize]);
+        hex.push(HEX_TABLE[(b & 0x0F) as usize]);
+    }
+    hex
 }
 
 /// A DNS host information record
@@ -850,7 +1056,7 @@ impl DnsRecordExt for DnsHostInfo {
     }
 }
 
-/// Record for negative responses
+/// Resource Record for negative responses
 ///
 /// [RFC4034 section 4.1](https://datatracker.ietf.org/doc/html/rfc4034#section-4.1)
 /// and
@@ -863,7 +1069,13 @@ pub struct DnsNSec {
 }
 
 impl DnsNSec {
-    fn new(name: &str, class: u16, ttl: u32, next_domain: String, type_bitmap: Vec<u8>) -> Self {
+    pub fn new(
+        name: &str,
+        class: u16,
+        ttl: u32,
+        next_domain: String,
+        type_bitmap: Vec<u8>,
+    ) -> Self {
         let record = DnsRecord::new(name, RRType::NSEC, class, ttl);
         Self {
             record,
@@ -873,7 +1085,7 @@ impl DnsNSec {
     }
 
     /// Returns the types marked by `type_bitmap`
-    pub(crate) fn _types(&self) -> Vec<u16> {
+    pub fn types(&self) -> Vec<u16> {
         // From RFC 4034: 4.1.2 The Type Bit Maps Field
         // https://datatracker.ietf.org/doc/html/rfc4034#section-4.1.2
         //
@@ -967,7 +1179,7 @@ enum PacketState {
 }
 
 /// A single packet for outgoing DNS message.
-pub(crate) struct DnsOutPacket {
+pub struct DnsOutPacket {
     /// All bytes in `data` concatenated is the actual packet on the wire.
     data: Vec<Vec<u8>>,
 
@@ -989,6 +1201,14 @@ impl DnsOutPacket {
             state: PacketState::Init,
             names: HashMap::new(),
         }
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.data.concat()
     }
 
     fn write_question(&mut self, question: &DnsQuestion) {
@@ -1184,21 +1404,20 @@ impl DnsOutPacket {
     }
 }
 
-/// Representation of one or more outgoing packet(s). The actual encoded packet
-/// is [DnsOutPacket].
-pub(crate) struct DnsOutgoing {
+/// Representation of one outgoing DNS message that could be sent in one or more packet(s).
+pub struct DnsOutgoing {
     flags: u16,
-    pub(crate) id: u16,
+    id: u16,
     multicast: bool,
-    pub(crate) questions: Vec<DnsQuestion>,
-    pub(crate) answers: Vec<(DnsRecordBox, u64)>,
-    pub(crate) authorities: Vec<DnsRecordBox>,
-    pub(crate) additionals: Vec<DnsRecordBox>,
-    pub(crate) known_answer_count: i64, // for internal maintenance only
+    questions: Vec<DnsQuestion>,
+    answers: Vec<(DnsRecordBox, u64)>,
+    authorities: Vec<DnsRecordBox>,
+    additionals: Vec<DnsRecordBox>,
+    known_answer_count: i64, // for internal maintenance only
 }
 
 impl DnsOutgoing {
-    pub(crate) fn new(flags: u16) -> Self {
+    pub fn new(flags: u16) -> Self {
         Self {
             flags,
             id: 0,
@@ -1211,7 +1430,31 @@ impl DnsOutgoing {
         }
     }
 
-    pub(crate) const fn is_query(&self) -> bool {
+    pub fn questions(&self) -> &[DnsQuestion] {
+        &self.questions
+    }
+
+    pub fn answers_count(&self) -> usize {
+        self.answers.len()
+    }
+
+    pub fn authorities(&self) -> &[DnsRecordBox] {
+        &self.authorities
+    }
+
+    pub fn additionals(&self) -> &[DnsRecordBox] {
+        &self.additionals
+    }
+
+    pub fn known_answer_count(&self) -> i64 {
+        self.known_answer_count
+    }
+
+    pub fn set_id(&mut self, id: u16) {
+        self.id = id;
+    }
+
+    pub const fn is_query(&self) -> bool {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_QUERY
     }
 
@@ -1252,23 +1495,23 @@ impl DnsOutgoing {
     //    server/responder SHOULD include the following additional records:
 
     //    o  All address records (type "A" and "AAAA") named in the SRV rdata.
-    pub(crate) fn add_additional_answer(&mut self, answer: impl DnsRecordExt + 'static) {
+    pub fn add_additional_answer(&mut self, answer: impl DnsRecordExt + 'static) {
         trace!("add_additional_answer: {:?}", &answer);
         self.additionals.push(Box::new(answer));
     }
 
     /// A workaround as Rust doesn't allow us to pass DnsRecordBox in as `impl DnsRecordExt`
-    pub(crate) fn add_answer_box(&mut self, answer_box: DnsRecordBox) {
+    pub fn add_answer_box(&mut self, answer_box: DnsRecordBox) {
         self.answers.push((answer_box, 0));
     }
 
-    pub(crate) fn add_authority(&mut self, record: DnsRecordBox) {
+    pub fn add_authority(&mut self, record: DnsRecordBox) {
         self.authorities.push(record);
     }
 
     /// Returns true if `answer` is added to the outgoing msg.
     /// Returns false if `answer` was not added as it expired or suppressed by the incoming `msg`.
-    pub(crate) fn add_answer(
+    pub fn add_answer(
         &mut self,
         msg: &DnsIncoming,
         answer: impl DnsRecordExt + Send + 'static,
@@ -1286,7 +1529,7 @@ impl DnsOutgoing {
     /// Returns true if `answer` is added to the outgoing msg.
     /// Returns false if the answer is expired `now` hence not added.
     /// If `now` is 0, do not check if the answer expires.
-    pub(crate) fn add_answer_at_time(
+    pub fn add_answer_at_time(
         &mut self,
         answer: impl DnsRecordExt + Send + 'static,
         now: u64,
@@ -1299,94 +1542,7 @@ impl DnsOutgoing {
         false
     }
 
-    /// Adds PTR answer and SRV, TXT, ADDR answers.
-    /// See https://tools.ietf.org/html/rfc6763#section-12.1
-    ///
-    /// If there are no addresses on the LAN of `intf`, we will not
-    /// add any answers for `service`. In other words, we only
-    /// add addresses that are valid on `intf`.
-    pub(crate) fn add_answer_with_additionals(
-        &mut self,
-        msg: &DnsIncoming,
-        service: &ServiceInfo,
-        intf: &Interface,
-        dns_registry: &DnsRegistry,
-    ) {
-        let intf_addrs = service.get_addrs_on_intf(intf);
-        if intf_addrs.is_empty() {
-            trace!("No addrs on LAN of intf {:?}", intf);
-            return;
-        }
-
-        // check if we changed our name due to conflicts.
-        let service_fullname = match dns_registry.name_changes.get(service.get_fullname()) {
-            Some(new_name) => new_name,
-            None => service.get_fullname(),
-        };
-
-        let hostname = match dns_registry.name_changes.get(service.get_hostname()) {
-            Some(new_name) => new_name,
-            None => service.get_hostname(),
-        };
-
-        let ptr_added = self.add_answer(
-            msg,
-            DnsPointer::new(
-                service.get_type(),
-                RRType::PTR,
-                CLASS_IN,
-                service.get_other_ttl(),
-                service_fullname.to_string(),
-            ),
-        );
-
-        if !ptr_added {
-            trace!("answer was not added for msg {:?}", msg);
-            return;
-        }
-
-        if let Some(sub) = service.get_subtype() {
-            trace!("Adding subdomain {}", sub);
-            self.add_additional_answer(DnsPointer::new(
-                sub,
-                RRType::PTR,
-                CLASS_IN,
-                service.get_other_ttl(),
-                service_fullname.to_string(),
-            ));
-        }
-
-        // Add recommended additional answers according to
-        // https://tools.ietf.org/html/rfc6763#section-12.1.
-        self.add_additional_answer(DnsSrv::new(
-            service_fullname,
-            CLASS_IN | CLASS_CACHE_FLUSH,
-            service.get_host_ttl(),
-            service.get_priority(),
-            service.get_weight(),
-            service.get_port(),
-            hostname.to_string(),
-        ));
-
-        self.add_additional_answer(DnsTxt::new(
-            service_fullname,
-            CLASS_IN | CLASS_CACHE_FLUSH,
-            service.get_host_ttl(),
-            service.generate_txt(),
-        ));
-
-        for address in intf_addrs {
-            self.add_additional_answer(DnsAddress::new(
-                hostname,
-                ip_address_to_type(&address),
-                CLASS_IN | CLASS_CACHE_FLUSH,
-                service.get_host_ttl(),
-                address,
-            ));
-        }
-    }
-
-    pub(crate) fn add_question(&mut self, name: &str, qtype: RRType) {
+    pub fn add_question(&mut self, name: &str, qtype: RRType) {
         let q = DnsQuestion {
             entry: DnsEntry::new(name.to_string(), qtype, CLASS_IN),
         };
@@ -1394,13 +1550,13 @@ impl DnsOutgoing {
     }
 
     /// Returns a list of actual DNS packet data to be sent on the wire.
-    pub(crate) fn to_data_on_wire(&self) -> Vec<Vec<u8>> {
+    pub fn to_data_on_wire(&self) -> Vec<Vec<u8>> {
         let packet_list = self.to_packets();
         packet_list.iter().map(|p| p.data.concat()).collect()
     }
 
     /// Encode self into one or more packets.
-    pub(crate) fn to_packets(&self) -> Vec<DnsOutPacket> {
+    pub fn to_packets(&self) -> Vec<DnsOutPacket> {
         let mut packet_list = Vec::new();
         let mut packet = DnsOutPacket::new();
 
@@ -1474,24 +1630,25 @@ impl DnsOutgoing {
     }
 }
 
+/// An incoming DNS message. It could be a query or a response.
 #[derive(Debug)]
 pub struct DnsIncoming {
     offset: usize,
     data: Vec<u8>,
-    pub(crate) questions: Vec<DnsQuestion>,
-    pub(crate) answers: Vec<DnsRecordBox>,
-    pub(crate) authorities: Vec<DnsRecordBox>,
-    pub(crate) additional: Vec<DnsRecordBox>,
-    pub(crate) id: u16,
+    questions: Vec<DnsQuestion>,
+    answers: Vec<DnsRecordBox>,
+    authorities: Vec<DnsRecordBox>,
+    additional: Vec<DnsRecordBox>,
+    id: u16,
     flags: u16,
-    pub(crate) num_questions: u16,
-    pub(crate) num_answers: u16,
-    pub(crate) num_authorities: u16,
-    pub(crate) num_additionals: u16,
+    num_questions: u16,
+    num_answers: u16,
+    num_authorities: u16,
+    num_additionals: u16,
 }
 
 impl DnsIncoming {
-    pub(crate) fn new(data: Vec<u8>) -> Result<Self> {
+    pub fn new(data: Vec<u8>) -> Result<Self> {
         let mut incoming = Self {
             offset: 0,
             data,
@@ -1535,11 +1692,62 @@ impl DnsIncoming {
         Ok(incoming)
     }
 
-    pub(crate) const fn is_query(&self) -> bool {
+    pub fn id(&self) -> u16 {
+        self.id
+    }
+
+    pub fn questions(&self) -> &[DnsQuestion] {
+        &self.questions
+    }
+
+    pub fn answers(&self) -> &[DnsRecordBox] {
+        &self.answers
+    }
+
+    pub fn authorities(&self) -> &[DnsRecordBox] {
+        &self.authorities
+    }
+
+    pub fn additionals(&self) -> &[DnsRecordBox] {
+        &self.additional
+    }
+
+    pub fn answers_mut(&mut self) -> &mut Vec<DnsRecordBox> {
+        &mut self.answers
+    }
+
+    pub fn authorities_mut(&mut self) -> &mut Vec<DnsRecordBox> {
+        &mut self.authorities
+    }
+
+    pub fn additionals_mut(&mut self) -> &mut Vec<DnsRecordBox> {
+        &mut self.additional
+    }
+
+    pub fn all_records(self) -> impl Iterator<Item = DnsRecordBox> {
+        self.answers
+            .into_iter()
+            .chain(self.authorities)
+            .chain(self.additional)
+    }
+
+    pub fn num_additionals(&self) -> u16 {
+        self.num_additionals
+    }
+
+    pub fn num_authorities(&self) -> u16 {
+        self.num_authorities
+    }
+
+    pub fn num_questions(&self) -> u16 {
+        self.num_questions
+    }
+
+    pub const fn is_query(&self) -> bool {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_QUERY
     }
 
-    pub(crate) const fn is_response(&self) -> bool {
+    pub const fn is_response(&self) -> bool {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_RESPONSE
     }
 
@@ -1967,17 +2175,8 @@ impl DnsIncoming {
     }
 }
 
-/// Returns a tuple of (service_type_domain, optional_sub_domain)
-pub fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
-    if let Some((_, ty_domain)) = domain.rsplit_once("._sub.") {
-        (ty_domain, Some(domain))
-    } else {
-        (domain, None)
-    }
-}
-
 /// Returns UNIX time in millis
-pub fn current_time_millis() -> u64 {
+fn current_time_millis() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .expect("failed to get current UNIX time")
@@ -2002,293 +2201,31 @@ const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
     created + (ttl * percent * 10) as u64
 }
 
-#[cfg(test)]
-mod tests {
-    use std::iter::repeat_with;
+/// A basic error type from this library.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Error {
+    /// Like a classic EAGAIN. The receiver should retry.
+    Again,
 
-    use super::{
-        current_time_millis, get_expiration_time, DnsIncoming, DnsNSec, DnsOutgoing, DnsPointer,
-        DnsRecordExt, DnsSrv, DnsTxt, RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY,
-        FLAGS_QR_RESPONSE, MSG_HEADER_LEN,
-    };
+    /// A generic error message.
+    Msg(String),
 
-    #[test]
-    fn test_read_name_invalid_length() {
-        let name = "test_read";
-        let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
-        out.add_question(name, RRType::PTR);
-        let data = out.to_data_on_wire().remove(0);
+    /// Error during parsing of ip address
+    ParseIpAddr(String),
+}
 
-        // construct invalid data.
-        let max_len = data.len() as u8;
-        let mut data_with_invalid_name_length = data.clone();
-        let mut data_with_larger_name_length = data.clone();
-        let name_length_offset = 12;
-
-        // 0x9 is the length of `name`
-        // 0x80 (0b1000_0000) has two leading bits `10`, which is invalid.
-        data_with_invalid_name_length[name_length_offset] = 0x9 | 0b1000_0000;
-
-        // The original data is fine.
-        let incoming = DnsIncoming::new(data);
-        assert!(incoming.is_ok());
-
-        // The data with invalid name length is not fine.
-        let invalid = DnsIncoming::new(data_with_invalid_name_length);
-        assert!(invalid.is_err());
-        if let Err(e) = invalid {
-            println!("error: {}", e);
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Msg(s) => write!(f, "{}", s),
+            Self::ParseIpAddr(s) => write!(f, "parsing of ip addr failed, reason: {}", s),
+            Self::Again => write!(f, "try again"),
         }
-
-        // Another error case: `length`` is larger than the actual string length.
-        data_with_larger_name_length[name_length_offset] = max_len + 1;
-        let invalid = DnsIncoming::new(data_with_larger_name_length);
-        assert!(invalid.is_err());
-        if let Err(e) = invalid {
-            println!("error: {}", e);
-        }
-    }
-
-    // `read_name` must not go into an infinite loop when the data is corrupted
-    // with a "name compression loop".
-    #[test]
-    fn test_read_name_compression_loop() {
-        let name = "test_loop";
-        let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
-        out.add_question(name, RRType::PTR);
-        let mut data = out.to_data_on_wire().remove(0);
-
-        let name_length_offset = 12; // start of the name in the message.
-
-        // The "name" terminates with a "length 0" byte.
-        // Note that the "name length" itself is one byte.
-        let zero_length_offset = name_length_offset + 1 + name.len();
-
-        // Verify the "name length" byte and the "length 0" byte.
-        assert_eq!(data[name_length_offset], name.len() as u8);
-        assert_eq!(data[zero_length_offset], 0);
-
-        // Modify `data` to create a "name compression loop":
-        //
-        // Changing the "length 0" byte into a "pointer" byte,
-        // followed by the "offset pointed" byte.
-        data[zero_length_offset] = 0b1100_0000; // first two bits indicates a "pointer"
-        data[zero_length_offset + 1] = name_length_offset as u8; // points back to "name"
-
-        let result = DnsIncoming::new(data);
-        assert!(result.is_err());
-        if let Err(e) = result {
-            println!("Error: {}", e);
-        }
-    }
-
-    /// Tests DnsIncoming::read_others()
-    #[test]
-    fn test_rr_too_short_after_name() {
-        let name = "test_rr_too_short._udp.local.";
-        let mut response = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        response.add_additional_answer(DnsSrv::new(
-            name,
-            CLASS_IN | CLASS_CACHE_FLUSH,
-            1,
-            1,
-            1,
-            9000,
-            "instance1".to_string(),
-        ));
-        let data = response.to_data_on_wire().remove(0);
-        let mut data_too_short = data.clone();
-
-        // verify the original data is good.
-        let incoming = DnsIncoming::new(data);
-        assert!(incoming.is_ok());
-
-        // verify that truncated data will cause an error.
-        data_too_short.truncate(MSG_HEADER_LEN + name.len() + 2);
-        let invalid = DnsIncoming::new(data_too_short);
-        assert!(invalid.is_err());
-        if let Err(e) = invalid {
-            println!("error: {}", e);
-        }
-    }
-
-    #[test]
-    fn test_rr_read_u16_error() {
-        let name = "rr_read_u16_err._udp.local.";
-        let host = "read_u16_err_host";
-        let mut response = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        response.add_additional_answer(DnsSrv::new(
-            name,
-            CLASS_IN | CLASS_CACHE_FLUSH,
-            1,
-            1,
-            1,
-            9000,
-            host.to_string(),
-        ));
-        let data = response.to_data_on_wire().remove(0);
-        let data_len = data.len();
-        let mut data_too_short = data.clone();
-
-        // verify the original data is good.
-        let incoming = DnsIncoming::new(data);
-        assert!(incoming.is_ok());
-
-        // Truncate the 'host' and its associated bytes (length byte, ending null byte),
-        // and one more byte off to create an invalid u16.
-        data_too_short.truncate(data_len - host.len() - 3);
-        let invalid = DnsIncoming::new(data_too_short);
-
-        // Verify the error of decoding.
-        assert!(invalid.is_err());
-        if let Err(e) = invalid {
-            println!("error: {e}");
-        }
-    }
-
-    #[test]
-    fn test_rr_read_vec_error() {
-        let mut response = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        let name = "rr_read_vec_err._udp.local.";
-        let text = "greeting=hello".as_bytes().to_vec();
-
-        response.add_additional_answer(DnsTxt::new(name, CLASS_IN | CLASS_CACHE_FLUSH, 1, text));
-
-        let data = response.to_data_on_wire().remove(0);
-        let data_len = data.len();
-        let mut data_too_short = data.clone();
-
-        // verify the original response data is good.
-        let incoming = DnsIncoming::new(data);
-        assert!(incoming.is_ok());
-
-        // Truncate the data to mimic invalid length.
-        data_too_short.truncate(data_len - 5);
-        let invalid = DnsIncoming::new(data_too_short);
-
-        // Verify the error of decoding.
-        assert!(invalid.is_err());
-        if let Err(e) = invalid {
-            println!("error: {e}");
-        }
-    }
-
-    #[test]
-    fn test_rr_rand_data_error() {
-        const DATA_LEN_MAX: usize = 2048;
-        const TEST_TIMES: usize = 100000;
-
-        for _ in 0..TEST_TIMES {
-            // Generate a random length of data
-            let data_len = fastrand::usize(0..DATA_LEN_MAX);
-
-            // Generate random data
-            let rand_data: Vec<u8> = repeat_with(|| fastrand::u8(..)).take(data_len).collect();
-
-            // Decode rand data, it should not panic
-            let _ = DnsIncoming::new(rand_data);
-        }
-    }
-
-    #[test]
-    fn test_dns_nsec() {
-        let name = "instance1._nsec_test._udp.local.";
-        let next_domain = name.to_string();
-        let type_bitmap = vec![64, 0, 0, 8]; // Two bits set to '1': bit 1 and bit 28.
-        let nsec = DnsNSec::new(
-            name,
-            CLASS_IN | CLASS_CACHE_FLUSH,
-            1,
-            next_domain,
-            type_bitmap,
-        );
-        let absent_types = nsec._types();
-        assert_eq!(absent_types.len(), 2);
-        assert_eq!(absent_types[0], RRType::A as u16);
-        assert_eq!(absent_types[1], RRType::AAAA as u16);
-    }
-
-    #[test]
-    fn test_refresh_maybe() {
-        let name = "test_refresh._udp.local.";
-        let ttl = 2;
-        let hostname = "instance1.local.";
-        let mut srv = DnsSrv::new(name, CLASS_IN, ttl, 0, 0, 0, hostname.to_string());
-
-        // refresh is not due yet.
-        let now = current_time_millis();
-        let refreshed = srv.get_record_mut().refresh_maybe(now);
-        assert!(!refreshed);
-
-        // sleep for 80 percent of TTL in millis to reach "refresh" time.
-        let sleep_in_mills = (ttl * 80 * 10) as u64;
-        std::thread::sleep(std::time::Duration::from_millis(sleep_in_mills));
-
-        // refresh is due.
-        let now = current_time_millis();
-        let refreshed = srv.get_record_mut().refresh_maybe(now);
-        assert!(refreshed);
-
-        // refresh time is updated.
-        let dns_record = srv.get_record();
-        let new_refresh = get_expiration_time(dns_record.get_created(), dns_record.ttl, 85);
-        assert_eq!(new_refresh, dns_record.get_refresh_time());
-    }
-
-    #[test]
-    fn test_packet_size() {
-        let mut outgoing = DnsOutgoing::new(FLAGS_QR_QUERY);
-        outgoing.add_question("test_packet_size", RRType::PTR);
-
-        let packet = outgoing.to_packets().remove(0);
-        println!("packet size: {}", packet.size);
-        let data = packet.data.concat();
-        println!("data size: {}", data.len());
-
-        assert_eq!(packet.size, data.len());
-    }
-
-    #[test]
-    fn test_querier_known_answer_multi_packet() {
-        let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
-        let name = "test_multi_packet._udp.local.";
-        query.add_question(name, RRType::PTR);
-
-        let known_answer_count = 400;
-        for i in 0..known_answer_count {
-            let alias = format!("instance{}.{}", i, name);
-            let answer = DnsPointer::new(name, RRType::PTR, CLASS_IN, 0, alias);
-            query.add_additional_answer(answer);
-        }
-
-        let mut packets = query.to_data_on_wire();
-        println!("packets count: {}", packets.len());
-        assert_eq!(packets.len(), 2);
-
-        let first_packet = packets.remove(0);
-        println!("first packet size: {}", first_packet.len());
-
-        let incoming1 = DnsIncoming::new(first_packet).unwrap();
-        println!(
-            "first packet know answer count: {}, question count: {}",
-            incoming1.num_additionals, incoming1.num_questions
-        );
-
-        let second_packet = packets.remove(0);
-        println!("second packet size: {}", second_packet.len());
-
-        let incoming2 = DnsIncoming::new(second_packet).unwrap();
-        println!(
-            "second packet known answer count: {}, question count: {}",
-            incoming2.num_additionals, incoming2.num_questions
-        );
-
-        assert_eq!(
-            incoming1.num_additionals + incoming2.num_additionals,
-            known_answer_count
-        );
-
-        assert_eq!(incoming1.num_questions, 1);
-        assert_eq!(incoming2.num_questions, 0);
     }
 }
+
+impl std::error::Error for Error {}
+
+/// One and only `Result` type from this library crate.
+pub type Result<T> = core::result::Result<T, Error>;

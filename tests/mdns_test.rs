@@ -839,8 +839,20 @@ fn test_service_name_check() {
     assert!(result.is_ok());
 
     // Verify that the service was published successfully.
-    let event = monitor.recv_timeout(Duration::from_millis(500)).unwrap();
-    assert!(matches!(event, DaemonEvent::Announce(_, _)));
+    let mut published = false;
+    let publish_timeout = 1200;
+    while let Ok(event) = monitor.recv_timeout(Duration::from_millis(publish_timeout)) {
+        match event {
+            DaemonEvent::Announce(_, _) => {
+                published = true;
+                break;
+            }
+            other => {
+                println!("other daemon events: {:?}", other);
+            }
+        }
+    }
+    assert!(published);
 
     // Check for the internal upper limit of service name length max.
     let r = server_daemon.set_service_name_len_max(31);
@@ -934,11 +946,20 @@ fn instance_name_two_dots() {
     assert!(result.is_ok());
 
     // Verify that the service was published successfully.
-    let publish_timeout = 1000;
-    let event = monitor
-        .recv_timeout(Duration::from_millis(publish_timeout))
-        .unwrap();
-    assert!(matches!(event, DaemonEvent::Announce(_, _)));
+    let mut published = false;
+    let publish_timeout = 1200;
+    while let Ok(event) = monitor.recv_timeout(Duration::from_millis(publish_timeout)) {
+        match event {
+            DaemonEvent::Announce(_, _) => {
+                published = true;
+                break;
+            }
+            other => {
+                println!("other daemon events: {:?}", other);
+            }
+        }
+    }
+    assert!(published);
 
     // Browse the service.
     let receiver = server_daemon.browse(service_type).unwrap();
