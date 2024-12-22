@@ -3821,7 +3821,7 @@ mod tests {
 
         let mdns_client = ServiceDaemon::new().expect("Failed to create mdns client");
         let browse_chan = mdns_client.browse(service_type).unwrap();
-        let timeout = Duration::from_secs(1);
+        let timeout = Duration::from_millis(1500); // Give at least 1 second for the service probing.
         let mut resolved = false;
 
         // resolve the service first.
