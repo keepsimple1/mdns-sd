@@ -2032,6 +2032,17 @@ impl Zeroconf {
                         continue;
                     }
                 }
+
+                // double check if any other address record matches rrdata,
+                // as there could be multiple addresses for the same name.
+                let any_match = probe.records.iter().any(|r| {
+                    r.get_type() == answer.get_type()
+                        && r.get_class() == answer.get_class()
+                        && r.rrdata_match(answer.as_ref())
+                });
+                if any_match {
+                    continue; // no conflict for this answer.
+                }
             }
 
             probe.records.retain(|record| {
