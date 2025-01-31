@@ -493,6 +493,11 @@ impl ServiceDaemon {
             let key =
                 Zeroconf::add_poll_impl(&mut zc.poll_ids, &mut zc.poll_id_count, intf.clone());
 
+            let intf_ip = intf.addr.ip();
+            if intf_ip == IpAddr::from([172, 17, 0, 1]) {
+                debug!("run: registering socket for interface {}", &intf_ip);
+            }
+
             if let Err(e) =
                 zc.poller
                     .registry()
@@ -779,6 +784,16 @@ impl IfKind {
             Self::IPv6 => intf.ip().is_ipv6(),
             Self::Name(ifname) => ifname == &intf.name,
             Self::Addr(addr) => addr == &intf.ip(),
+        }
+    }
+
+    fn matches_addr(&self, addr: &IpAddr) -> Option<bool> {
+        match self {
+            Self::All => Some(true),
+            Self::IPv4 => Some(addr.is_ipv4()),
+            Self::IPv6 => Some(addr.is_ipv6()),
+            Self::Name(_) => None,
+            Self::Addr(ifaddr) => Some(ifaddr == addr),
         }
     }
 }
@@ -1105,6 +1120,11 @@ impl Zeroconf {
             // Mark the interfaces for this selection.
             for i in 0..intf_count {
                 if selection.if_kind.matches(&interfaces[i]) {
+                    debug!(
+                        "apply_intf_selections: {} {}",
+                        &interfaces[i].addr.ip(),
+                        selection.selected
+                    );
                     intf_selections[i] = selection.selected;
                 }
             }
@@ -1120,11 +1140,17 @@ impl Zeroconf {
             } else {
                 // Remove the interface
                 if let Some(mut sock) = self.intf_socks.remove(&intf) {
+                    debug!("apply_intf_selections: delete {}", &intf.addr.ip());
                     if let Err(e) = self.poller.registry().deregister(&mut sock) {
                         debug!("process_if_selections: poller.delete {:?}: {}", &intf, e);
                     }
                     // Remove from poll_ids
                     self.poll_ids.retain(|_, v| v != &intf);
+                } else {
+                    debug!(
+                        "apply_intf_selections: {} not found in intf_socks",
+                        intf.addr.ip()
+                    );
                 }
             }
         }
@@ -1228,6 +1254,81 @@ impl Zeroconf {
 
         // Notify the monitors.
         self.notify_monitors(DaemonEvent::IpAdd(new_ip));
+    }
+
+    fn handle_poller_events(&mut self, events: &mio::Events) {
+        for ev in events.iter() {
+            trace!("event received with key {:?}", ev.token());
+            if ev.token().0 == SIGNAL_SOCK_EVENT_KEY {
+                // Drain signals as we will drain commands as well.
+                self.signal_sock_drain();
+
+                if let Err(e) = self.poller.registry().reregister(
+                    &mut self.signal_sock,
+                    ev.token(),
+                    mio::Interest::READABLE,
+                ) {
+                    debug!("failed to modify poller for signal socket: {}", e);
+                }
+                continue; // Next event.
+            }
+
+            // Read until no more packets available.
+            let intf = match self.poll_ids.get(&ev.token().0) {
+                Some(interface) => interface.clone(),
+                None => {
+                    debug!("Ip for event key {} not found", ev.token().0);
+                    break;
+                }
+            };
+            while self.handle_read(&intf) {}
+
+            // Check if the interface is still selected.
+            let mut intf_selected = true;
+
+            for selection in self.if_selections.iter() {
+                if selection.if_kind.matches(&intf) {
+                    intf_selected = selection.selected;
+                }
+            }
+
+            if !intf_selected {
+                debug!(
+                    "interface {} is disabled, will not re-registering",
+                    &intf.addr.ip()
+                );
+
+                if let Some(mut sock) = self.intf_socks.remove(&intf) {
+                    debug!("handle_poller_events: delete {}", &intf.addr.ip());
+                    if let Err(e) = self.poller.registry().deregister(&mut sock) {
+                        debug!("handle_poller_events: poller.delete {:?}: {}", &intf, e);
+                    }
+                    // Remove from poll_ids
+                    self.poll_ids.retain(|_, v| v != &intf);
+                } else {
+                    debug!(
+                        "handle_poller_events: {} no longer in intf_socks",
+                        intf.addr.ip()
+                    );
+                }
+            }
+
+            // we continue to monitor this socket.
+            if let Some(sock) = self.intf_socks.get_mut(&intf) {
+                let intf_ip = intf.addr.ip();
+                if intf_ip == IpAddr::from([172, 17, 0, 1]) {
+                    debug!("re-registering socket for interface {}", &intf_ip);
+                }
+                if let Err(e) =
+                    self.poller
+                        .registry()
+                        .reregister(sock, ev.token(), mio::Interest::READABLE)
+                {
+                    debug!("modify poller for interface {:?}: {}", &intf, e);
+                    break;
+                }
+            }
+        }
     }
 
     /// Registers a service.
@@ -1814,7 +1915,12 @@ impl Zeroconf {
                     if dns_a.get_record().is_expired(now) {
                         trace!("Addr expired: {}", dns_a.address());
                     } else {
-                        info.insert_ipaddr(dns_a.address());
+                        let addr = dns_a.address();
+                        if self.is_addr_selected(&addr) {
+                            info.insert_ipaddr(addr);
+                        } else {
+                            debug!("Addr not selected: {}", addr);
+                        }
                     }
                 }
             }
@@ -1823,45 +1929,18 @@ impl Zeroconf {
         Ok(info)
     }
 
-    fn handle_poller_events(&mut self, events: &mio::Events) {
-        for ev in events.iter() {
-            trace!("event received with key {:?}", ev.token());
-            if ev.token().0 == SIGNAL_SOCK_EVENT_KEY {
-                // Drain signals as we will drain commands as well.
-                self.signal_sock_drain();
+    fn is_addr_selected(&self, addr: &IpAddr) -> bool {
+        let mut intf_selected = true;
 
-                if let Err(e) = self.poller.registry().reregister(
-                    &mut self.signal_sock,
-                    ev.token(),
-                    mio::Interest::READABLE,
-                ) {
-                    debug!("failed to modify poller for signal socket: {}", e);
-                }
-                continue; // Next event.
-            }
-
-            // Read until no more packets available.
-            let intf = match self.poll_ids.get(&ev.token().0) {
-                Some(interface) => interface.clone(),
-                None => {
-                    debug!("Ip for event key {} not found", ev.token().0);
-                    break;
-                }
-            };
-            while self.handle_read(&intf) {}
-
-            // we continue to monitor this socket.
-            if let Some(sock) = self.intf_socks.get_mut(&intf) {
-                if let Err(e) =
-                    self.poller
-                        .registry()
-                        .reregister(sock, ev.token(), mio::Interest::READABLE)
-                {
-                    debug!("modify poller for interface {:?}: {}", &intf, e);
-                    break;
-                }
+        for selection in self.if_selections.iter() {
+            match selection.if_kind.matches_addr(addr) {
+                Some(true) => intf_selected = selection.selected,
+                Some(false) => {}
+                None => intf_selected = true, // be optimistic
             }
         }
+
+        intf_selected
     }
 
     /// Deal with incoming response packets.  All answers
