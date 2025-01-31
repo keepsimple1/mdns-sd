@@ -1153,6 +1153,11 @@ impl Zeroconf {
             // Mark the interfaces for this selection.
             for i in 0..intf_count {
                 if selection.if_kind.matches(&interfaces[i]) {
+                    debug!(
+                        "apply_intf_selections: {} {}",
+                        &interfaces[i].addr.ip(),
+                        selection.selected
+                    );
                     intf_selections[i] = selection.selected;
                 }
             }
@@ -1168,11 +1173,17 @@ impl Zeroconf {
             } else {
                 // Remove the interface
                 if let Some(mut sock) = self.intf_socks.remove(&intf) {
+                    debug!("apply_intf_selections: delete {}", &intf.addr.ip());
                     if let Err(e) = self.poller.registry().deregister(&mut sock) {
                         debug!("process_if_selections: poller.delete {:?}: {}", &intf, e);
                     }
                     // Remove from poll_ids
                     self.poll_ids.retain(|_, v| v != &intf);
+                } else {
+                    debug!(
+                        "apply_intf_selections: {} not found in intf_socks",
+                        intf.addr.ip()
+                    );
                 }
             }
         }
