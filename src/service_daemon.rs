@@ -3497,10 +3497,10 @@ mod tests {
         HostnameResolutionEvent, ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4,
         MDNS_PORT,
     };
-    use crate::dns_parser::{
-        DnsOutgoing, DnsPointer, RRType, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE,
+    use crate::{
+        dns_parser::{DnsOutgoing, DnsPointer, RRType, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE},
+        service_daemon::check_hostname,
     };
-    use crate::service_daemon::check_hostname;
     use std::{
         net::{SocketAddr, SocketAddrV4},
         time::Duration,
