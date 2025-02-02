@@ -32,6 +32,11 @@
 use crate::log::{debug, trace};
 use crate::{
     dns_cache::{current_time_millis, DnsCache},
+    dns_parser::{
+        ip_address_rr_type, DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer,
+        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA,
+        FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
+    },
     error::{Error, Result},
     service_info::{
         split_sub_domain, valid_ip_on_intf, DnsRegistry, Probe, ServiceInfo, ServiceStatus,
@@ -40,11 +45,6 @@ use crate::{
 };
 use flume::{bounded, Sender, TrySendError};
 use if_addrs::{IfAddr, Interface};
-use mdns_parser::{
-    ip_address_rr_type, DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer,
-    DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA,
-    FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
-};
 use mio::{net::UdpSocket as MioUdpSocket, Poll};
 use socket2::Socket;
 use std::{
@@ -2210,7 +2210,7 @@ impl Zeroconf {
                         || service
                             .get_subtype()
                             .as_ref()
-                            .map_or(false, |v| v == question.entry_name())
+                            .is_some_and(|v| v == question.entry_name())
                     {
                         add_answer_with_additionals(&mut out, &msg, service, intf, dns_registry);
                     } else if question.entry_name() == META_QUERY {
@@ -3497,8 +3497,10 @@ mod tests {
         HostnameResolutionEvent, ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4,
         MDNS_PORT,
     };
+    use crate::dns_parser::{
+        DnsOutgoing, DnsPointer, RRType, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE,
+    };
     use crate::service_daemon::check_hostname;
-    use mdns_parser::{DnsOutgoing, DnsPointer, RRType, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE};
     use std::{
         net::{SocketAddr, SocketAddrV4},
         time::Duration,

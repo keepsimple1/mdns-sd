@@ -883,18 +883,6 @@ pub struct TxtProperty {
 }
 
 impl TxtProperty {
-    /// Returns the key of a property.
-    pub fn key(&self) -> &str {
-        &self.key
-    }
-
-    /// Returns the value of a property, which could be `None`.
-    ///
-    /// To obtain a `&str` of the value, use `val_str()` instead.
-    pub fn val(&self) -> Option<&[u8]> {
-        self.val.as_deref()
-    }
-
     /// Returns the value of a property as str.
     pub fn val_str(&self) -> &str {
         self.val
@@ -1085,7 +1073,7 @@ impl DnsNSec {
     }
 
     /// Returns the types marked by `type_bitmap`
-    pub fn types(&self) -> Vec<u16> {
+    pub fn _types(&self) -> Vec<u16> {
         // From RFC 4034: 4.1.2 The Type Bit Maps Field
         // https://datatracker.ietf.org/doc/html/rfc4034#section-4.1.2
         //

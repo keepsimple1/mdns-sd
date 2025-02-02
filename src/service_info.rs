@@ -1,10 +1,10 @@
 //! Define `ServiceInfo` to represent a service and its operations.
 
+use crate::dns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, RRType};
 #[cfg(feature = "logging")]
 use crate::log::debug;
 use crate::{Error, Result};
 use if_addrs::{IfAddr, Interface};
-use mdns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, RRType};
 use std::{
     cmp,
     collections::{HashMap, HashSet},

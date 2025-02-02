@@ -2,11 +2,11 @@
 //!
 //! This is an internal implementation, not visible to the public API.
 
+use crate::dns_parser::{DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, RRType};
 #[cfg(feature = "logging")]
 use crate::log::trace;
 use crate::service_info::{split_sub_domain, valid_two_addrs_on_intf};
 use if_addrs::Interface;
-use mdns_parser::{DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, RRType};
 use std::{
     collections::{HashMap, HashSet},
     net::IpAddr,
