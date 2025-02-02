@@ -4,9 +4,11 @@
 
 #[cfg(feature = "logging")]
 use crate::log::trace;
-use crate::service_info::{split_sub_domain, valid_two_addrs_on_intf};
+use crate::{
+    dns_parser::{DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, RRType},
+    service_info::{split_sub_domain, valid_two_addrs_on_intf},
+};
 use if_addrs::Interface;
-use mdns_parser::{DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, RRType};
 use std::{
     collections::{HashMap, HashSet},
     net::IpAddr,

@@ -2,9 +2,11 @@
 
 #[cfg(feature = "logging")]
 use crate::log::debug;
-use crate::{Error, Result};
+use crate::{
+    dns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, RRType},
+    Error, Result,
+};
 use if_addrs::{IfAddr, Interface};
-use mdns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, RRType};
 use std::{
     cmp,
     collections::{HashMap, HashSet},
