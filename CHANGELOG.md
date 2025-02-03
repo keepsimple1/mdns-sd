@@ -1,3 +1,13 @@
+# Version 0.13.2 (2025-02-02)
+
+This is a bugfix release.
+
+## All changes
+
+* 4288190 check any match for address records in conflict handler (#294) (keepsimple1)
+* b51f67d unit test: fix a timing issue (#292) (keepsimple1)
+* 7afed98 bugfix: check data len for NSEC record (#291) (keepsimple1)
+
 # Version 0.13.1 (2024-12-16)
 
 This is a bugfix release. Fixed a bug where upper case service names failed to publish.
