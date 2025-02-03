@@ -408,7 +408,7 @@ impl ServiceDaemon {
     /// By default, multicast loop is enabled for IPv4. When disabled, a querier will not
     /// receive announcements from a responder on the same host.
     ///
-    /// Reference: https://learn.microsoft.com/en-us/windows/win32/winsock/ip-multicast-2
+    /// Reference: <https://learn.microsoft.com/en-us/windows/win32/winsock/ip-multicast-2>
     ///
     /// "The Winsock version of the IP_MULTICAST_LOOP option is semantically different than
     /// the UNIX version of the IP_MULTICAST_LOOP option:
@@ -427,7 +427,7 @@ impl ServiceDaemon {
     /// By default, multicast loop is enabled for IPv6. When disabled, a querier will not
     /// receive announcements from a responder on the same host.
     ///
-    /// Reference: https://learn.microsoft.com/en-us/windows/win32/winsock/ip-multicast-2
+    /// Reference: <https://learn.microsoft.com/en-us/windows/win32/winsock/ip-multicast-2>
     ///
     /// "The Winsock version of the IP_MULTICAST_LOOP option is semantically different than
     /// the UNIX version of the IP_MULTICAST_LOOP option:
