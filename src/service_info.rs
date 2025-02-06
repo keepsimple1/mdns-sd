@@ -499,6 +499,20 @@ impl TxtProperties {
     pub fn get_property_val_str(&self, key: &str) -> Option<&str> {
         self.get(key).map(|x| x.val_str())
     }
+
+    /// Returns a map of properties, where the key is the property key.
+    pub fn into_property_map_str(self) -> HashMap<String, String> {
+        self.properties
+            .into_iter()
+            .map(|p| {
+                (
+                    p.key,
+                    p.val
+                        .map_or_else(String::new, |v| String::from_utf8(v).unwrap_or_default()),
+                )
+            })
+            .collect()
+    }
 }
 
 impl fmt::Display for TxtProperties {
