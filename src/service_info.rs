@@ -368,14 +368,14 @@ impl ServiceInfo {
     }
 
     /// Returns a resolved service instance.
-    pub fn as_resolved_service(&self) -> ResolvedService {
+    pub fn as_resolved_service(self) -> ResolvedService {
         ResolvedService {
-            ty_domain: self.ty_domain.clone(),
-            fullname: self.fullname.clone(),
-            host: self.server.clone(),
+            ty_domain: self.ty_domain,
+            fullname: self.fullname,
+            host: self.server,
             port: self.port,
-            addresses: self.addresses.clone(),
-            txt_properties: self.txt_properties.clone(),
+            addresses: self.addresses,
+            txt_properties: self.txt_properties,
         }
     }
 }
