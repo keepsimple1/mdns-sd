@@ -366,6 +366,18 @@ impl ServiceInfo {
             .cloned()
             .unwrap_or(ServiceStatus::Unknown)
     }
+
+    /// Returns a resolved service instance.
+    pub fn as_resolved_service(self) -> ResolvedService {
+        ResolvedService {
+            ty_domain: self.ty_domain,
+            fullname: self.fullname,
+            host: self.server,
+            port: self.port,
+            addresses: self.addresses,
+            txt_properties: self.txt_properties,
+        }
+    }
 }
 
 /// Removes potentially duplicated ".local." at the end of "hostname".
@@ -1084,6 +1096,16 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
     } else {
         (domain, None)
     }
+}
+
+#[non_exhaustive]
+pub struct ResolvedService {
+    pub ty_domain: String,
+    pub fullname: String,
+    pub host: String,
+    pub port: u16,
+    pub addresses: HashSet<IpAddr>,
+    pub txt_properties: TxtProperties,
 }
 
 #[cfg(test)]
