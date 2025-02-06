@@ -74,7 +74,7 @@ impl ServiceInfo {
     /// - `HashMap<String, String>`
     /// - `Option<HashMap<String, String>>`
     /// - slice of tuple: `&[(K, V)]` where `K` and `V` are [`std::string::ToString`].
-    /// 
+    ///
     /// Note: The maximum length of a single `properties` string is `u8::MAX`.  
     /// > `(key + value) <= u8::MAX`
     ///
@@ -694,7 +694,10 @@ fn encode_txt<'a>(properties: impl Iterator<Item = &'a TxtProperty>) -> Vec<u8> 
             s.extend(v);
         }
 
-        assert!(s.len() <= u8::MAX as usize, "the key and value of properties exceed the maximum length limit of u8::MAX.");
+        assert!(
+            s.len() <= u8::MAX as usize,
+            "the key and value of properties exceed the maximum length limit of u8::MAX."
+        );
 
         // TXT uses (Length,Value) format for each property,
         // i.e. the first byte is the length.
