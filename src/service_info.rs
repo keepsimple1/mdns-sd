@@ -76,7 +76,7 @@ impl ServiceInfo {
     /// - slice of tuple: `&[(K, V)]` where `K` and `V` are [`std::string::ToString`].
     ///
     /// Note: The maximum length of a single property string is `255`, Property that exceed the length are truncated.
-    /// > `len(key + value) <= u8::MAX`
+    /// > `len(key + value) < u8::MAX`
     ///
     /// `ip` can be one or more IP addresses, in a type that implements
     /// [`AsIpAddrs`] trait. It supports:
