@@ -75,8 +75,8 @@ impl ServiceInfo {
     /// - `Option<HashMap<String, String>>`
     /// - slice of tuple: `&[(K, V)]` where `K` and `V` are [`std::string::ToString`].
     ///
-    /// Note: The maximum length of a single `properties` string is `u8::MAX`.  
-    /// > `(key + value) <= u8::MAX`
+    /// Note: The maximum length of a single property string is `255`, Property that exceed the length are truncated.
+    /// > `len(key + value) <= u8::MAX`
     ///
     /// `ip` can be one or more IP addresses, in a type that implements
     /// [`AsIpAddrs`] trait. It supports:
@@ -694,10 +694,10 @@ fn encode_txt<'a>(properties: impl Iterator<Item = &'a TxtProperty>) -> Vec<u8> 
             s.extend(v);
         }
 
-        assert!(
-            s.len() <= u8::MAX as usize,
-            "the key and value of properties exceed the maximum length limit of u8::MAX."
-        );
+        // Property that exceed the length are truncated
+        if s.len() > u8::MAX as usize {
+            s.resize(u8::MAX as usize, 0);
+        }
 
         // TXT uses (Length,Value) format for each property,
         // i.e. the first byte is the length.
