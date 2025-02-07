@@ -504,12 +504,12 @@ impl TxtProperties {
     pub fn into_property_map_str(self) -> HashMap<String, String> {
         self.properties
             .into_iter()
-            .map(|p| {
-                (
-                    p.key,
-                    p.val
-                        .map_or_else(String::new, |v| String::from_utf8(v).unwrap_or_default()),
-                )
+            .filter_map(|p| {
+                // Skip the property if the value is non-empty and not valid UTF-8.
+                let value = p
+                    .val
+                    .map_or(Some(String::new()), |v| String::from_utf8(v).ok())?;
+                Some((p.key, value))
             })
             .collect()
     }
