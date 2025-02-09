@@ -499,6 +499,26 @@ impl TxtProperties {
     pub fn get_property_val_str(&self, key: &str) -> Option<&str> {
         self.get(key).map(|x| x.val_str())
     }
+
+    /// Consumes properties and returns a hashmap, where the keys are the properties keys.
+    ///
+    /// If a property value is empty, return an empty string (because RFC 6763 allows empty values).
+    /// If a property value is non-empty but not valid UTF-8, skip the property and log a message.
+    pub fn into_property_map_str(self) -> HashMap<String, String> {
+        self.properties
+            .into_iter()
+            .filter_map(|property| {
+                let val_string = property.val.map_or(Some(String::new()), |val| {
+                    String::from_utf8(val)
+                        .map_err(|e| {
+                            debug!("Property value contains invalid UTF-8: {e}");
+                        })
+                        .ok()
+                })?;
+                Some((property.key, val_string))
+            })
+            .collect()
+    }
 }
 
 impl fmt::Display for TxtProperties {
@@ -678,6 +698,12 @@ where
             }
         }
         TxtProperties { properties }
+    }
+}
+
+impl IntoTxtProperties for Vec<TxtProperty> {
+    fn into_txt_properties(self) -> TxtProperties {
+        TxtProperties { properties: self }
     }
 }
 
