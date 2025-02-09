@@ -1135,6 +1135,21 @@ mod tests {
         assert_eq!(encoded.len(), "key6".len() + property_count);
         let decoded = decode_txt(&encoded);
         assert_eq!(properties, decoded);
+
+        // test very long property.
+        let properties = vec![TxtProperty::from(
+            String::from_utf8(vec![0x30; 1024]).unwrap().as_str(), // A long string of 0 char
+        )];
+        let property_count = properties.len();
+        let encoded = encode_txt(properties.iter());
+        assert_eq!(encoded.len(), 255 + property_count);
+        let decoded = decode_txt(&encoded);
+        assert_eq!(
+            vec![TxtProperty::from(
+                String::from_utf8(vec![0x30; 255]).unwrap().as_str()
+            )],
+            decoded
+        );
     }
 
     #[test]
