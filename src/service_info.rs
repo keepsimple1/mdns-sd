@@ -75,6 +75,9 @@ impl ServiceInfo {
     /// - `Option<HashMap<String, String>>`
     /// - slice of tuple: `&[(K, V)]` where `K` and `V` are [`std::string::ToString`].
     ///
+    /// Note: The maximum length of a single property string is `255`, Property that exceed the length are truncated.
+    /// > `len(key + value) < u8::MAX`
+    ///
     /// `ip` can be one or more IP addresses, in a type that implements
     /// [`AsIpAddrs`] trait. It supports:
     ///
@@ -717,6 +720,11 @@ fn encode_txt<'a>(properties: impl Iterator<Item = &'a TxtProperty>) -> Vec<u8> 
             s.extend(v);
         }
 
+        // Property that exceed the length are truncated
+        if s.len() > u8::MAX as usize {
+            s.resize(u8::MAX as usize, 0);
+        }
+
         // TXT uses (Length,Value) format for each property,
         // i.e. the first byte is the length.
         bytes.push(s.len().try_into().unwrap());
@@ -1153,6 +1161,21 @@ mod tests {
         assert_eq!(encoded.len(), "key6".len() + property_count);
         let decoded = decode_txt(&encoded);
         assert_eq!(properties, decoded);
+
+        // test very long property.
+        let properties = vec![TxtProperty::from(
+            String::from_utf8(vec![0x30; 1024]).unwrap().as_str(), // A long string of 0 char
+        )];
+        let property_count = properties.len();
+        let encoded = encode_txt(properties.iter());
+        assert_eq!(encoded.len(), 255 + property_count);
+        let decoded = decode_txt(&encoded);
+        assert_eq!(
+            vec![TxtProperty::from(
+                String::from_utf8(vec![0x30; 255]).unwrap().as_str()
+            )],
+            decoded
+        );
     }
 
     #[test]
