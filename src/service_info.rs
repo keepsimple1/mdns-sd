@@ -500,13 +500,14 @@ impl TxtProperties {
         self.get(key).map(|x| x.val_str())
     }
 
-    /// Returns properties as a hashmap, where the keys are the properties keys.
+    /// Consumes properties and returns a hashmap, where the keys are the properties keys.
+    ///
+    /// If a property value is empty, return an empty string (because RFC 6763 allows empty values).
+    /// If a property value is non-empty but not valid UTF-8, skip the property and log a message.
     pub fn into_property_map_str(self) -> HashMap<String, String> {
         self.properties
             .into_iter()
             .filter_map(|property| {
-                // If the value is empty, return an empty string (because RFC 6763 allows empty values).
-                // If the value is non-empty but not valid UTF-8, skip the property and log a message.
                 let val_string = property.val.map_or(Some(String::new()), |val| {
                     String::from_utf8(val)
                         .map_err(|e| {
@@ -697,6 +698,12 @@ where
             }
         }
         TxtProperties { properties }
+    }
+}
+
+impl IntoTxtProperties for Vec<TxtProperty> {
+    fn into_txt_properties(self) -> TxtProperties {
+        TxtProperties { properties: self }
     }
 }
 

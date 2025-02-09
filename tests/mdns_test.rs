@@ -1,7 +1,7 @@
 use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
     DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, IntoTxtProperties, ServiceDaemon,
-    ServiceEvent, ServiceInfo, UnregisterStatus,
+    ServiceEvent, ServiceInfo, TxtProperty, UnregisterStatus,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -456,6 +456,29 @@ fn service_txt_properties_key_ascii() {
     let properties = [("prop_ascii", "one"), ("prop_2", "two")];
     let my_service = ServiceInfo::new(domain, instance, "myhost", "", port, &properties[..]);
     assert!(my_service.is_ok());
+}
+
+#[test]
+fn test_txt_properties_into_hashmap_str() {
+    // Test valid UTF-8 properties
+    let properties = vec![("key1", "val1"), ("key2", "val2")].into_txt_properties();
+    let property_map = properties.into_property_map_str();
+    println!("property_map: {:?}", property_map);
+    assert_eq!(property_map.len(), 2);
+    assert_eq!(property_map.get("key1"), Some(&"val1".to_string()));
+    assert_eq!(property_map.get("key2"), Some(&"val2".to_string()));
+
+    // Test property with no value and property with invalid UTF-8
+    let invalid_vec: Vec<u8> = vec![200, 200]; // Invalid UTF-8 bytes
+    let prop1 = TxtProperty::from("key1");
+    let prop2 = TxtProperty::from(("key2", invalid_vec.as_slice()));
+    let properties = vec![prop1, prop2].into_txt_properties();
+    let property_map = properties.into_property_map_str();
+
+    // Property with no value should map to empty string
+    // Property with invalid UTF-8 should be skipped
+    assert_eq!(property_map.get("key1"), Some(&"".to_string()));
+    assert_eq!(property_map.len(), 1);
 }
 
 #[test]
