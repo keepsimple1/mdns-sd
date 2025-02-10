@@ -721,13 +721,15 @@ fn encode_txt<'a>(properties: impl Iterator<Item = &'a TxtProperty>) -> Vec<u8> 
         }
 
         // Property that exceed the length are truncated
-        if s.len() > u8::MAX as usize {
+        let sz: u8 = s.len().try_into().unwrap_or_else(|_| {
+            debug!("Property {} is too long, truncating to 255 bytes", prop.key);
             s.resize(u8::MAX as usize, 0);
-        }
+            u8::MAX
+        });
 
         // TXT uses (Length,Value) format for each property,
         // i.e. the first byte is the length.
-        bytes.push(s.len().try_into().unwrap());
+        bytes.push(sz);
         bytes.extend(s);
     }
     if bytes.is_empty() {
