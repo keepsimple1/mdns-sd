@@ -505,6 +505,10 @@ impl ServiceDaemon {
 
             // we continue to monitor this socket.
             if let Some(sock) = zc.intf_socks.get_mut(&intf) {
+                let intf_ip = intf.addr.ip();
+                if intf_ip == IpAddr::from([172, 17, 0, 1]) {
+                    debug!("re-registering socket for interface {}", &intf_ip);
+                }
                 if let Err(e) =
                     zc.poller
                         .registry()
@@ -540,6 +544,11 @@ impl ServiceDaemon {
         for (intf, sock) in zc.intf_socks.iter_mut() {
             let key =
                 Zeroconf::add_poll_impl(&mut zc.poll_ids, &mut zc.poll_id_count, intf.clone());
+
+            let intf_ip = intf.addr.ip();
+            if intf_ip == IpAddr::from([172, 17, 0, 1]) {
+                debug!("run: registering socket for interface {}", &intf_ip);
+            }
 
             if let Err(e) =
                 zc.poller
