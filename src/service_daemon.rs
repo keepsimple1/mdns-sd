@@ -793,6 +793,16 @@ impl IfKind {
             Self::Addr(addr) => addr == &intf.ip(),
         }
     }
+
+    fn matches_addr(&self, addr: &IpAddr) -> Option<bool> {
+        match self {
+            Self::All => Some(true),
+            Self::IPv4 => Some(addr.is_ipv4()),
+            Self::IPv6 => Some(addr.is_ipv6()),
+            Self::Name(_) => None,
+            Self::Addr(ifaddr) => Some(ifaddr == addr),
+        }
+    }
 }
 
 /// The first use case of specifying an interface was to
@@ -1912,13 +1922,32 @@ impl Zeroconf {
                     if dns_a.get_record().is_expired(now) {
                         trace!("Addr expired: {}", dns_a.address());
                     } else {
-                        info.insert_ipaddr(dns_a.address());
+                        let addr = dns_a.address();
+                        if self.is_addr_selected(&addr) {
+                            info.insert_ipaddr(addr);
+                        } else {
+                            debug!("Addr not selected: {}", addr);
+                        }
                     }
                 }
             }
         }
 
         Ok(info)
+    }
+
+    fn is_addr_selected(&self, addr: &IpAddr) -> bool {
+        let mut intf_selected = true;
+
+        for selection in self.if_selections.iter() {
+            match selection.if_kind.matches_addr(addr) {
+                Some(true) => intf_selected = selection.selected,
+                Some(false) => {}
+                None => intf_selected = true, // be optimistic
+            }
+        }
+
+        intf_selected
     }
 
     /// Deal with incoming response packets.  All answers
