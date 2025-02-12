@@ -367,7 +367,7 @@ impl ServiceInfo {
             .unwrap_or(ServiceStatus::Unknown)
     }
 
-    /// Returns a resolved service instance.
+    /// Consumes self and returns a resolved service, i.e. a lite version of `ServiceInfo`.
     pub fn as_resolved_service(self) -> ResolvedService {
         ResolvedService {
             ty_domain: self.ty_domain,
@@ -1102,11 +1102,24 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
 /// This is from a client (i.e. querier) point of view.
 #[non_exhaustive]
 pub struct ResolvedService {
+    /// service type and domain. For example, "_http._tcp.local."
+    /// Note: when subtype is used, ty_domain might not be a suffix
+    /// of fullname.
     pub ty_domain: String,
+
+    /// full name of the service. For example, "my-service._http._tcp.local."
     pub fullname: String,
+
+    /// host name of the service. For example, "my-server1.local."
     pub host: String,
+
+    /// port of the service. I.e. TCP or UDP port.
     pub port: u16,
+
+    /// addresses of the service. IPv4 or IPv6 addresses.
     pub addresses: HashSet<IpAddr>,
+
+    /// properties of the service, decoded from TXT record.
     pub txt_properties: TxtProperties,
 }
 
