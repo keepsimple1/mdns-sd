@@ -1098,6 +1098,8 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// Represents a resolved service as a plain data struct.
+/// This is from a client (i.e. querier) point of view.
 #[non_exhaustive]
 pub struct ResolvedService {
     pub ty_domain: String,
@@ -1106,6 +1108,17 @@ pub struct ResolvedService {
     pub port: u16,
     pub addresses: HashSet<IpAddr>,
     pub txt_properties: TxtProperties,
+}
+
+impl ResolvedService {
+    /// Returns true if the service data is valid, i.e. ready to be used.
+    pub fn is_valid(&self) -> bool {
+        let some_missing = self.ty_domain.is_empty()
+            || self.fullname.is_empty()
+            || self.host.is_empty()
+            || self.addresses.is_empty();
+        !some_missing
+    }
 }
 
 #[cfg(test)]
