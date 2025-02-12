@@ -291,7 +291,7 @@ impl ServiceInfo {
     pub(crate) fn get_addrs_on_intf(&self, intf: &Interface) -> Vec<IpAddr> {
         self.addresses
             .iter()
-            .filter(|a| valid_ip_on_intf(a, intf))
+            .filter(|a| (a.is_loopback() || valid_ip_on_intf(a, intf)))
             .copied()
             .collect()
     }
