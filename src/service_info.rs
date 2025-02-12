@@ -1103,8 +1103,6 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
 #[non_exhaustive]
 pub struct ResolvedService {
     /// service type and domain. For example, "_http._tcp.local."
-    /// Note: when subtype is used, ty_domain might not be a suffix
-    /// of fullname.
     pub ty_domain: String,
 
     /// full name of the service. For example, "my-service._http._tcp.local."
