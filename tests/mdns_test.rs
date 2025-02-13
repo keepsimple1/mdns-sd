@@ -764,6 +764,73 @@ fn service_with_invalid_addr_v6() {
 }
 
 #[test]
+fn service_with_loopback_addr() {
+    // Create a daemon
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+    // Define a unique service type and instance name.
+    let ty_domain = "_test-loopback._tcp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string();
+
+    // Use a loopback address (127.0.0.1) for the service.
+    let loopback_ip: IpAddr = "127.0.0.1".parse().unwrap();
+    let host_name = "localhost.local.";
+    let port = 5201;
+    let my_service = ServiceInfo::new(
+        ty_domain,
+        &instance_name,
+        host_name,
+        loopback_ip,
+        port,
+        None,
+    )
+    .expect("valid service info");
+    d.register(my_service)
+        .expect("Failed to register our service");
+
+    // Browse for the service.
+    let browse_chan = d.browse(ty_domain).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut found_loopback = false;
+    loop {
+        match browse_chan.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    println!(
+                        "Resolved service {} with addresses: {:?}",
+                        info.get_fullname(),
+                        info.get_addresses()
+                    );
+                    // Check that at least one of the addresses is a loopback address.
+                    if info.get_addresses().iter().any(|ip| ip.is_loopback()) {
+                        found_loopback = true;
+                    }
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            },
+            Err(e) => {
+                println!("browse error: {}", e);
+                break;
+            }
+        }
+    }
+
+    d.shutdown().unwrap();
+
+    // Assert that the resolved service includes a loopback address.
+    assert!(
+        found_loopback,
+        "The service should include a loopback address"
+    );
+}
+
+#[test]
 fn subtype() {
     // Create a daemon
     let d = ServiceDaemon::new().expect("Failed to create daemon");

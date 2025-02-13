@@ -291,7 +291,9 @@ impl ServiceInfo {
     pub(crate) fn get_addrs_on_intf(&self, intf: &Interface) -> Vec<IpAddr> {
         self.addresses
             .iter()
-            .filter(|a| valid_ip_on_intf(a, intf))
+            // Allow loopback addresses to support registering services on loopback interfaces,
+            // which is required by some use cases (e.g., OSCQuery) that publish via mDNS.
+            .filter(|a| (a.is_loopback() || valid_ip_on_intf(a, intf)))
             .copied()
             .collect()
     }
