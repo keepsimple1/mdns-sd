@@ -498,6 +498,33 @@ fn test_into_txt_properties() {
     assert_eq!(txt_props.get_property_val_str("key2").unwrap(), "val2");
 }
 
+#[test]
+fn test_info_as_resolved_service() {
+    let service_info = ServiceInfo::new(
+        "_test._tcp.local.",
+        "my_instance",
+        "my_host.local.",
+        "192.168.0.1",
+        5200,
+        None,
+    )
+    .unwrap();
+    let resolved_service = service_info.as_resolved_service();
+    assert!(resolved_service.is_valid());
+
+    let info_missing_addr = ServiceInfo::new(
+        "_test._tcp.local.",
+        "my_instance",
+        "my_host.local.",
+        "",
+        5200,
+        None,
+    )
+    .unwrap();
+    let invalid_service = info_missing_addr.as_resolved_service();
+    assert!(!invalid_service.is_valid());
+}
+
 /// Test enabling an interface using its name, for example "en0".
 /// Also tests an instance name with Upper Case.
 #[test]
