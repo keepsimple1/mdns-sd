@@ -779,8 +779,15 @@ fn service_with_loopback_addr() {
     let loopback_ip: IpAddr = "127.0.0.1".parse().unwrap();
     let host_name = "localhost.local.";
     let port = 5201;
-    let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, loopback_ip, port, None)
-        .expect("valid service info");
+    let my_service = ServiceInfo::new(
+        ty_domain,
+        &instance_name,
+        host_name,
+        loopback_ip,
+        port,
+        None,
+    )
+    .expect("valid service info");
     d.register(my_service)
         .expect("Failed to register our service");
 
@@ -817,7 +824,10 @@ fn service_with_loopback_addr() {
     d.shutdown().unwrap();
 
     // Assert that the resolved service includes a loopback address.
-    assert!(found_loopback, "The service should include a loopback address");
+    assert!(
+        found_loopback,
+        "The service should include a loopback address"
+    );
 }
 
 #[test]
