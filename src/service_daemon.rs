@@ -3121,6 +3121,18 @@ fn call_hostname_resolution_listener(
 }
 
 /// Returns valid network interfaces in the host system.
+/// Loopback interfaces are excluded.
+#[cfg(not(feature = "loopback"))]
+fn my_ip_interfaces() -> Vec<Interface> {
+    if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| !i.is_loopback())
+        .collect()
+}
+
+/// Returns valid network interfaces in the host system.
+#[cfg(feature = "loopback")]
 fn my_ip_interfaces() -> Vec<Interface> {
     if_addrs::get_if_addrs()
         .unwrap_or_default()
