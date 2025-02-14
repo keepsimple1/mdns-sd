@@ -371,6 +371,7 @@ impl ServiceInfo {
     pub fn as_resolved_service(self) -> ResolvedService {
         ResolvedService {
             ty_domain: self.ty_domain,
+            sub_ty_domain: self.sub_domain,
             fullname: self.fullname,
             host: self.server,
             port: self.port,
@@ -1104,6 +1105,13 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
 pub struct ResolvedService {
     /// service type and domain. For example, "_http._tcp.local."
     pub ty_domain: String,
+
+    /// Optional service subtype and domain.
+    ///
+    /// See RFC6763 section 7.1 about "Subtypes":
+    /// <https://datatracker.ietf.org/doc/html/rfc6763#section-7.1>
+    /// For example, "_printer._sub._http._tcp.local."
+    pub sub_ty_domain: Option<String>,
 
     /// full name of the service. For example, "my-service._http._tcp.local."
     pub fullname: String,
