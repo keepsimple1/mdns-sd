@@ -825,7 +825,11 @@ fn service_with_loopback_addr() {
 
     // Assert that the resolved service includes a loopback address.
     assert!(
-        if cfg!(feature = "loopback") { found_loopback } else { !found_loopback },
+        if cfg!(feature = "loopback") {
+            found_loopback
+        } else {
+            !found_loopback
+        },
         "The service should include a loopback address"
     );
 }
