@@ -7,6 +7,7 @@
 #[cfg(feature = "logging")]
 use crate::log::trace;
 
+use std::array::TryFromSliceError;
 use std::{
     any::Any,
     cmp,
@@ -1914,22 +1915,22 @@ impl DnsIncoming {
                         rr_type,
                         class,
                         ttl,
-                        self.read_char_string(),
-                        self.read_char_string(),
+                        self.read_char_string()?,
+                        self.read_char_string()?,
                     ))),
                     RRType::A => Some(Box::new(DnsAddress::new(
                         &name,
                         rr_type,
                         class,
                         ttl,
-                        self.read_ipv4().into(),
+                        self.read_ipv4()?.into(),
                     ))),
                     RRType::AAAA => Some(Box::new(DnsAddress::new(
                         &name,
                         rr_type,
                         class,
                         ttl,
-                        self.read_ipv6().into(),
+                        self.read_ipv6()?.into(),
                     ))),
                     RRType::NSEC => Some(Box::new(DnsNSec::new(
                         &name,
@@ -1962,7 +1963,7 @@ impl DnsIncoming {
         Ok(rr_records)
     }
 
-    fn read_char_string(&mut self) -> String {
+    fn read_char_string(&mut self) -> Result<String> {
         let length = self.data[self.offset];
         self.offset += 1;
         self.read_string(length as usize)
@@ -2037,26 +2038,27 @@ impl DnsIncoming {
         v
     }
 
-    fn read_ipv4(&mut self) -> Ipv4Addr {
-        let bytes: [u8; 4] = (&self.data)[self.offset..self.offset + 4]
+    fn read_ipv4(&mut self) -> Result<Ipv4Addr> {
+        let bytes: [u8; 4] = self.data[self.offset..self.offset + 4]
             .try_into()
-            .unwrap();
+            .map_err(|e: TryFromSliceError| Error::Msg(e.to_string()))?;
         self.offset += bytes.len();
-        Ipv4Addr::from(bytes)
+        Ok(Ipv4Addr::from(bytes))
     }
 
-    fn read_ipv6(&mut self) -> Ipv6Addr {
-        let bytes: [u8; 16] = (&self.data)[self.offset..self.offset + 16]
+    fn read_ipv6(&mut self) -> Result<Ipv6Addr> {
+        let bytes: [u8; 16] = self.data[self.offset..self.offset + 16]
             .try_into()
-            .unwrap();
+            .map_err(|e: TryFromSliceError| Error::Msg(e.to_string()))?;
         self.offset += bytes.len();
-        Ipv6Addr::from(bytes)
+        Ok(Ipv6Addr::from(bytes))
     }
 
-    fn read_string(&mut self, length: usize) -> String {
-        let s = str::from_utf8(&self.data[self.offset..self.offset + length]).unwrap();
+    fn read_string(&mut self, length: usize) -> Result<String> {
+        let s = str::from_utf8(&self.data[self.offset..self.offset + length])
+            .map_err(|e| Error::Msg(e.to_string()))?;
         self.offset += length;
-        s.to_string()
+        Ok(s.to_string())
     }
 
     /// Reads a domain name at the current location of `self.data`.
