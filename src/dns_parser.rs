@@ -7,6 +7,7 @@
 #[cfg(feature = "logging")]
 use crate::log::trace;
 
+use std::array::TryFromSliceError;
 use crate::error::{e_fmt, Error, Result};
 
 use std::{
@@ -19,7 +20,6 @@ use std::{
     str,
     time::SystemTime,
 };
-use std::array::TryFromSliceError;
 
 /// DNS resource record types, stored as `u16`. Can do `as u16` when needed.
 ///
