@@ -1103,7 +1103,7 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
 /// This is from a client (i.e. querier) point of view.
 #[non_exhaustive]
 pub struct ResolvedService {
-    /// service type and domain. For example, "_http._tcp.local."
+    /// Service type and domain. For example, "_http._tcp.local."
     pub ty_domain: String,
 
     /// Optional service subtype and domain.
@@ -1113,19 +1113,19 @@ pub struct ResolvedService {
     /// For example, "_printer._sub._http._tcp.local."
     pub sub_ty_domain: Option<String>,
 
-    /// full name of the service. For example, "my-service._http._tcp.local."
+    /// Full name of the service. For example, "my-service._http._tcp.local."
     pub fullname: String,
 
-    /// host name of the service. For example, "my-server1.local."
+    /// Host name of the service. For example, "my-server1.local."
     pub host: String,
 
-    /// port of the service. I.e. TCP or UDP port.
+    /// Port of the service. I.e. TCP or UDP port.
     pub port: u16,
 
-    /// addresses of the service. IPv4 or IPv6 addresses.
+    /// Addresses of the service. IPv4 or IPv6 addresses.
     pub addresses: HashSet<IpAddr>,
 
-    /// properties of the service, decoded from TXT record.
+    /// Properties of the service, decoded from TXT record.
     pub txt_properties: TxtProperties,
 }
 
