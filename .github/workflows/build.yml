@@ -24,6 +24,10 @@ jobs:
           components: rustfmt, clippy
       - name: Run rustfmt and fail if any warnings
         run: cargo fmt -- --check
+      - name: Run docs and fail if any warnings
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --all-features
       - name: Build with feature configuration
         run: cargo build --no-default-features --features async
       - name: Build
