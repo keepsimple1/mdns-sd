@@ -84,7 +84,7 @@
 //!
 //! let my_service = ServiceInfo::new(
 //!     service_type,
-//!     instance_nam,
+//!     instance_name,
 //!     host_name,
 //!     ip,
 //!     port,
@@ -102,7 +102,7 @@
 //! # Limitations
 //!
 //! This implementation is based on the following RFCs:
-//! - mDNS:   RFC 6762](https://tools.ietf.org/html/rfc6762)
+//! - mDNS:   [RFC 6762](https://tools.ietf.org/html/rfc6762)
 //! - DNS-SD: [RFC 6763](https://tools.ietf.org/html/rfc6763)
 //! - DNS:    [RFC 1035](https://tools.ietf.org/html/rfc1035)
 //!
