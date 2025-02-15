@@ -371,6 +371,19 @@ impl ServiceInfo {
             .cloned()
             .unwrap_or(ServiceStatus::Unknown)
     }
+
+    /// Consumes self and returns a resolved service, i.e. a lite version of `ServiceInfo`.
+    pub fn as_resolved_service(self) -> ResolvedService {
+        ResolvedService {
+            ty_domain: self.ty_domain,
+            sub_ty_domain: self.sub_domain,
+            fullname: self.fullname,
+            host: self.server,
+            port: self.port,
+            addresses: self.addresses,
+            txt_properties: self.txt_properties,
+        }
+    }
 }
 
 /// Removes potentially duplicated ".local." at the end of "hostname".
@@ -1095,6 +1108,47 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
         (ty_domain, Some(domain))
     } else {
         (domain, None)
+    }
+}
+
+/// Represents a resolved service as a plain data struct.
+/// This is from a client (i.e. querier) point of view.
+#[non_exhaustive]
+pub struct ResolvedService {
+    /// Service type and domain. For example, "_http._tcp.local."
+    pub ty_domain: String,
+
+    /// Optional service subtype and domain.
+    ///
+    /// See RFC6763 section 7.1 about "Subtypes":
+    /// <https://datatracker.ietf.org/doc/html/rfc6763#section-7.1>
+    /// For example, "_printer._sub._http._tcp.local."
+    pub sub_ty_domain: Option<String>,
+
+    /// Full name of the service. For example, "my-service._http._tcp.local."
+    pub fullname: String,
+
+    /// Host name of the service. For example, "my-server1.local."
+    pub host: String,
+
+    /// Port of the service. I.e. TCP or UDP port.
+    pub port: u16,
+
+    /// Addresses of the service. IPv4 or IPv6 addresses.
+    pub addresses: HashSet<IpAddr>,
+
+    /// Properties of the service, decoded from TXT record.
+    pub txt_properties: TxtProperties,
+}
+
+impl ResolvedService {
+    /// Returns true if the service data is valid, i.e. ready to be used.
+    pub fn is_valid(&self) -> bool {
+        let some_missing = self.ty_domain.is_empty()
+            || self.fullname.is_empty()
+            || self.host.is_empty()
+            || self.addresses.is_empty();
+        !some_missing
     }
 }
 

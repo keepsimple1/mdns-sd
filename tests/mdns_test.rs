@@ -498,6 +498,37 @@ fn test_into_txt_properties() {
     assert_eq!(txt_props.get_property_val_str("key2").unwrap(), "val2");
 }
 
+#[test]
+fn test_info_as_resolved_service() {
+    let sub_ty_domain = "_printer._sub._test._tcp.local.";
+    let service_info = ServiceInfo::new(
+        sub_ty_domain,
+        "my_instance",
+        "my_host.local.",
+        "192.168.0.1",
+        5200,
+        None,
+    )
+    .unwrap();
+    let resolved_service = service_info.as_resolved_service();
+    assert!(resolved_service.is_valid());
+    assert_eq!(resolved_service.sub_ty_domain.unwrap(), sub_ty_domain);
+    assert_eq!(resolved_service.ty_domain, "_test._tcp.local.");
+
+    let info_missing_addr = ServiceInfo::new(
+        "_test._tcp.local.",
+        "my_instance",
+        "my_host.local.",
+        "",
+        5200,
+        None,
+    )
+    .unwrap();
+    let invalid_service = info_missing_addr.as_resolved_service();
+    assert!(!invalid_service.is_valid());
+    assert!(invalid_service.sub_ty_domain.is_none());
+}
+
 /// Test enabling an interface using its name, for example "en0".
 /// Also tests an instance name with Upper Case.
 #[test]
