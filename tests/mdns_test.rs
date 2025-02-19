@@ -2097,7 +2097,7 @@ fn test_multicast_loop_v6() {
     let server = ServiceDaemon::new().expect("failed to start server");
     server.set_multicast_loop_v6(false).unwrap();
 
-    // Get a single IPv4 address
+    // Get a single IPv6 address
     let ip_addr1 = my_ip_interfaces()
         .iter()
         .find(|iface| iface.ip().is_ipv6())
