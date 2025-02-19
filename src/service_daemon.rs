@@ -37,7 +37,7 @@ use crate::{
         DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA,
         FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
     },
-    error::{Error, Result},
+    error::{e_fmt, Error, Result},
     service_info::{
         split_sub_domain, valid_ip_on_intf, DnsRegistry, Probe, ServiceInfo, ServiceStatus,
     },
@@ -56,13 +56,6 @@ use std::{
     time::Duration,
     vec,
 };
-
-/// A simple macro to report all kinds of errors.
-macro_rules! e_fmt {
-  ($($arg:tt)+) => {
-      Error::Msg(format!($($arg)+))
-  };
-}
 
 /// The default max length of the service name without domain, not including the
 /// leading underscore (`_`). It is set to 15 per

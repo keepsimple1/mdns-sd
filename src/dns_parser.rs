@@ -7,6 +7,8 @@
 #[cfg(feature = "logging")]
 use crate::log::trace;
 
+use crate::error::e_fmt;
+
 use std::{
     any::Any,
     cmp,
@@ -1741,10 +1743,10 @@ impl DnsIncoming {
 
     fn read_header(&mut self) -> Result<()> {
         if self.data.len() < MSG_HEADER_LEN {
-            return Err(Error::Msg(format!(
+            return Err(e_fmt!(
                 "DNS incoming: header is too short: {} bytes",
                 self.data.len()
-            )));
+            ));
         }
 
         let data = &self.data[0..];
