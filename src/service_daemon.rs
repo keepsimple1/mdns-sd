@@ -1256,81 +1256,6 @@ impl Zeroconf {
         self.notify_monitors(DaemonEvent::IpAdd(new_ip));
     }
 
-    fn handle_poller_events(&mut self, events: &mio::Events) {
-        for ev in events.iter() {
-            trace!("event received with key {:?}", ev.token());
-            if ev.token().0 == SIGNAL_SOCK_EVENT_KEY {
-                // Drain signals as we will drain commands as well.
-                self.signal_sock_drain();
-
-                if let Err(e) = self.poller.registry().reregister(
-                    &mut self.signal_sock,
-                    ev.token(),
-                    mio::Interest::READABLE,
-                ) {
-                    debug!("failed to modify poller for signal socket: {}", e);
-                }
-                continue; // Next event.
-            }
-
-            // Read until no more packets available.
-            let intf = match self.poll_ids.get(&ev.token().0) {
-                Some(interface) => interface.clone(),
-                None => {
-                    debug!("Ip for event key {} not found", ev.token().0);
-                    break;
-                }
-            };
-            while self.handle_read(&intf) {}
-
-            // Check if the interface is still selected.
-            let mut intf_selected = true;
-
-            for selection in self.if_selections.iter() {
-                if selection.if_kind.matches(&intf) {
-                    intf_selected = selection.selected;
-                }
-            }
-
-            if !intf_selected {
-                debug!(
-                    "interface {} is disabled, will not re-registering",
-                    &intf.addr.ip()
-                );
-
-                if let Some(mut sock) = self.intf_socks.remove(&intf) {
-                    debug!("handle_poller_events: delete {}", &intf.addr.ip());
-                    if let Err(e) = self.poller.registry().deregister(&mut sock) {
-                        debug!("handle_poller_events: poller.delete {:?}: {}", &intf, e);
-                    }
-                    // Remove from poll_ids
-                    self.poll_ids.retain(|_, v| v != &intf);
-                } else {
-                    debug!(
-                        "handle_poller_events: {} no longer in intf_socks",
-                        intf.addr.ip()
-                    );
-                }
-            }
-
-            // we continue to monitor this socket.
-            if let Some(sock) = self.intf_socks.get_mut(&intf) {
-                let intf_ip = intf.addr.ip();
-                if intf_ip == IpAddr::from([172, 17, 0, 1]) {
-                    debug!("re-registering socket for interface {}", &intf_ip);
-                }
-                if let Err(e) =
-                    self.poller
-                        .registry()
-                        .reregister(sock, ev.token(), mio::Interest::READABLE)
-                {
-                    debug!("modify poller for interface {:?}: {}", &intf, e);
-                    break;
-                }
-            }
-        }
-    }
-
     /// Registers a service.
     ///
     /// RFC 6762 section 8.3.
@@ -1941,6 +1866,81 @@ impl Zeroconf {
         }
 
         intf_selected
+    }
+
+    fn handle_poller_events(&mut self, events: &mio::Events) {
+        for ev in events.iter() {
+            trace!("event received with key {:?}", ev.token());
+            if ev.token().0 == SIGNAL_SOCK_EVENT_KEY {
+                // Drain signals as we will drain commands as well.
+                self.signal_sock_drain();
+
+                if let Err(e) = self.poller.registry().reregister(
+                    &mut self.signal_sock,
+                    ev.token(),
+                    mio::Interest::READABLE,
+                ) {
+                    debug!("failed to modify poller for signal socket: {}", e);
+                }
+                continue; // Next event.
+            }
+
+            // Read until no more packets available.
+            let intf = match self.poll_ids.get(&ev.token().0) {
+                Some(interface) => interface.clone(),
+                None => {
+                    debug!("Ip for event key {} not found", ev.token().0);
+                    break;
+                }
+            };
+            while self.handle_read(&intf) {}
+
+            // Check if the interface is still selected.
+            let mut intf_selected = true;
+
+            for selection in self.if_selections.iter() {
+                if selection.if_kind.matches(&intf) {
+                    intf_selected = selection.selected;
+                }
+            }
+
+            if !intf_selected {
+                debug!(
+                    "interface {} is disabled, will not re-registering",
+                    &intf.addr.ip()
+                );
+
+                if let Some(mut sock) = self.intf_socks.remove(&intf) {
+                    debug!("handle_poller_events: delete {}", &intf.addr.ip());
+                    if let Err(e) = self.poller.registry().deregister(&mut sock) {
+                        debug!("handle_poller_events: poller.delete {:?}: {}", &intf, e);
+                    }
+                    // Remove from poll_ids
+                    self.poll_ids.retain(|_, v| v != &intf);
+                } else {
+                    debug!(
+                        "handle_poller_events: {} no longer in intf_socks",
+                        intf.addr.ip()
+                    );
+                }
+            }
+
+            // we continue to monitor this socket.
+            if let Some(sock) = self.intf_socks.get_mut(&intf) {
+                let intf_ip = intf.addr.ip();
+                if intf_ip == IpAddr::from([172, 17, 0, 1]) {
+                    debug!("re-registering socket for interface {}", &intf_ip);
+                }
+                if let Err(e) =
+                    self.poller
+                        .registry()
+                        .reregister(sock, ev.token(), mio::Interest::READABLE)
+                {
+                    debug!("modify poller for interface {:?}: {}", &intf, e);
+                    break;
+                }
+            }
+        }
     }
 
     /// Deal with incoming response packets.  All answers
