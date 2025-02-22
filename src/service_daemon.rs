@@ -504,7 +504,7 @@ impl ServiceDaemon {
         }
 
         // Setup timer for IP checks.
-        const IP_CHECK_INTERVAL_MILLIS: u64 = 30_000;
+        const IP_CHECK_INTERVAL_MILLIS: u64 = 3_000;
         let mut next_ip_check = current_time_millis() + IP_CHECK_INTERVAL_MILLIS;
         zc.add_timer(next_ip_check);
 
