@@ -469,47 +469,6 @@ impl ServiceDaemon {
         }
     }
 
-    fn handle_poller_events(zc: &mut Zeroconf, events: &mio::Events) {
-        for ev in events.iter() {
-            trace!("event received with key {:?}", ev.token());
-            if ev.token().0 == SIGNAL_SOCK_EVENT_KEY {
-                // Drain signals as we will drain commands as well.
-                zc.signal_sock_drain();
-
-                if let Err(e) = zc.poller.registry().reregister(
-                    &mut zc.signal_sock,
-                    ev.token(),
-                    mio::Interest::READABLE,
-                ) {
-                    debug!("failed to modify poller for signal socket: {}", e);
-                }
-                continue; // Next event.
-            }
-
-            // Read until no more packets available.
-            let intf = match zc.poll_ids.get(&ev.token().0) {
-                Some(interface) => interface.clone(),
-                None => {
-                    debug!("Ip for event key {} not found", ev.token().0);
-                    break;
-                }
-            };
-            while zc.handle_read(&intf) {}
-
-            // we continue to monitor this socket.
-            if let Some(sock) = zc.intf_socks.get_mut(&intf) {
-                if let Err(e) =
-                    zc.poller
-                        .registry()
-                        .reregister(sock, ev.token(), mio::Interest::READABLE)
-                {
-                    debug!("modify poller for interface {:?}: {}", &intf, e);
-                    break;
-                }
-            }
-        }
-    }
-
     /// The main event loop of the daemon thread
     ///
     /// In each round, it will:
@@ -565,7 +524,7 @@ impl ServiceDaemon {
             // Process incoming packets, command events and optional timeout.
             events.clear();
             match zc.poller.poll(&mut events, timeout) {
-                Ok(_) => Self::handle_poller_events(&mut zc, &events),
+                Ok(_) => zc.handle_poller_events(&events),
                 Err(e) => debug!("failed to select from sockets: {}", e),
             }
 
@@ -1862,6 +1821,47 @@ impl Zeroconf {
         }
 
         Ok(info)
+    }
+
+    fn handle_poller_events(&mut self, events: &mio::Events) {
+        for ev in events.iter() {
+            trace!("event received with key {:?}", ev.token());
+            if ev.token().0 == SIGNAL_SOCK_EVENT_KEY {
+                // Drain signals as we will drain commands as well.
+                self.signal_sock_drain();
+
+                if let Err(e) = self.poller.registry().reregister(
+                    &mut self.signal_sock,
+                    ev.token(),
+                    mio::Interest::READABLE,
+                ) {
+                    debug!("failed to modify poller for signal socket: {}", e);
+                }
+                continue; // Next event.
+            }
+
+            // Read until no more packets available.
+            let intf = match self.poll_ids.get(&ev.token().0) {
+                Some(interface) => interface.clone(),
+                None => {
+                    debug!("Ip for event key {} not found", ev.token().0);
+                    break;
+                }
+            };
+            while self.handle_read(&intf) {}
+
+            // we continue to monitor this socket.
+            if let Some(sock) = self.intf_socks.get_mut(&intf) {
+                if let Err(e) =
+                    self.poller
+                        .registry()
+                        .reregister(sock, ev.token(), mio::Interest::READABLE)
+                {
+                    debug!("modify poller for interface {:?}: {}", &intf, e);
+                    break;
+                }
+            }
+        }
     }
 
     /// Deal with incoming response packets.  All answers
