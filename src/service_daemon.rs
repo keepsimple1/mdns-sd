@@ -1125,6 +1125,9 @@ impl Zeroconf {
                     }
                     // Remove from poll_ids
                     self.poll_ids.retain(|_, v| v != &intf);
+
+                    // Remove cache records for this interface.
+                    self.cache.remove_addrs_on_disabled_intf(&intf);
                 }
             }
         }
