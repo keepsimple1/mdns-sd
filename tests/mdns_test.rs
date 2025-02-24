@@ -681,6 +681,81 @@ fn service_with_ipv4_only() {
 }
 
 #[test]
+fn test_disable_interface_cache() {
+    // Create a server
+    let server = ServiceDaemon::new().expect("Failed to create the server");
+
+    // Register a service with one IPv4.
+    let ty_domain = "_disable-intf._tcp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string();
+    let service_ip_addr = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv4())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    let host_name = "disabled_intf_host.local.";
+    let port = 5201;
+    let my_service = ServiceInfo::new(
+        &ty_domain,
+        &instance_name,
+        host_name,
+        &service_ip_addr,
+        port,
+        None,
+    )
+    .expect("Invalid service info");
+    server
+        .register(my_service)
+        .expect("Failed to register our service");
+
+    // Create a client
+    let client = ServiceDaemon::new().expect("Failed to create the client");
+
+    // Give it some time to cache mDNS records.
+    sleep(Duration::from_secs(1));
+
+    // Disable the interface for the client.
+    client.disable_interface(service_ip_addr).unwrap();
+
+    // Browse for the service.
+    let handle = client.browse(&ty_domain).unwrap();
+    let timeout = Duration::from_secs(1);
+    let mut resolved = false;
+
+    // run till timeout and it should not resolve.
+    loop {
+        match handle.recv_timeout(timeout) {
+            Ok(event) => match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    println!(
+                        "Resolved a service of {} addr(s): {:?}",
+                        &info.get_fullname(),
+                        info.get_addresses()
+                    );
+                    resolved = true;
+                    break;
+                }
+                _ => {}
+            },
+            Err(_) => {
+                break;
+            }
+        }
+    }
+
+    // We cannot resolve the service because the interface is disabled.
+    assert!(!resolved);
+
+    // Clean up.
+    server.shutdown().unwrap();
+    client.shutdown().unwrap();
+}
+
+#[test]
 fn service_with_invalid_addr_v4() {
     // Create a daemon
     let d = ServiceDaemon::new().expect("Failed to create daemon");
@@ -2097,7 +2172,7 @@ fn test_multicast_loop_v6() {
     let server = ServiceDaemon::new().expect("failed to start server");
     server.set_multicast_loop_v6(false).unwrap();
 
-    // Get a single IPv4 address
+    // Get a single IPv6 address
     let ip_addr1 = my_ip_interfaces()
         .iter()
         .find(|iface| iface.ip().is_ipv6())
