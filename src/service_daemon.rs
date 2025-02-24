@@ -1115,13 +1115,17 @@ impl Zeroconf {
             if intf_selections[idx] {
                 // Add the interface
                 if !self.intf_socks.contains_key(&intf) {
+                    debug!("apply_intf_selections: add {:?} idx {idx}", &intf.ip());
                     self.add_new_interface(intf);
                 }
             } else {
                 // Remove the interface
                 if let Some(mut sock) = self.intf_socks.remove(&intf) {
                     match self.poller.registry().deregister(&mut sock) {
-                        Ok(()) => debug!("apply_intf_selections: deregister {:?}", &intf.ip()),
+                        Ok(()) => debug!(
+                            "apply_intf_selections: deregister {:?} idx {idx}",
+                            &intf.ip()
+                        ),
                         Err(e) => debug!("apply_intf_selections: poller.delete {:?}: {}", &intf, e),
                     }
 
