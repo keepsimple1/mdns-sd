@@ -2149,6 +2149,7 @@ impl Zeroconf {
                                     ty_domain,
                                     ServiceEvent::ServiceResolved(info),
                                 );
+                                debug!("called queriers to resolve {}", dns_ptr.alias());
                             } else {
                                 if self.resolved.remove(dns_ptr.alias()) {
                                     removed_instances

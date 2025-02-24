@@ -3,7 +3,7 @@
 //! This is an internal implementation, not visible to the public API.
 
 #[cfg(feature = "logging")]
-use crate::log::trace;
+use crate::log::{debug, trace};
 use crate::{
     dns_parser::{DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, RRType},
     service_info::{split_sub_domain, valid_ip_on_intf, valid_two_addrs_on_intf},
@@ -530,14 +530,19 @@ impl DnsCache {
     }
 
     pub(crate) fn remove_addrs_on_disabled_intf(&mut self, disabled_intf: &Interface) {
-        for (_host, records) in self.addr.iter_mut() {
+        for (host, records) in self.addr.iter_mut() {
             records.retain(|record| {
                 let Some(dns_addr) = record.any().downcast_ref::<DnsAddress>() else {
                     return false; // invalid address record.
                 };
 
                 // Remove the record if it is on this interface.
-                !valid_ip_on_intf(&dns_addr.address(), disabled_intf)
+                if valid_ip_on_intf(&dns_addr.address(), disabled_intf) {
+                    debug!("removing ADDR on disabled intf: {:?} host {host}", dns_addr);
+                    false
+                } else {
+                    true
+                }
             });
         }
     }
