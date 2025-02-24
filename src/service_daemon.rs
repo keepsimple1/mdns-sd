@@ -1710,7 +1710,7 @@ impl Zeroconf {
                         ty_domain.to_string(),
                         ptr.alias().to_string(),
                     )) {
-                        Ok(()) => trace!("send service found {}", ptr.alias()),
+                        Ok(()) => debug!("send service found {}", ptr.alias()),
                         Err(e) => {
                             debug!("failed to send service found: {}", e);
                             continue;
@@ -2143,13 +2143,13 @@ impl Zeroconf {
                             self.create_service_info_from_cache(ty_domain, dns_ptr.alias())
                         {
                             if info.is_ready() {
+                                debug!("call queriers to resolve {}", dns_ptr.alias());
                                 resolved.insert(dns_ptr.alias().to_string());
                                 call_service_listener(
                                     &self.service_queriers,
                                     ty_domain,
                                     ServiceEvent::ServiceResolved(info),
                                 );
-                                debug!("called queriers to resolve {}", dns_ptr.alias());
                             } else {
                                 if self.resolved.remove(dns_ptr.alias()) {
                                     removed_instances

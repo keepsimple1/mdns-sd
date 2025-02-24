@@ -538,7 +538,10 @@ impl DnsCache {
 
                 // Remove the record if it is on this interface.
                 if valid_ip_on_intf(&dns_addr.address(), disabled_intf) {
-                    debug!("removing ADDR on disabled intf: {:?} host {host}", dns_addr);
+                    debug!(
+                        "removing ADDR on disabled intf: {:?} host {host}",
+                        dns_addr.address()
+                    );
                     false
                 } else {
                     true
