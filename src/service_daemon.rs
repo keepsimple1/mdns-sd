@@ -1120,9 +1120,11 @@ impl Zeroconf {
             } else {
                 // Remove the interface
                 if let Some(mut sock) = self.intf_socks.remove(&intf) {
-                    if let Err(e) = self.poller.registry().deregister(&mut sock) {
-                        debug!("process_if_selections: poller.delete {:?}: {}", &intf, e);
+                    match self.poller.registry().deregister(&mut sock) {
+                        Ok(()) => debug!("apply_intf_selections: deregister {:?}", &intf.ip()),
+                        Err(e) => debug!("apply_intf_selections: poller.delete {:?}: {}", &intf, e),
                     }
+
                     // Remove from poll_ids
                     self.poll_ids.retain(|_, v| v != &intf);
 
@@ -1718,7 +1720,7 @@ impl Zeroconf {
                     if info.is_ready() {
                         resolved.insert(ptr.alias().to_string());
                         match sender.send(ServiceEvent::ServiceResolved(info)) {
-                            Ok(()) => trace!("sent service resolved: {}", ptr.alias()),
+                            Ok(()) => debug!("sent service resolved: {}", ptr.alias()),
                             Err(e) => debug!("failed to send service resolved: {}", e),
                         }
                     } else {
