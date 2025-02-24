@@ -2000,7 +2000,7 @@ impl Zeroconf {
                     updated_instances.insert(update.name);
                 }
                 RRType::A | RRType::AAAA => {
-                    debug!("addr update instance: {}", update.name);
+                    debug!("addr update: {} intf {}", update.name, intf.ip());
                     let instances = self.cache.get_instances_on_host(&update.name);
                     updated_instances.extend(instances);
                 }
