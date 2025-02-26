@@ -174,6 +174,20 @@ impl DnsCache {
             }
         }
 
+        if incoming.get_type() == RRType::A || incoming.get_type() == RRType::AAAA {
+            if let Some(answer_addr) = incoming.any().downcast_ref::<DnsAddress>() {
+                if !valid_ip_on_intf(&answer_addr.address(), intf)
+                    && !answer_addr.address().is_loopback()
+                {
+                    debug!(
+                        "conflict handler: answer addr {:?} not in the subnet of {:?}",
+                        answer_addr, intf
+                    );
+                    return None;
+                }
+            }
+        }
+
         // get the existing records for the type.
         let record_vec = match incoming.get_type() {
             RRType::PTR => self.ptr.entry(entry_name).or_default(),
