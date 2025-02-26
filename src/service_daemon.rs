@@ -1115,17 +1115,14 @@ impl Zeroconf {
             if intf_selections[idx] {
                 // Add the interface
                 if !self.intf_socks.contains_key(&intf) {
-                    debug!("apply_intf_selections: add {:?} idx {idx}", &intf.ip());
+                    debug!("apply_intf_selections: add {:?}", &intf.ip());
                     self.add_new_interface(intf);
                 }
             } else {
                 // Remove the interface
                 if let Some(mut sock) = self.intf_socks.remove(&intf) {
                     match self.poller.registry().deregister(&mut sock) {
-                        Ok(()) => debug!(
-                            "apply_intf_selections: deregister {:?} idx {idx}",
-                            &intf.ip()
-                        ),
+                        Ok(()) => debug!("apply_intf_selections: deregister {:?}", &intf.ip()),
                         Err(e) => debug!("apply_intf_selections: poller.delete {:?}: {}", &intf, e),
                     }
 
@@ -2000,7 +1997,6 @@ impl Zeroconf {
                     updated_instances.insert(update.name);
                 }
                 RRType::A | RRType::AAAA => {
-                    debug!("addr update: {} intf {}", update.name, intf.ip());
                     let instances = self.cache.get_instances_on_host(&update.name);
                     updated_instances.extend(instances);
                 }
