@@ -768,6 +768,15 @@ pub enum IfKind {
 
     /// By an IPv4 or IPv6 address.
     Addr(IpAddr),
+
+    /// 127.0.0.1 (or anything in 127.0.0.0/8), disabled by default.
+    ///
+    /// Use [ServiceDaemon::enable_interface] to support registering services on loopback interfaces,
+    /// which is required by some use cases (e.g., OSCQuery) that publish via mDNS.
+    LoopbackV4,
+
+    /// ::1/128, disabled by default.
+    LoopbackV6,
 }
 
 impl IfKind {
@@ -779,6 +788,8 @@ impl IfKind {
             Self::IPv6 => intf.ip().is_ipv6(),
             Self::Name(ifname) => ifname == &intf.name,
             Self::Addr(addr) => addr == &intf.ip(),
+            Self::LoopbackV4 => intf.is_loopback() && intf.ip().is_ipv4(),
+            Self::LoopbackV6 => intf.is_loopback() && intf.ip().is_ipv6(),
         }
     }
 }
@@ -910,7 +921,7 @@ struct Zeroconf {
 impl Zeroconf {
     fn new(signal_sock: MioUdpSocket, poller: Poll) -> Self {
         // Get interfaces.
-        let my_ifaddrs = my_ip_interfaces();
+        let my_ifaddrs = my_ip_interfaces(false);
 
         // Create a socket for every IP addr.
         // Note: it is possible that `my_ifaddrs` contains the same IP addr with different interface names,
@@ -936,7 +947,18 @@ impl Zeroconf {
         let service_name_len_max = SERVICE_NAME_LEN_MAX_DEFAULT;
 
         let timers = BinaryHeap::new();
-        let if_selections = vec![];
+
+        // Disable loopback by default.
+        let if_selections = vec![
+            IfSelection {
+                if_kind: IfKind::LoopbackV4,
+                selected: false,
+            },
+            IfSelection {
+                if_kind: IfKind::LoopbackV6,
+                selected: false,
+            },
+        ];
 
         let status = DaemonStatus::Running;
 
@@ -983,7 +1005,7 @@ impl Zeroconf {
             });
         }
 
-        self.apply_intf_selections(my_ip_interfaces());
+        self.apply_intf_selections(my_ip_interfaces(true));
     }
 
     fn disable_interface(&mut self, kinds: Vec<IfKind>) {
@@ -994,7 +1016,7 @@ impl Zeroconf {
             });
         }
 
-        self.apply_intf_selections(my_ip_interfaces());
+        self.apply_intf_selections(my_ip_interfaces(true));
     }
 
     fn set_multicast_loop_v4(&mut self, on: bool) {
@@ -1139,7 +1161,7 @@ impl Zeroconf {
     /// Check for IP changes and update intf_socks as needed.
     fn check_ip_changes(&mut self) {
         // Get the current interfaces.
-        let my_ifaddrs = my_ip_interfaces();
+        let my_ifaddrs = my_ip_interfaces(true);
 
         let poll_ids = &mut self.poll_ids;
         let poller = &mut self.poller;
@@ -1253,7 +1275,7 @@ impl Zeroconf {
         }
 
         if info.is_addr_auto() {
-            let selected_addrs = self.selected_addrs(my_ip_interfaces());
+            let selected_addrs = self.selected_addrs(my_ip_interfaces(true));
             for addr in selected_addrs {
                 info.insert_ipaddr(addr);
             }
@@ -3122,11 +3144,11 @@ fn call_hostname_resolution_listener(
 
 /// Returns valid network interfaces in the host system.
 /// Loopback interfaces are excluded.
-fn my_ip_interfaces() -> Vec<Interface> {
+fn my_ip_interfaces(with_loopback: bool) -> Vec<Interface> {
     if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
-        .filter(|i| !i.is_loopback())
+        .filter(|i| !i.is_loopback() || with_loopback)
         .collect()
 }
 
@@ -3572,7 +3594,7 @@ mod tests {
 
         let service = "_test_inval_ptr._udp.local.";
         let host_name = "my_host_tmp_invalidated_ptr.local.";
-        let intfs: Vec<_> = my_ip_interfaces();
+        let intfs: Vec<_> = my_ip_interfaces(false);
         let intf_ips: Vec<_> = intfs.iter().map(|intf| intf.ip()).collect();
         let port = 5201;
         let my_service =
@@ -3732,7 +3754,7 @@ mod tests {
         // Create a mDNS server
         let server = ServiceDaemon::new().expect("Failed to create server");
         let hostname = "addr_remove_host._tcp.local.";
-        let service_ip_addr = my_ip_interfaces()
+        let service_ip_addr = my_ip_interfaces(false)
             .iter()
             .find(|iface| iface.ip().is_ipv4())
             .map(|iface| iface.ip())
@@ -3808,7 +3830,7 @@ mod tests {
         let service_type = "_refresh-ptr._udp.local.";
         let instance = "test_instance";
         let host_name = "refresh_ptr_host.local.";
-        let service_ip_addr = my_ip_interfaces()
+        let service_ip_addr = my_ip_interfaces(false)
             .iter()
             .find(|iface| iface.ip().is_ipv4())
             .map(|iface| iface.ip())

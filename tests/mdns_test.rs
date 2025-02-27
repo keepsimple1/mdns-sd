@@ -874,6 +874,9 @@ fn service_with_loopback_addr() {
     // Create a daemon
     let d = ServiceDaemon::new().expect("Failed to create daemon");
 
+    d.enable_interface(IfKind::LoopbackV4)
+        .expect("Failed to enable loopback interface");
+
     // Define a unique service type and instance name.
     let ty_domain = "_test-loopback._tcp.local.";
     let now = SystemTime::now()

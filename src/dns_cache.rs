@@ -179,7 +179,7 @@ impl DnsCache {
         if incoming.get_type() == RRType::A || incoming.get_type() == RRType::AAAA {
             if let Some(answer_addr) = incoming.any().downcast_ref::<DnsAddress>() {
                 let addr = answer_addr.address();
-                if !valid_ip_on_intf(&addr, intf) && !addr.is_loopback() {
+                if !valid_ip_on_intf(&addr, intf) {
                     debug!(
                         "add_or_update: answer addr {addr} not in the subnet of {}",
                         intf.ip()
