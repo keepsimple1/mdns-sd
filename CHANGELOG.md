@@ -2,23 +2,23 @@
 
 ## Highlights
 
-* TxtProperties: Support `into_property_map_str`.
+* `TxtProperties`: Support `into_property_map_str`.
 * For querier: a new struct `ResolvedService` that can be created from `ServiceInfo`.
 * Support a service to publish using loopback interfaces via `enable_interface`.
 * Bugfixes.
 
 ## All changes
 
-* 3e6842f 2025-02-28 enable_interface: support loopback interface (#317) (keepsimple1)
-* 7e77a5e 2025-02-26 fix: remove related addresses in the cache when disabling an interface (#316) (keepsimple1)
-* 735fb22 2025-02-22 refactoring: move handle_poller_events into Zeroconf impl (#315) (keepsimple1)
-* e886787 2025-02-20 ci: add doc check and fail if there are any warnings (#310) (CosminPerRam)
-* 9d92545 2025-02-18 refactoring: make e_fmt! available within the crate (#311) (keepsimple1)
-* 4b671d4 2025-02-14 ResolvedService: a new plain struct for attributes of a service (#302) (keepsimple1)
-* 349de66 2025-02-13 fix: include loopback addresses in filtering criteria (#306) (Minetake)
-* 026a745 2025-02-09 refactoring: property length check (#305) (keepsimple1)
-* 818f37c 2025-02-10 TXT record: docs to remind users of the maximum length of the attribute. (#304) (Lazy Panda)
-* fba8025 2025-02-09 TxtProperties: new method to get a HashMap of properties (#303) (keepsimple1)
+* `3e6842f 2025-02-28` enable_interface: support loopback interface (#317) (keepsimple1)
+* `7e77a5e 2025-02-26` fix: remove related addresses in the cache when disabling an interface (#316) (keepsimple1)
+* `735fb22 2025-02-22` refactoring: move handle_poller_events into Zeroconf impl (#315) (keepsimple1)
+* `e886787 2025-02-20` ci: add doc check and fail if there are any warnings (#310) (CosminPerRam)
+* `9d92545 2025-02-18` refactoring: make e_fmt! available within the crate (#311) (keepsimple1)
+* `4b671d4 2025-02-14` ResolvedService: a new plain struct for attributes of a service (#302) (keepsimple1)
+* `349de66 2025-02-13` fix: include loopback addresses in filtering criteria (#306) (Minetake)
+* `026a745 2025-02-09` refactoring: property length check (#305) (keepsimple1)
+* `818f37c 2025-02-10` TXT record: docs to remind users of the maximum length of the attribute. (#304) (Lazy Panda)
+* `fba8025 2025-02-09` TxtProperties: new method to get a HashMap of properties (#303) (keepsimple1)
 
 # Version 0.13.2 (2025-02-02)
 
