@@ -62,6 +62,9 @@ use std::{
 /// [RFC 6763 section 7.2](https://www.rfc-editor.org/rfc/rfc6763#section-7.2).
 pub const SERVICE_NAME_LEN_MAX_DEFAULT: u8 = 15;
 
+/// The default interval for checking IP changes automatically.
+pub const IP_CHECK_INTERVAL_IN_SECS_DEFAULT: u32 = 5;
+
 /// The default time out for [ServiceDaemon::verify] is 10 seconds, per
 /// [RFC 6762 section 10.4](https://datatracker.ietf.org/doc/html/rfc6762#section-10.4)
 pub const VERIFY_TIMEOUT_DEFAULT: Duration = Duration::from_secs(10);
@@ -370,6 +373,18 @@ impl ServiceDaemon {
         self.send_cmd(Command::SetOption(DaemonOption::ServiceNameLenMax(len_max)))
     }
 
+    /// Change the interval for checking IP changes automatically.
+    ///
+    /// Setting `interval` to 0 disables the IP check.
+    ///
+    /// The default interval is 5 seconds, see [`IP_CHECK_INTERVAL_DEFAULT`].
+    pub fn set_ip_check_interval(&self, interval_in_secs: u32) -> Result<()> {
+        let interval_in_millis = interval_in_secs as u64 * 1000;
+        self.send_cmd(Command::SetOption(DaemonOption::IpCheckInterval(
+            interval_in_millis,
+        )))
+    }
+
     /// Include interfaces that match `if_kind` for this service daemon.
     ///
     /// For example:
@@ -504,9 +519,15 @@ impl ServiceDaemon {
         }
 
         // Setup timer for IP checks.
-        const IP_CHECK_INTERVAL_MILLIS: u64 = 3_000;
-        let mut next_ip_check = current_time_millis() + IP_CHECK_INTERVAL_MILLIS;
-        zc.add_timer(next_ip_check);
+        let mut next_ip_check = if zc.ip_check_interval > 0 {
+            current_time_millis() + zc.ip_check_interval
+        } else {
+            0
+        };
+
+        if next_ip_check > 0 {
+            zc.add_timer(next_ip_check);
+        }
 
         // Start the run loop.
 
@@ -619,10 +640,11 @@ impl ServiceDaemon {
             zc.probing_handler();
 
             // check IP changes.
-            if now > next_ip_check {
-                next_ip_check = now + IP_CHECK_INTERVAL_MILLIS;
-                zc.check_ip_changes();
+            if now > next_ip_check && next_ip_check > 0 {
+                next_ip_check = now + zc.ip_check_interval;
                 zc.add_timer(next_ip_check);
+
+                zc.check_ip_changes();
             }
         }
     }
@@ -892,6 +914,9 @@ struct Zeroconf {
     /// Options
     service_name_len_max: u8,
 
+    /// Interval in millis to check IP address changes.
+    ip_check_interval: u64,
+
     /// All interface selections called to the daemon.
     if_selections: Vec<IfSelection>,
 
@@ -945,6 +970,7 @@ impl Zeroconf {
 
         let monitors = Vec::new();
         let service_name_len_max = SERVICE_NAME_LEN_MAX_DEFAULT;
+        let ip_check_interval = IP_CHECK_INTERVAL_IN_SECS_DEFAULT as u64 * 1000;
 
         let timers = BinaryHeap::new();
 
@@ -976,6 +1002,7 @@ impl Zeroconf {
             poller,
             monitors,
             service_name_len_max,
+            ip_check_interval,
             if_selections,
             signal_sock,
             timers,
@@ -990,6 +1017,7 @@ impl Zeroconf {
     fn process_set_option(&mut self, daemon_opt: DaemonOption) {
         match daemon_opt {
             DaemonOption::ServiceNameLenMax(length) => self.service_name_len_max = length,
+            DaemonOption::IpCheckInterval(interval) => self.ip_check_interval = interval,
             DaemonOption::EnableInterface(if_kind) => self.enable_interface(if_kind),
             DaemonOption::DisableInterface(if_kind) => self.disable_interface(if_kind),
             DaemonOption::MulticastLoopV4(on) => self.set_multicast_loop_v4(on),
@@ -3025,6 +3053,7 @@ impl fmt::Display for Command {
 #[derive(Debug)]
 enum DaemonOption {
     ServiceNameLenMax(u8),
+    IpCheckInterval(u64),
     EnableInterface(Vec<IfKind>),
     DisableInterface(Vec<IfKind>),
     MulticastLoopV4(bool),
