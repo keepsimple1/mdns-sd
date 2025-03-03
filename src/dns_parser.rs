@@ -7,7 +7,6 @@
 #[cfg(feature = "logging")]
 use crate::log::trace;
 
-use std::array::TryFromSliceError;
 use crate::error::{e_fmt, Error, Result};
 
 use std::{
@@ -2043,7 +2042,7 @@ impl DnsIncoming {
     fn read_ipv4(&mut self) -> Result<Ipv4Addr> {
         let bytes: [u8; 4] = self.data[self.offset..self.offset + 4]
             .try_into()
-            .map_err(|e: TryFromSliceError| Error::Msg(e.to_string()))?;
+            .map_err(|_| e_fmt!("DNS incoming: Not enough bytes for reading an IPV4"))?;
         self.offset += bytes.len();
         Ok(Ipv4Addr::from(bytes))
     }
@@ -2051,7 +2050,7 @@ impl DnsIncoming {
     fn read_ipv6(&mut self) -> Result<Ipv6Addr> {
         let bytes: [u8; 16] = self.data[self.offset..self.offset + 16]
             .try_into()
-            .map_err(|e: TryFromSliceError| Error::Msg(e.to_string()))?;
+            .map_err(|_| e_fmt!("DNS incoming: Not enough bytes for reading an IPV6"))?;
         self.offset += bytes.len();
         Ok(Ipv6Addr::from(bytes))
     }
