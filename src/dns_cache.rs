@@ -3,10 +3,10 @@
 //! This is an internal implementation, not visible to the public API.
 
 #[cfg(feature = "logging")]
-use crate::log::trace;
+use crate::log::{debug, trace};
 use crate::{
     dns_parser::{DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, RRType},
-    service_info::{split_sub_domain, valid_two_addrs_on_intf},
+    service_info::{split_sub_domain, valid_ip_on_intf, valid_two_addrs_on_intf},
 };
 use if_addrs::Interface;
 use std::{
@@ -170,6 +170,21 @@ impl DnsCache {
                         self.subtype
                             .insert(ptr.alias().to_string(), subtype.to_string());
                     }
+                }
+            }
+        }
+
+        // Check if address is valid on the interface. When IP_MULTICAST_LOOP is enabled,
+        // a multicast packet would loopback to other interfaces of the same multicast group on Linux.
+        if incoming.get_type() == RRType::A || incoming.get_type() == RRType::AAAA {
+            if let Some(answer_addr) = incoming.any().downcast_ref::<DnsAddress>() {
+                let addr = answer_addr.address();
+                if !valid_ip_on_intf(&addr, intf) {
+                    debug!(
+                        "add_or_update: answer addr {addr} not in the subnet of {}",
+                        intf.ip()
+                    );
+                    return None;
                 }
             }
         }
@@ -527,6 +542,27 @@ impl DnsCache {
             .iter()
             .filter(move |r| !r.get_record().is_unique() && !r.get_record().halflife_passed(now))
             .collect()
+    }
+
+    pub(crate) fn remove_addrs_on_disabled_intf(&mut self, disabled_intf: &Interface) {
+        for (host, records) in self.addr.iter_mut() {
+            records.retain(|record| {
+                let Some(dns_addr) = record.any().downcast_ref::<DnsAddress>() else {
+                    return false; // invalid address record.
+                };
+
+                // Remove the record if it is on this interface.
+                if valid_ip_on_intf(&dns_addr.address(), disabled_intf) {
+                    debug!(
+                        "removing ADDR on disabled intf: {:?} host {host}",
+                        dns_addr.address()
+                    );
+                    false
+                } else {
+                    true
+                }
+            });
+        }
     }
 }
 
