@@ -2035,7 +2035,9 @@ impl DnsIncoming {
 
     fn read_vec(&mut self, length: usize) -> Result<Vec<u8>> {
         if self.data.len() < self.offset + length {
-            return Err(e_fmt!("DNS Incoming: not enough data to read a chunk of data"));
+            return Err(e_fmt!(
+                "DNS Incoming: not enough data to read a chunk of data"
+            ));
         }
 
         let v = self.data[self.offset..self.offset + length].to_vec();
