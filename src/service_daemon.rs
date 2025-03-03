@@ -377,7 +377,7 @@ impl ServiceDaemon {
     ///
     /// Setting `interval` to 0 disables the IP check.
     ///
-    /// The default interval is 5 seconds, see [`IP_CHECK_INTERVAL_DEFAULT`].
+    /// The default interval is 5 seconds, see [`IP_CHECK_INTERVAL_IN_SECS_DEFAULT`].
     pub fn set_ip_check_interval(&self, interval_in_secs: u32) -> Result<()> {
         let interval_in_millis = interval_in_secs as u64 * 1000;
         self.send_cmd(Command::SetOption(DaemonOption::IpCheckInterval(
