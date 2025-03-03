@@ -1900,7 +1900,7 @@ impl DnsIncoming {
                         &name,
                         class,
                         ttl,
-                        self.read_vec(rdata_len),
+                        self.read_vec(rdata_len)?,
                     ))),
                     RRType::SRV => Some(Box::new(DnsSrv::new(
                         &name,
@@ -2033,13 +2033,21 @@ impl DnsIncoming {
         Ok(bitmap)
     }
 
-    fn read_vec(&mut self, length: usize) -> Vec<u8> {
+    fn read_vec(&mut self, length: usize) -> Result<Vec<u8>> {
+        if self.data.len() < self.offset + length {
+            return Err(e_fmt!("DNS Incoming: not enough data to read a chunk of data"));
+        }
+
         let v = self.data[self.offset..self.offset + length].to_vec();
         self.offset += length;
-        v
+        Ok(v)
     }
 
     fn read_ipv4(&mut self) -> Result<Ipv4Addr> {
+        if self.data.len() < self.offset + 4 {
+            return Err(e_fmt!("DNS Incoming: not enough data to read an IPV4"));
+        }
+
         let bytes: [u8; 4] = self.data[self.offset..self.offset + 4]
             .try_into()
             .map_err(|_| e_fmt!("DNS incoming: Not enough bytes for reading an IPV4"))?;
@@ -2048,6 +2056,10 @@ impl DnsIncoming {
     }
 
     fn read_ipv6(&mut self) -> Result<Ipv6Addr> {
+        if self.data.len() < self.offset + 16 {
+            return Err(e_fmt!("DNS Incoming: not enough data to read an IPV6"));
+        }
+
         let bytes: [u8; 16] = self.data[self.offset..self.offset + 16]
             .try_into()
             .map_err(|_| e_fmt!("DNS incoming: Not enough bytes for reading an IPV6"))?;
@@ -2056,6 +2068,10 @@ impl DnsIncoming {
     }
 
     fn read_string(&mut self, length: usize) -> Result<String> {
+        if self.data.len() < self.offset + length {
+            return Err(e_fmt!("DNS Incoming: not enough data to read a string"));
+        }
+
         let s = str::from_utf8(&self.data[self.offset..self.offset + length])
             .map_err(|e| Error::Msg(e.to_string()))?;
         self.offset += length;
