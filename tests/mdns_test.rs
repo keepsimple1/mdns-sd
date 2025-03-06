@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
+use std::u32;
 use test_log::test;
 
 /// This test covers:
@@ -2243,6 +2244,47 @@ fn test_multicast_loop_v6() {
     }
 
     assert!(resolved);
+}
+
+#[test]
+fn test_set_ip_check_interval() {
+    // Create a daemon
+    let server = ServiceDaemon::new().expect("Failed to create server");
+    let service = "_ip_check._udp.local.";
+    let host_name = "test_ip_check_host.local.";
+
+    // use a single IPv4 addr
+    let service_ip_addr = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv4())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    let port = 5201;
+    let my_service = ServiceInfo::new(
+        service,
+        "my_instance",
+        host_name,
+        &service_ip_addr,
+        port,
+        None,
+    )
+    .expect("invalid service info");
+    let result = server.register(my_service.clone());
+    assert!(result.is_ok());
+
+    // Set the IP check interval.
+    server.set_ip_check_interval(3).unwrap();
+    let interval = server.get_ip_check_interval().unwrap();
+    assert_eq!(interval, 3);
+
+    server.set_ip_check_interval(u32::MAX).unwrap();
+    let interval = server.get_ip_check_interval().unwrap();
+    assert_eq!(interval, u32::MAX);
+
+    server.set_ip_check_interval(0).unwrap();
+    let interval = server.get_ip_check_interval().unwrap();
+    assert_eq!(interval, 0);
 }
 
 /// A helper function to include a timestamp for println.
