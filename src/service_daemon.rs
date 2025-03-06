@@ -385,6 +385,18 @@ impl ServiceDaemon {
         )))
     }
 
+    /// Get the current interval in seconds for checking IP changes automatically.
+    pub fn get_ip_check_interval(&self) -> Result<u32> {
+        let (resp_s, resp_r) = bounded(1);
+        self.send_cmd(Command::GetOption(resp_s))?;
+
+        let option = resp_r
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|e| e_fmt!("failed to receive ip check interval: {}", e))?;
+        let ip_check_interval_in_secs = option.ip_check_interval / 1000;
+        Ok(ip_check_interval_in_secs as u32)
+    }
+
     /// Include interfaces that match `if_kind` for this service daemon.
     ///
     /// For example:
@@ -2555,6 +2567,16 @@ impl Zeroconf {
                 self.process_set_option(daemon_opt);
             }
 
+            Command::GetOption(resp_s) => {
+                let val = DaemonOptionVal {
+                    _service_name_len_max: self.service_name_len_max,
+                    ip_check_interval: self.ip_check_interval,
+                };
+                if let Err(e) = resp_s.send(val) {
+                    debug!("Failed to send options: {}", e);
+                }
+            }
+
             Command::Verify(instance_fullname, timeout) => {
                 self.exec_command_verify(instance_fullname, timeout, repeating);
             }
@@ -3019,6 +3041,8 @@ enum Command {
 
     SetOption(DaemonOption),
 
+    GetOption(Sender<DaemonOptionVal>),
+
     /// Proactively confirm a DNS resource record.
     ///
     /// The intention is to check if a service name or IP address still valid
@@ -3040,6 +3064,7 @@ impl fmt::Display for Command {
             Self::Register(_) => write!(f, "Command Register"),
             Self::RegisterResend(_, _) => write!(f, "Command RegisterResend"),
             Self::SetOption(_) => write!(f, "Command SetOption"),
+            Self::GetOption(_) => write!(f, "Command GetOption"),
             Self::StopBrowse(_) => write!(f, "Command StopBrowse"),
             Self::StopResolveHostname(_) => write!(f, "Command StopResolveHostname"),
             Self::Unregister(_, _) => write!(f, "Command Unregister"),
@@ -3048,6 +3073,11 @@ impl fmt::Display for Command {
             Self::Verify(_, _) => write!(f, "Command VerifyResource"),
         }
     }
+}
+
+struct DaemonOptionVal {
+    _service_name_len_max: u8,
+    ip_check_interval: u64,
 }
 
 #[derive(Debug)]
