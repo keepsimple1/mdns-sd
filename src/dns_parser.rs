@@ -476,6 +476,8 @@ pub trait DnsRecordExt: fmt::Debug {
     }
 
     fn clone_box(&self) -> DnsRecordBox;
+
+    fn boxed(self) -> DnsRecordBox;
 }
 
 /// Resource Record for IPv4 address or IPv6 address.
@@ -545,6 +547,10 @@ impl DnsRecordExt for DnsAddress {
     fn clone_box(&self) -> DnsRecordBox {
         Box::new(self.clone())
     }
+
+    fn boxed(self) -> DnsRecordBox {
+        Box::new(self)
+    }
 }
 
 /// Resource Record for a DNS pointer
@@ -610,6 +616,10 @@ impl DnsRecordExt for DnsPointer {
 
     fn clone_box(&self) -> DnsRecordBox {
         Box::new(self.clone())
+    }
+
+    fn boxed(self) -> DnsRecordBox {
+        Box::new(self)
     }
 }
 
@@ -739,6 +749,10 @@ impl DnsRecordExt for DnsSrv {
     fn clone_box(&self) -> DnsRecordBox {
         Box::new(self.clone())
     }
+
+    fn boxed(self) -> DnsRecordBox {
+        Box::new(self)
+    }
 }
 
 /// Resource Record for a DNS TXT record.
@@ -817,6 +831,10 @@ impl DnsRecordExt for DnsTxt {
 
     fn clone_box(&self) -> DnsRecordBox {
         Box::new(self.clone())
+    }
+
+    fn boxed(self) -> DnsRecordBox {
+        Box::new(self)
     }
 }
 
@@ -1044,6 +1062,10 @@ impl DnsRecordExt for DnsHostInfo {
     fn clone_box(&self) -> DnsRecordBox {
         Box::new(self.clone())
     }
+
+    fn boxed(self) -> DnsRecordBox {
+        Box::new(self)
+    }
 }
 
 /// Resource Record for negative responses
@@ -1159,6 +1181,10 @@ impl DnsRecordExt for DnsNSec {
 
     fn clone_box(&self) -> DnsRecordBox {
         Box::new(self.clone())
+    }
+
+    fn boxed(self) -> DnsRecordBox {
+        Box::new(self)
     }
 }
 
@@ -1487,7 +1513,7 @@ impl DnsOutgoing {
     //    o  All address records (type "A" and "AAAA") named in the SRV rdata.
     pub fn add_additional_answer(&mut self, answer: impl DnsRecordExt + 'static) {
         trace!("add_additional_answer: {:?}", &answer);
-        self.additionals.push(Box::new(answer));
+        self.additionals.push(answer.boxed());
     }
 
     /// A workaround as Rust doesn't allow us to pass DnsRecordBox in as `impl DnsRecordExt`
@@ -1526,7 +1552,7 @@ impl DnsOutgoing {
     ) -> bool {
         if now == 0 || !answer.get_record().is_expired(now) {
             trace!("add_answer push: {:?}", &answer);
-            self.answers.push((Box::new(answer), now));
+            self.answers.push((answer.boxed(), now));
             return true;
         }
         false
@@ -1889,57 +1915,53 @@ impl DnsIncoming {
                 None => None,
 
                 Some(rr_type) => match rr_type {
-                    RRType::CNAME | RRType::PTR => Some(Box::new(DnsPointer::new(
-                        &name,
-                        rr_type,
-                        class,
-                        ttl,
-                        self.read_name()?,
-                    ))),
-                    RRType::TXT => Some(Box::new(DnsTxt::new(
-                        &name,
-                        class,
-                        ttl,
-                        self.read_vec(rdata_len)?,
-                    ))),
-                    RRType::SRV => Some(Box::new(DnsSrv::new(
-                        &name,
-                        class,
-                        ttl,
-                        self.read_u16()?,
-                        self.read_u16()?,
-                        self.read_u16()?,
-                        self.read_name()?,
-                    ))),
-                    RRType::HINFO => Some(Box::new(DnsHostInfo::new(
-                        &name,
-                        rr_type,
-                        class,
-                        ttl,
-                        self.read_char_string()?,
-                        self.read_char_string()?,
-                    ))),
-                    RRType::A => Some(Box::new(DnsAddress::new(
-                        &name,
-                        rr_type,
-                        class,
-                        ttl,
-                        self.read_ipv4()?.into(),
-                    ))),
-                    RRType::AAAA => Some(Box::new(DnsAddress::new(
-                        &name,
-                        rr_type,
-                        class,
-                        ttl,
-                        self.read_ipv6()?.into(),
-                    ))),
-                    RRType::NSEC => Some(Box::new(DnsNSec::new(
-                        &name,
-                        class,
-                        ttl,
-                        self.read_name()?,
-                        self.read_type_bitmap()?,
-                    ))),
+                    RRType::CNAME | RRType::PTR => {
+                        Some(DnsPointer::new(&name, rr_type, class, ttl, self.read_name()?).boxed())
+                    }
+                    RRType::TXT => {
+                        Some(DnsTxt::new(&name, class, ttl, self.read_vec(rdata_len)?).boxed())
+                    }
+                    RRType::SRV => Some(
+                        DnsSrv::new(
+                            &name,
+                            class,
+                            ttl,
+                            self.read_u16()?,
+                            self.read_u16()?,
+                            self.read_u16()?,
+                            self.read_name()?,
+                        )
+                        .boxed(),
+                    ),
+                    RRType::HINFO => Some(
+                        DnsHostInfo::new(
+                            &name,
+                            rr_type,
+                            class,
+                            ttl,
+                            self.read_char_string()?,
+                            self.read_char_string()?,
+                        )
+                        .boxed(),
+                    ),
+                    RRType::A => Some(
+                        DnsAddress::new(&name, rr_type, class, ttl, self.read_ipv4()?.into())
+                            .boxed(),
+                    ),
+                    RRType::AAAA => Some(
+                        DnsAddress::new(&name, rr_type, class, ttl, self.read_ipv6()?.into())
+                            .boxed(),
+                    ),
+                    RRType::NSEC => Some(
+                        DnsNSec::new(
+                            &name,
+                            class,
+                            ttl,
+                            self.read_name()?,
+                            self.read_type_bitmap()?,
+                        )
+                        .boxed(),
+                    ),
                     _ => None,
                 },
             };

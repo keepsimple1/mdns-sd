@@ -1093,7 +1093,7 @@ impl DnsRegistry {
                 record.get_type(),
                 record.get_name()
             );
-            probe.insert_record(Box::new(record));
+            probe.insert_record(record.boxed());
         }
 
         new_timer_added
