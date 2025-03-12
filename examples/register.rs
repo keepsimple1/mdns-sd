@@ -11,27 +11,47 @@
 //! Options:
 //! "--unregister": automatically unregister after 2 seconds.
 //! "--disable-ipv6": not to use IPv6 interfaces.
+//! "--logfile": write debug log to a file instead of stderr.
+//!
+//! For example: to see the debug log, set the RUST_LOG environment variable and write a logfile:
+//!
+//! RUST_LOG=mdns_sd=debug cargo run --example register _my-hello._udp instance1 host1 --logfile
 
 use mdns_sd::{DaemonEvent, IfKind, ServiceDaemon, ServiceInfo};
-use std::{env, thread, time::Duration};
+use std::{env, fs::File, thread, time::Duration, time::SystemTime, time::UNIX_EPOCH};
 
 fn main() {
-    // setup env_logger with more precise timestamp.
-    let mut builder = env_logger::Builder::from_default_env();
-    builder.format_timestamp_millis().init();
-
     // Simple command line options.
     let args: Vec<String> = env::args().collect();
     let mut should_unreg = false;
     let mut disable_ipv6 = false;
+    let mut use_logfile = false;
 
     for arg in args.iter() {
         if arg.as_str() == "--unregister" {
-            should_unreg = true
+            should_unreg = true;
         } else if arg.as_str() == "--disable-ipv6" {
-            disable_ipv6 = true
+            disable_ipv6 = true;
+        } else if arg.as_str() == "--logfile" {
+            use_logfile = true;
         }
     }
+
+    // setup env_logger
+    let mut builder = env_logger::Builder::from_default_env();
+    if use_logfile {
+        let now = SystemTime::now();
+        let duration = now
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards: failed to get UNIX timestamp");
+        let log_filename = format!("mdns-register-{}.log", duration.as_secs());
+        let file = File::create(&log_filename).unwrap();
+        builder.target(env_logger::Target::Pipe(Box::new(file)));
+        println!("Logging to file: {}\n", log_filename);
+    }
+
+    // more precise timestamp.
+    builder.format_timestamp_millis().init();
 
     // Create a new mDNS daemon.
     let mdns = ServiceDaemon::new().expect("Could not create service daemon");
@@ -116,10 +136,14 @@ fn main() {
 fn print_usage() {
     println!("Usage:");
     println!("cargo run --example register <service_type> <instance_name> <hostname> [options]");
-    println!("Options:");
+    println!("\nOptions:\n");
     println!("--unregister: automatically unregister after 2 seconds");
     println!("--disable-ipv6: not to use IPv6 interfaces.");
+    println!("--logfile: write debug log to a file instead of stderr. The logfile is named 'mdns-register-<timestamp>.log'.");
     println!();
     println!("For example:");
     println!("cargo run --example register _my-hello._udp instance1 host1");
+    println!("");
+    println!("To see the debug log, set the RUST_LOG environment variable and write a logfile:");
+    println!("RUST_LOG=mdns_sd=debug cargo run --example register _my-hello._udp instance1 host1 --logfile");
 }
