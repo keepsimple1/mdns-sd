@@ -651,8 +651,8 @@ impl ServiceDaemon {
             // Send out probing queries.
             zc.probing_handler();
 
-            // check IP changes.
-            if now > next_ip_check && next_ip_check > 0 {
+            // check IP changes if next_ip_check is reached.
+            if now >= next_ip_check && next_ip_check > 0 {
                 next_ip_check = now + zc.ip_check_interval;
                 zc.add_timer(next_ip_check);
 
