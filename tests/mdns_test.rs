@@ -1347,7 +1347,7 @@ fn test_hostname_resolution() {
                 break true;
             }
             Ok(HostnameResolutionEvent::SearchStopped(_)) => break false,
-            Ok(_event) => {},
+            Ok(_event) => {}
             Err(_) => break false,
         }
     };
