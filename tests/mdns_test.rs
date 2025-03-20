@@ -1319,7 +1319,7 @@ fn test_shutdown() {
 #[test]
 fn test_hostname_resolution() {
     let d = ServiceDaemon::new().expect("Failed to create daemon");
-    let hostname = "my_host._tcp.local.";
+    let hostname = "My_test_HOST.local.";
     let service_ip_addr = my_ip_interfaces()
         .iter()
         .find(|iface| iface.ip().is_ipv4())
@@ -1337,16 +1337,17 @@ fn test_hostname_resolution() {
     .expect("invalid service info");
     d.register(my_service).unwrap();
 
-    let event_receiver = d.resolve_hostname(hostname, Some(2000)).unwrap();
+    let hostname_lower = hostname.to_lowercase();
+    let event_receiver = d.resolve_hostname(&hostname_lower, Some(2000)).unwrap();
     let resolved = loop {
         match event_receiver.recv() {
             Ok(HostnameResolutionEvent::AddressesFound(found_hostname, addresses)) => {
-                assert!(found_hostname == hostname);
+                assert!(found_hostname == hostname_lower);
                 assert!(addresses.contains(&service_ip_addr));
                 break true;
             }
             Ok(HostnameResolutionEvent::SearchStopped(_)) => break false,
-            Ok(event) => println!("Received event {:?}", event),
+            Ok(_event) => {},
             Err(_) => break false,
         }
     };
