@@ -3195,7 +3195,7 @@ fn call_hostname_resolution_listener(
     let hostname_lower = hostname.to_lowercase();
     if let Some(listener) = listeners_map.get(&hostname_lower).map(|(l, _)| l) {
         match listener.send(event) {
-            Ok(()) => debug!("Sent event to listener successfully"),
+            Ok(()) => trace!("Sent event to listener successfully"),
             Err(e) => debug!("Failed to send event: {}", e),
         }
     }

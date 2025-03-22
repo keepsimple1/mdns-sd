@@ -92,6 +92,9 @@ impl DnsCache {
     }
 
     /// Returns a hashmap of hostnames and their addresses for a given `host`.
+    ///
+    /// Note that the keys in the returned HashMap are the same hostname, with different cases
+    /// of letters (e.g. "example.local.", "Example.local.", "EXAMPLE.local.").
     pub(crate) fn get_addresses_for_host(&self, host: &str) -> HashMap<String, HashSet<IpAddr>> {
         let mut result = HashMap::new();
 
