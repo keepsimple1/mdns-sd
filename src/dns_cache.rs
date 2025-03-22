@@ -26,7 +26,7 @@ pub(crate) struct DnsCache {
     /// DnsTxt records indexed by the fullname of an instance
     txt: HashMap<String, Vec<DnsRecordBox>>,
 
-    /// DnsAddr records indexed by the hostname
+    /// DnsAddr records indexed by the hostname in lowercase.
     addr: HashMap<String, Vec<DnsRecordBox>>,
 
     /// A reverse lookup table from "instance fullname" to "subtype PTR name"
@@ -91,19 +91,30 @@ impl DnsCache {
             .collect()
     }
 
-    /// Returns the set of IP addresses for a hostname.
-    pub(crate) fn get_addresses_for_host(&self, host: &str) -> HashSet<IpAddr> {
-        self.addr
-            .get(host)
-            .into_iter()
-            .flatten()
-            .filter_map(|record| {
-                record
-                    .any()
-                    .downcast_ref::<DnsAddress>()
-                    .map(|addr| addr.address())
-            })
-            .collect()
+    /// Returns a hashmap of hostnames and their addresses for a given `host`.
+    ///
+    /// Note that the keys in the returned HashMap are the same hostname, with different cases
+    /// of letters (e.g. "example.local.", "Example.local.", "EXAMPLE.local.").
+    pub(crate) fn get_addresses_for_host(&self, host: &str) -> HashMap<String, HashSet<IpAddr>> {
+        let hostname_lower = host.to_lowercase();
+        let mut result = HashMap::new();
+
+        if let Some(records) = self.addr.get(&hostname_lower) {
+            for record in records {
+                if let Some(dns_addr) = record.any().downcast_ref::<DnsAddress>() {
+                    let record_name = record.get_name().to_string();
+                    let address = dns_addr.address();
+
+                    // Use the entry API to insert or update the HashSet for the record_name
+                    result
+                        .entry(record_name)
+                        .or_insert_with(HashSet::new)
+                        .insert(address);
+                }
+            }
+        }
+
+        result
     }
 
     /// Returns a list of resource records (name, rr_type) that need to be queried in order to
@@ -190,11 +201,12 @@ impl DnsCache {
         }
 
         // get the existing records for the type.
+        let entry_name_lower = entry_name.to_lowercase();
         let record_vec = match incoming.get_type() {
             RRType::PTR => self.ptr.entry(entry_name).or_default(),
             RRType::SRV => self.srv.entry(entry_name).or_default(),
             RRType::TXT => self.txt.entry(entry_name).or_default(),
-            RRType::A | RRType::AAAA => self.addr.entry(entry_name).or_default(),
+            RRType::A | RRType::AAAA => self.addr.entry(entry_name_lower).or_default(),
             RRType::NSEC => self.nsec.entry(entry_name).or_default(),
             _ => return None,
         };

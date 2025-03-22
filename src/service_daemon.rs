@@ -910,6 +910,7 @@ struct Zeroconf {
     /// Active "ResolveHostname" commands.
     ///
     /// The timestamps are set at the future timestamp when the command should timeout.
+    /// `hostname` is case-insensitive and stored in lowercase.
     hostname_resolvers: HashMap<String, (Sender<HostnameResolutionEvent>, Option<u64>)>, // <hostname, (channel::sender, UNIX timestamp in millis)>
 
     /// All repeating transmissions.
@@ -1609,7 +1610,7 @@ impl Zeroconf {
     ) {
         let real_timeout = timeout.map(|t| current_time_millis() + t);
         self.hostname_resolvers
-            .insert(hostname, (listener, real_timeout));
+            .insert(hostname.to_lowercase(), (listener, real_timeout));
         if let Some(t) = real_timeout {
             self.add_timer(t);
         }
@@ -1810,12 +1811,9 @@ impl Zeroconf {
         hostname: &str,
         sender: Sender<HostnameResolutionEvent>,
     ) {
-        let addresses = self.cache.get_addresses_for_host(hostname);
-        if !addresses.is_empty() {
-            match sender.send(HostnameResolutionEvent::AddressesFound(
-                hostname.to_string(),
-                addresses,
-            )) {
+        let addresses_map = self.cache.get_addresses_for_host(hostname);
+        for (name, addresses) in addresses_map {
+            match sender.send(HostnameResolutionEvent::AddressesFound(name, addresses)) {
                 Ok(()) => trace!("sent hostname addresses found"),
                 Err(e) => debug!("failed to send hostname addresses found: {}", e),
             }
@@ -2036,20 +2034,19 @@ impl Zeroconf {
         }
 
         // Go through remaining changes to see if any hostname resolutions were found or updated.
-        changes
+        for change in changes
             .iter()
             .filter(|change| change.ty == RRType::A || change.ty == RRType::AAAA)
-            .map(|change| change.name.clone())
-            .collect::<HashSet<String>>()
-            .iter()
-            .map(|hostname| (hostname, self.cache.get_addresses_for_host(hostname)))
-            .for_each(|(hostname, addresses)| {
+        {
+            let addr_map = self.cache.get_addresses_for_host(&change.name);
+            for (name, addresses) in addr_map {
                 call_hostname_resolution_listener(
                     &self.hostname_resolvers,
-                    hostname,
-                    HostnameResolutionEvent::AddressesFound(hostname.to_string(), addresses),
+                    &change.name,
+                    HostnameResolutionEvent::AddressesFound(name, addresses),
                 )
-            });
+            }
+        }
 
         // Identify the instances that need to be "resolved".
         let mut updated_instances = HashSet::new();
@@ -2368,7 +2365,7 @@ impl Zeroconf {
                                 out.add_answer(
                                     &msg,
                                     DnsAddress::new(
-                                        question.entry_name(),
+                                        service_hostname,
                                         ip_address_rr_type(&address),
                                         CLASS_IN | CLASS_CACHE_FLUSH,
                                         service.get_host_ttl(),
@@ -2544,7 +2541,7 @@ impl Zeroconf {
             Command::StopBrowse(ty_domain) => self.exec_command_stop_browse(ty_domain),
 
             Command::StopResolveHostname(hostname) => {
-                self.exec_command_stop_resolve_hostname(hostname)
+                self.exec_command_stop_resolve_hostname(hostname.to_lowercase())
             }
 
             Command::Resolve(instance, try_count) => self.exec_command_resolve(instance, try_count),
@@ -3193,7 +3190,8 @@ fn call_hostname_resolution_listener(
     hostname: &str,
     event: HostnameResolutionEvent,
 ) {
-    if let Some(listener) = listeners_map.get(hostname).map(|(l, _)| l) {
+    let hostname_lower = hostname.to_lowercase();
+    if let Some(listener) = listeners_map.get(&hostname_lower).map(|(l, _)| l) {
         match listener.send(event) {
             Ok(()) => trace!("Sent event to listener successfully"),
             Err(e) => debug!("Failed to send event: {}", e),

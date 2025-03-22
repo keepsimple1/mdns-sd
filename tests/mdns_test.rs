@@ -1356,6 +1356,65 @@ fn test_hostname_resolution() {
 }
 
 #[test]
+fn test_hostname_resolution_case_insensitive() {
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+    let hostname = "My_casE_HOST.local.";
+    let service_ip_addr = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv4())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    let my_service = ServiceInfo::new(
+        "_host_case_test._tcp.local.",
+        "my_instance",
+        hostname,
+        &[service_ip_addr] as &[IpAddr],
+        1234,
+        None,
+    )
+    .expect("invalid service info");
+    d.register(my_service).unwrap();
+
+    // Verify that lowercase hostname resolves correctly.
+    let hostname_lower = hostname.to_lowercase();
+    let event_receiver = d.resolve_hostname(&hostname_lower, Some(2000)).unwrap();
+    let resolved = loop {
+        match event_receiver.recv() {
+            Ok(HostnameResolutionEvent::AddressesFound(found_hostname, addresses)) => {
+                assert!(found_hostname == hostname);
+                assert!(addresses.contains(&service_ip_addr));
+                break true;
+            }
+            Ok(HostnameResolutionEvent::SearchStopped(_)) => break false,
+            Ok(_event) => {}
+            Err(_) => break false,
+        }
+    };
+
+    assert!(resolved);
+
+    // Verify that any-case hostname resolves correctly.
+    let hostname_other = "MY_CASe_hOST.local.";
+    let event_receiver = d.resolve_hostname(hostname_other, Some(2000)).unwrap();
+    let resolved = loop {
+        match event_receiver.recv() {
+            Ok(HostnameResolutionEvent::AddressesFound(found_hostname, addresses)) => {
+                assert!(found_hostname == hostname);
+                assert!(addresses.contains(&service_ip_addr));
+                break true;
+            }
+            Ok(HostnameResolutionEvent::SearchStopped(_)) => break false,
+            Ok(_event) => {}
+            Err(_) => break false,
+        }
+    };
+    assert!(resolved);
+
+    d.shutdown().unwrap();
+}
+
+#[test]
 fn hostname_resolution_timeout() {
     let d = ServiceDaemon::new().expect("Failed to create daemon");
 
