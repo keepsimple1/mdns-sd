@@ -96,9 +96,10 @@ impl DnsCache {
     /// Note that the keys in the returned HashMap are the same hostname, with different cases
     /// of letters (e.g. "example.local.", "Example.local.", "EXAMPLE.local.").
     pub(crate) fn get_addresses_for_host(&self, host: &str) -> HashMap<String, HashSet<IpAddr>> {
+        let hostname_lower = host.to_lowercase();
         let mut result = HashMap::new();
 
-        if let Some(records) = self.addr.get(host) {
+        if let Some(records) = self.addr.get(&hostname_lower) {
             for record in records {
                 if let Some(dns_addr) = record.any().downcast_ref::<DnsAddress>() {
                     let record_name = record.get_name().to_string();

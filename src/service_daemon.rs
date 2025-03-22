@@ -1811,8 +1811,7 @@ impl Zeroconf {
         hostname: &str,
         sender: Sender<HostnameResolutionEvent>,
     ) {
-        let hostname_lower = hostname.to_lowercase();
-        let addresses_map = self.cache.get_addresses_for_host(&hostname_lower);
+        let addresses_map = self.cache.get_addresses_for_host(hostname);
         for (name, addresses) in addresses_map {
             match sender.send(HostnameResolutionEvent::AddressesFound(name, addresses)) {
                 Ok(()) => trace!("sent hostname addresses found"),
@@ -2039,8 +2038,7 @@ impl Zeroconf {
             .iter()
             .filter(|change| change.ty == RRType::A || change.ty == RRType::AAAA)
         {
-            let hostname_lower = change.name.to_lowercase();
-            let addr_map = self.cache.get_addresses_for_host(&hostname_lower);
+            let addr_map = self.cache.get_addresses_for_host(&change.name);
             for (name, addresses) in addr_map {
                 call_hostname_resolution_listener(
                     &self.hostname_resolvers,

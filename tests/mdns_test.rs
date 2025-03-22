@@ -1366,7 +1366,7 @@ fn test_hostname_resolution_case_insensitive() {
         .unwrap();
 
     let my_service = ServiceInfo::new(
-        "_host_res_test._tcp.local.",
+        "_host_case_test._tcp.local.",
         "my_instance",
         hostname,
         &[service_ip_addr] as &[IpAddr],
