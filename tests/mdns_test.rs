@@ -54,7 +54,7 @@ fn integration_success() {
         println!("{}", &item);
     }
 
-    let host_name = "integration_host.local.";
+    let host_name = "INTEGRATION_host.local.";
     let port = 5200;
     let mut properties = HashMap::new();
     properties.insert("property_1".to_string(), "test".to_string());
