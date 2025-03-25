@@ -7,13 +7,13 @@
 
 ## All changes
 
-* e64c0d4 2025-03-24 bugfix: hostname resolution should be case insensitive (#330) (keepsimple1)
-* 5e4df27 2025-03-19 bugfix: when now equals next_ip_check (#328) (keepsimple1)
-* 9538120 2025-03-12 examples: support logfile in the register example (#326) (keepsimple1)
-* 8422690 2025-03-13 chore(deps): update fastrand and socket2 (#324) (CosminPerRam)
-* dd2d868 2025-03-07 feat: add boxed in DnsRecordExt to reduce Box::new usage (#323) (CosminPerRam)
-* 3ea6cf1 2025-03-05 Detect IP changes: reduce the interval (#313) (keepsimple1)
-* 7feabc9 2025-03-04 feat: handle DnsIncoming IPv4, 6 and String read parsing errors (#309) (CosminPerRam)
+* `e64c0d4 2025-03-24` bugfix: hostname resolution should be case insensitive (#330) (keepsimple1)
+* `5e4df27 2025-03-19` bugfix: when now equals next_ip_check (#328) (keepsimple1)
+* `9538120 2025-03-12` examples: support logfile in the register example (#326) (keepsimple1)
+* `8422690 2025-03-13` chore(deps): update fastrand and socket2 (#324) (CosminPerRam)
+* `dd2d868 2025-03-07` feat: add boxed in DnsRecordExt to reduce Box::new usage (#323) (CosminPerRam)
+* `3ea6cf1 2025-03-05` Detect IP changes: reduce the interval (#313) (keepsimple1)
+* `7feabc9 2025-03-04` feat: handle DnsIncoming IPv4, 6 and String read parsing errors (#309) (CosminPerRam)
 
 # Version 0.13.3 (2025-03-01)
 
