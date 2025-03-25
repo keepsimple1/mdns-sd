@@ -66,7 +66,7 @@ impl DnsCache {
     }
 
     pub(crate) fn get_addr(&self, hostname: &str) -> Option<&Vec<DnsRecordBox>> {
-        self.addr.get(hostname)
+        self.addr.get(&hostname.to_lowercase())
     }
 
     /// A reverse lookup table from "instance fullname" to "subtype PTR name"
