@@ -1,3 +1,11 @@
+# Version 0.13.5 (2025-03-25)
+
+This is a patch fix release as the previous release (0.13.4) was broken in service resolution.
+
+* `e65757f 2025-03-26` bugfix: make `get_addr` method use lowercase hostname (#332) (Justus K)
+
+Thanks @Stupremee for the fix and welcome!
+
 # Version 0.13.4 (2025-03-24)
 
 ## Highlights
