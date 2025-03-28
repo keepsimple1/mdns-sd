@@ -2259,6 +2259,9 @@ fn test_multicast_loop_v6() {
     // For Windows, IP_MULTICAST_LOOP option works only on the receive path.
     client.set_multicast_loop_v6(false).unwrap();
 
+    // Make sure no stale records are in the cache before config changes.
+    client.clear_cache().unwrap();
+
     let receiver = client.browse(ty_domain).unwrap();
 
     let timeout = Duration::from_secs(2);

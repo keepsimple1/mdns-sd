@@ -477,6 +477,16 @@ impl ServiceDaemon {
         self.send_cmd(Command::Verify(instance_fullname, timeout))
     }
 
+    /// Clears all DNS records in the daemon's cache.
+    ///
+    /// This is useful when you changed some configurations and want to make sure
+    /// the daemon has a clean slate without any stale records.
+    ///
+    /// For example: `daemon.set_multicast_loop_v6(false)` and then call this method.
+    pub fn clear_cache(&self) -> Result<()> {
+        self.send_cmd(Command::ClearCache)
+    }
+
     fn daemon_thread(signal_sock: MioUdpSocket, poller: Poll, receiver: Receiver<Command>) {
         let zc = Zeroconf::new(signal_sock, poller);
 
@@ -2578,6 +2588,10 @@ impl Zeroconf {
                 self.exec_command_verify(instance_fullname, timeout, repeating);
             }
 
+            Command::ClearCache => {
+                self.cache.clear();
+            }
+
             _ => {
                 debug!("unexpected command: {:?}", &command);
             }
@@ -3046,6 +3060,9 @@ enum Command {
     /// before its TTL expires.
     Verify(String, Duration),
 
+    /// Flush the mDNS cache.
+    ClearCache,
+
     Exit(Sender<DaemonStatus>),
 }
 
@@ -3068,6 +3085,7 @@ impl fmt::Display for Command {
             Self::UnregisterResend(_, _) => write!(f, "Command UnregisterResend"),
             Self::Resolve(_, _) => write!(f, "Command Resolve"),
             Self::Verify(_, _) => write!(f, "Command VerifyResource"),
+            Self::ClearCache => write!(f, "Command CacheReset"),
         }
     }
 }
