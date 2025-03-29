@@ -438,9 +438,6 @@ impl ServiceDaemon {
     ///
     /// Which means, in order NOT to receive localhost announcements, you want to call
     /// this API on the querier side on Windows, but on the responder side on Unix.
-    ///
-    /// Note: when called on the client side, to make sure no loopback datagrams are already
-    /// received and cached, please call [`Self::clear_cache`] after this method.
     pub fn set_multicast_loop_v4(&self, on: bool) -> Result<()> {
         self.send_cmd(Command::SetOption(DaemonOption::MulticastLoopV4(on)))
     }
@@ -460,9 +457,6 @@ impl ServiceDaemon {
     ///
     /// Which means, in order NOT to receive localhost announcements, you want to call
     /// this API on the querier side on Windows, but on the responder side on Unix.
-    ///
-    /// Note: when called on the client side, to make sure no loopback datagrams are already
-    /// received and cached, please call [`Self::clear_cache`] after this method.
     pub fn set_multicast_loop_v6(&self, on: bool) -> Result<()> {
         self.send_cmd(Command::SetOption(DaemonOption::MulticastLoopV6(on)))
     }
@@ -488,7 +482,8 @@ impl ServiceDaemon {
     /// This is useful when you changed some configurations and want to make sure
     /// the daemon has a clean slate without any stale records.
     ///
-    /// For example: `daemon.set_multicast_loop_v6(false)` and then call this method.
+    /// For example: `daemon.set_multicast_loop_v6(false)` changes the daemon's configuration,
+    /// and then call this method before browsing a service.
     pub fn clear_cache(&self) -> Result<()> {
         self.send_cmd(Command::ClearCache)
     }
