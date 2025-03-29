@@ -576,6 +576,16 @@ impl DnsCache {
             });
         }
     }
+
+    /// Flush the cache for all records.
+    pub(crate) fn clear(&mut self) {
+        self.ptr.clear();
+        self.srv.clear();
+        self.txt.clear();
+        self.addr.clear();
+        self.subtype.clear();
+        self.nsec.clear();
+    }
 }
 
 /// Returns UNIX time in millis
