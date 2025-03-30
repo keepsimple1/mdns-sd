@@ -1658,7 +1658,7 @@ impl Zeroconf {
         }
     }
 
-    /// Reads from the socket of `ip`.
+    /// Reads one UDP datagram from the socket of `intf`.
     ///
     /// Returns false if failed to receive a packet,
     /// otherwise returns true.
@@ -2306,28 +2306,7 @@ impl Zeroconf {
                                 .filter(|r| r.get_name() == probe_name)
                                 .collect();
 
-                            /*
-                            RFC 6762 section 8.2: https://datatracker.ietf.org/doc/html/rfc6762#section-8.2
-                            ...
-                            if the host finds that its own data is lexicographically later, it
-                            simply ignores the other host's probe.  If the host finds that its
-                            own data is lexicographically earlier, then it defers to the winning
-                            host by waiting one second, and then begins probing for this record
-                            again.
-                            */
-                            match probe.tiebreaking(&incoming_records) {
-                                cmp::Ordering::Less => {
-                                    debug!(
-                                        "tiebreaking '{}': LOST, will wait for one second",
-                                        probe_name
-                                    );
-                                    probe.start_time = now + 1000; // wait and restart.
-                                    probe.next_send = now + 1000;
-                                }
-                                ordering => {
-                                    debug!("tiebreaking '{}': {:?}", probe_name, ordering);
-                                }
-                            }
+                            probe.tiebreaking(&incoming_records, now, probe_name);
                         }
                     }
                 }
