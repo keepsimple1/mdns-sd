@@ -904,27 +904,46 @@ impl Probe {
         self.records.insert(insert_position, record);
     }
 
-    /// Compares with `incoming` records. Returns `Less` if we yield.
-    pub(crate) fn tiebreaking(&self, incoming: &[&DnsRecordBox]) -> cmp::Ordering {
+    /// Compares with `incoming` records. Postpone probe and retry if we yield.
+    pub(crate) fn tiebreaking(&mut self, incoming: &[&DnsRecordBox], now: u64, probe_name: &str) {
         /*
-        RFC 6762: https://datatracker.ietf.org/doc/html/rfc6762#section-8.2
-
-        " If the host finds that its
-            own data is lexicographically earlier, then it defers to the winning
-            host by waiting one second, and then begins probing for this record
-            again."
-         */
+        RFC 6762 section 8.2: https://datatracker.ietf.org/doc/html/rfc6762#section-8.2
+        ...
+        if the host finds that its own data is lexicographically later, it
+        simply ignores the other host's probe.  If the host finds that its
+        own data is lexicographically earlier, then it defers to the winning
+        host by waiting one second, and then begins probing for this record
+        again.
+        */
         let min_len = self.records.len().min(incoming.len());
 
         // Compare elements up to the length of the shorter vector
+        let mut cmp_result = cmp::Ordering::Equal;
         for (i, incoming_record) in incoming.iter().enumerate().take(min_len) {
             match self.records[i].compare(incoming_record.as_ref()) {
                 cmp::Ordering::Equal => continue,
-                other => return other,
+                other => {
+                    cmp_result = other;
+                    break; // exit loop on first difference
+                }
             }
         }
 
-        self.records.len().cmp(&incoming.len())
+        if cmp_result == cmp::Ordering::Equal {
+            // If all compared records are equal, compare the lengths of the records.
+            cmp_result = self.records.len().cmp(&incoming.len());
+        }
+
+        match cmp_result {
+            cmp::Ordering::Less => {
+                debug!("tiebreaking '{probe_name}': LOST, will wait for one second",);
+                self.start_time = now + 1000; // wait and restart.
+                self.next_send = now + 1000;
+            }
+            ordering => {
+                debug!("tiebreaking '{probe_name}': {:?}", ordering);
+            }
+        }
     }
 
     pub(crate) fn update_next_send(&mut self, now: u64) {
