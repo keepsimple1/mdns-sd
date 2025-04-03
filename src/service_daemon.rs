@@ -563,12 +563,8 @@ impl ServiceDaemon {
 
             let now = current_time_millis();
 
-            // Remove the timer if already passed.
-            if let Some(timer) = earliest_timer {
-                if now >= timer {
-                    zc.pop_earliest_timer();
-                }
-            }
+            // Remove the timers if already passed.
+            zc.pop_timers_till(now);
 
             // Remove hostname resolvers with expired timeouts.
             for hostname in zc
@@ -1125,8 +1121,18 @@ impl Zeroconf {
         self.timers.peek().map(|Reverse(v)| *v)
     }
 
-    fn pop_earliest_timer(&mut self) -> Option<u64> {
+    fn _pop_earliest_timer(&mut self) -> Option<u64> {
         self.timers.pop().map(|Reverse(v)| v)
+    }
+
+    /// Pop all timers that are already passed till `now`.
+    fn pop_timers_till(&mut self, now: u64) {
+        while let Some(Reverse(v)) = self.timers.peek() {
+            if *v > now {
+                break;
+            }
+            self.timers.pop();
+        }
     }
 
     /// Apply all selections to `interfaces` and return the selected addresses.
