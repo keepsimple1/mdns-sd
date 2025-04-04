@@ -1976,6 +1976,23 @@ impl Zeroconf {
         // check possible conflicts and handle them.
         self.conflict_handler(&msg, intf);
 
+        // check if the message is for us.
+        let mut is_for_us = true; // assume it is for us.
+
+        // If there are any PTR records in the answers, there are should be
+        // at least one PTR for us. Otherwise, not for us.
+        // If there are no PTR records, assume this message is for us.
+        for answer in msg.answers() {
+            if answer.get_type() == RRType::PTR {
+                if self.service_queriers.contains_key(answer.get_name()) {
+                    is_for_us = true;
+                    break; // OK to break: at least one PTR for us.
+                } else {
+                    is_for_us = false;
+                }
+            }
+        }
+
         /// Represents a DNS record change that involves one service instance.
         struct InstanceChange {
             ty: RRType,   // The type of DNS record for the instance.
@@ -1992,7 +2009,10 @@ impl Zeroconf {
         let mut changes = Vec::new();
         let mut timers = Vec::new();
         for record in msg.all_records() {
-            match self.cache.add_or_update(intf, record, &mut timers) {
+            match self
+                .cache
+                .add_or_update(intf, record, &mut timers, is_for_us)
+            {
                 Some((dns_record, true)) => {
                     timers.push(dns_record.get_record().get_expire_time());
                     timers.push(dns_record.get_record().get_refresh_time());
