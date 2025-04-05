@@ -111,6 +111,16 @@ enum Counter {
     CacheRefreshSRV,
     CacheRefreshAddr,
     KnownAnswerSuppression,
+    CachedPTR,
+    CachedSRV,
+    CachedAddr,
+    CachedTxt,
+    CachedNSec,
+    CachedSubtype,
+    DnsRegistryProbe,
+    DnsRegistryActive,
+    DnsRegistryTimer,
+    DnsRegistryNameChange,
 }
 
 impl fmt::Display for Counter {
@@ -127,6 +137,16 @@ impl fmt::Display for Counter {
             Self::CacheRefreshSRV => write!(f, "cache-refresh-srv"),
             Self::CacheRefreshAddr => write!(f, "cache-refresh-addr"),
             Self::KnownAnswerSuppression => write!(f, "known-answer-suppression"),
+            Self::CachedPTR => write!(f, "cached-ptr"),
+            Self::CachedSRV => write!(f, "cached-srv"),
+            Self::CachedAddr => write!(f, "cached-addr"),
+            Self::CachedTxt => write!(f, "cached-txt"),
+            Self::CachedNSec => write!(f, "cached-nsec"),
+            Self::CachedSubtype => write!(f, "cached-subtype"),
+            Self::DnsRegistryProbe => write!(f, "dns-registry-probe"),
+            Self::DnsRegistryActive => write!(f, "dns-registry-active"),
+            Self::DnsRegistryTimer => write!(f, "dns-registry-timer"),
+            Self::DnsRegistryNameChange => write!(f, "dns-registry-name-change"),
         }
     }
 }
@@ -2474,6 +2494,12 @@ impl Zeroconf {
         }
     }
 
+    /// Sets the value of `counter` to `count`.
+    fn set_counter(&mut self, counter: Counter, count: i64) {
+        let key = counter.to_string();
+        self.counters.insert(key, count);
+    }
+
     fn signal_sock_drain(&self) {
         let mut signal_buf = [0; 1024];
 
@@ -2551,10 +2577,7 @@ impl Zeroconf {
 
             Command::Resolve(instance, try_count) => self.exec_command_resolve(instance, try_count),
 
-            Command::GetMetrics(resp_s) => match resp_s.send(self.counters.clone()) {
-                Ok(()) => trace!("Sent metrics to the client"),
-                Err(e) => debug!("Failed to send metrics: {}", e),
-            },
+            Command::GetMetrics(resp_s) => self.exec_command_get_metrics(resp_s),
 
             Command::GetStatus(resp_s) => match resp_s.send(self.status.clone()) {
                 Ok(()) => trace!("Sent status to the client"),
@@ -2586,6 +2609,51 @@ impl Zeroconf {
             _ => {
                 debug!("unexpected command: {:?}", &command);
             }
+        }
+    }
+
+    fn exec_command_get_metrics(&mut self, resp_s: Sender<HashMap<String, i64>>) {
+        self.set_counter(Counter::CachedPTR, self.cache.ptr_count() as i64);
+        self.set_counter(Counter::CachedSRV, self.cache.srv_count() as i64);
+        self.set_counter(Counter::CachedAddr, self.cache.addr_count() as i64);
+        self.set_counter(Counter::CachedTxt, self.cache.txt_count() as i64);
+        self.set_counter(Counter::CachedNSec, self.cache.nsec_count() as i64);
+        self.set_counter(Counter::CachedSubtype, self.cache.subtype_count() as i64);
+
+        let dns_registry_probe_count: usize = self
+            .dns_registry_map
+            .values()
+            .map(|r| r.probing.len())
+            .sum();
+        self.set_counter(Counter::DnsRegistryProbe, dns_registry_probe_count as i64);
+
+        let dns_registry_active_count: usize = self
+            .dns_registry_map
+            .values()
+            .map(|r| r.active.values().map(|a| a.len()).sum::<usize>())
+            .sum();
+        self.set_counter(Counter::DnsRegistryActive, dns_registry_active_count as i64);
+
+        let dns_registry_timer_count: usize = self
+            .dns_registry_map
+            .values()
+            .map(|r| r.new_timers.len())
+            .sum();
+        self.set_counter(Counter::DnsRegistryTimer, dns_registry_timer_count as i64);
+
+        let dns_registry_name_change_count: usize = self
+            .dns_registry_map
+            .values()
+            .map(|r| r.name_changes.len())
+            .sum();
+        self.set_counter(
+            Counter::DnsRegistryNameChange,
+            dns_registry_name_change_count as i64,
+        );
+
+        // Send the metrics to the client.
+        if let Err(e) = resp_s.send(self.counters.clone()) {
+            debug!("Failed to send metrics: {}", e);
         }
     }
 

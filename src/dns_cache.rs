@@ -53,6 +53,31 @@ impl DnsCache {
         &self.ptr
     }
 
+    /// Count all PTR records in the cache.
+    pub(crate) fn ptr_count(&self) -> usize {
+        self.ptr.values().map(|v| v.len()).sum()
+    }
+
+    pub(crate) fn srv_count(&self) -> usize {
+        self.srv.values().map(|v| v.len()).sum()
+    }
+
+    pub(crate) fn txt_count(&self) -> usize {
+        self.txt.values().map(|v| v.len()).sum()
+    }
+
+    pub(crate) fn addr_count(&self) -> usize {
+        self.addr.values().map(|v| v.len()).sum()
+    }
+
+    pub(crate) fn nsec_count(&self) -> usize {
+        self.nsec.values().map(|v| v.len()).sum()
+    }
+
+    pub(crate) fn subtype_count(&self) -> usize {
+        self.subtype.len()
+    }
+
     pub(crate) fn get_ptr(&self, ty_domain: &str) -> Option<&Vec<DnsRecordBox>> {
         self.ptr.get(ty_domain)
     }
