@@ -1999,9 +1999,9 @@ impl Zeroconf {
         // check if the message is for us.
         let mut is_for_us = true; // assume it is for us.
 
-        // If there are any PTR records in the answers, there are should be
-        // at least one PTR for us. Otherwise, not for us.
-        // If there are no PTR records, assume this message is for us.
+        // If there are any PTR records in the answers, there should be
+        // at least one PTR for us. Otherwise, the message is not for us.
+        // If there are no PTR records at all, assume this message is for us.
         for answer in msg.answers() {
             if answer.get_type() == RRType::PTR {
                 if self.service_queriers.contains_key(answer.get_name()) {
