@@ -111,6 +111,16 @@ enum Counter {
     CacheRefreshSRV,
     CacheRefreshAddr,
     KnownAnswerSuppression,
+    CachedPTR,
+    CachedSRV,
+    CachedAddr,
+    CachedTxt,
+    CachedNSec,
+    CachedSubtype,
+    DnsRegistryProbe,
+    DnsRegistryActive,
+    DnsRegistryTimer,
+    DnsRegistryNameChange,
 }
 
 impl fmt::Display for Counter {
@@ -127,6 +137,16 @@ impl fmt::Display for Counter {
             Self::CacheRefreshSRV => write!(f, "cache-refresh-srv"),
             Self::CacheRefreshAddr => write!(f, "cache-refresh-addr"),
             Self::KnownAnswerSuppression => write!(f, "known-answer-suppression"),
+            Self::CachedPTR => write!(f, "cached-ptr"),
+            Self::CachedSRV => write!(f, "cached-srv"),
+            Self::CachedAddr => write!(f, "cached-addr"),
+            Self::CachedTxt => write!(f, "cached-txt"),
+            Self::CachedNSec => write!(f, "cached-nsec"),
+            Self::CachedSubtype => write!(f, "cached-subtype"),
+            Self::DnsRegistryProbe => write!(f, "dns-registry-probe"),
+            Self::DnsRegistryActive => write!(f, "dns-registry-active"),
+            Self::DnsRegistryTimer => write!(f, "dns-registry-timer"),
+            Self::DnsRegistryNameChange => write!(f, "dns-registry-name-change"),
         }
     }
 }
@@ -563,12 +583,8 @@ impl ServiceDaemon {
 
             let now = current_time_millis();
 
-            // Remove the timer if already passed.
-            if let Some(timer) = earliest_timer {
-                if now >= timer {
-                    zc.pop_earliest_timer();
-                }
-            }
+            // Remove the timers if already passed.
+            zc.pop_timers_till(now);
 
             // Remove hostname resolvers with expired timeouts.
             for hostname in zc
@@ -1125,8 +1141,18 @@ impl Zeroconf {
         self.timers.peek().map(|Reverse(v)| *v)
     }
 
-    fn pop_earliest_timer(&mut self) -> Option<u64> {
+    fn _pop_earliest_timer(&mut self) -> Option<u64> {
         self.timers.pop().map(|Reverse(v)| v)
+    }
+
+    /// Pop all timers that are already passed till `now`.
+    fn pop_timers_till(&mut self, now: u64) {
+        while let Some(Reverse(v)) = self.timers.peek() {
+            if *v > now {
+                break;
+            }
+            self.timers.pop();
+        }
     }
 
     /// Apply all selections to `interfaces` and return the selected addresses.
@@ -1970,6 +1996,23 @@ impl Zeroconf {
         // check possible conflicts and handle them.
         self.conflict_handler(&msg, intf);
 
+        // check if the message is for us.
+        let mut is_for_us = true; // assume it is for us.
+
+        // If there are any PTR records in the answers, there should be
+        // at least one PTR for us. Otherwise, the message is not for us.
+        // If there are no PTR records at all, assume this message is for us.
+        for answer in msg.answers() {
+            if answer.get_type() == RRType::PTR {
+                if self.service_queriers.contains_key(answer.get_name()) {
+                    is_for_us = true;
+                    break; // OK to break: at least one PTR for us.
+                } else {
+                    is_for_us = false;
+                }
+            }
+        }
+
         /// Represents a DNS record change that involves one service instance.
         struct InstanceChange {
             ty: RRType,   // The type of DNS record for the instance.
@@ -1986,7 +2029,10 @@ impl Zeroconf {
         let mut changes = Vec::new();
         let mut timers = Vec::new();
         for record in msg.all_records() {
-            match self.cache.add_or_update(intf, record, &mut timers) {
+            match self
+                .cache
+                .add_or_update(intf, record, &mut timers, is_for_us)
+            {
                 Some((dns_record, true)) => {
                     timers.push(dns_record.get_record().get_expire_time());
                     timers.push(dns_record.get_record().get_refresh_time());
@@ -2448,6 +2494,12 @@ impl Zeroconf {
         }
     }
 
+    /// Sets the value of `counter` to `count`.
+    fn set_counter(&mut self, counter: Counter, count: i64) {
+        let key = counter.to_string();
+        self.counters.insert(key, count);
+    }
+
     fn signal_sock_drain(&self) {
         let mut signal_buf = [0; 1024];
 
@@ -2525,10 +2577,7 @@ impl Zeroconf {
 
             Command::Resolve(instance, try_count) => self.exec_command_resolve(instance, try_count),
 
-            Command::GetMetrics(resp_s) => match resp_s.send(self.counters.clone()) {
-                Ok(()) => trace!("Sent metrics to the client"),
-                Err(e) => debug!("Failed to send metrics: {}", e),
-            },
+            Command::GetMetrics(resp_s) => self.exec_command_get_metrics(resp_s),
 
             Command::GetStatus(resp_s) => match resp_s.send(self.status.clone()) {
                 Ok(()) => trace!("Sent status to the client"),
@@ -2560,6 +2609,51 @@ impl Zeroconf {
             _ => {
                 debug!("unexpected command: {:?}", &command);
             }
+        }
+    }
+
+    fn exec_command_get_metrics(&mut self, resp_s: Sender<HashMap<String, i64>>) {
+        self.set_counter(Counter::CachedPTR, self.cache.ptr_count() as i64);
+        self.set_counter(Counter::CachedSRV, self.cache.srv_count() as i64);
+        self.set_counter(Counter::CachedAddr, self.cache.addr_count() as i64);
+        self.set_counter(Counter::CachedTxt, self.cache.txt_count() as i64);
+        self.set_counter(Counter::CachedNSec, self.cache.nsec_count() as i64);
+        self.set_counter(Counter::CachedSubtype, self.cache.subtype_count() as i64);
+
+        let dns_registry_probe_count: usize = self
+            .dns_registry_map
+            .values()
+            .map(|r| r.probing.len())
+            .sum();
+        self.set_counter(Counter::DnsRegistryProbe, dns_registry_probe_count as i64);
+
+        let dns_registry_active_count: usize = self
+            .dns_registry_map
+            .values()
+            .map(|r| r.active.values().map(|a| a.len()).sum::<usize>())
+            .sum();
+        self.set_counter(Counter::DnsRegistryActive, dns_registry_active_count as i64);
+
+        let dns_registry_timer_count: usize = self
+            .dns_registry_map
+            .values()
+            .map(|r| r.new_timers.len())
+            .sum();
+        self.set_counter(Counter::DnsRegistryTimer, dns_registry_timer_count as i64);
+
+        let dns_registry_name_change_count: usize = self
+            .dns_registry_map
+            .values()
+            .map(|r| r.name_changes.len())
+            .sum();
+        self.set_counter(
+            Counter::DnsRegistryNameChange,
+            dns_registry_name_change_count as i64,
+        );
+
+        // Send the metrics to the client.
+        if let Err(e) = resp_s.send(self.counters.clone()) {
+            debug!("Failed to send metrics: {}", e);
         }
     }
 

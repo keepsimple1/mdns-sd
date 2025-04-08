@@ -53,6 +53,31 @@ impl DnsCache {
         &self.ptr
     }
 
+    /// Count all PTR records in the cache.
+    pub(crate) fn ptr_count(&self) -> usize {
+        self.ptr.values().map(|v| v.len()).sum()
+    }
+
+    pub(crate) fn srv_count(&self) -> usize {
+        self.srv.values().map(|v| v.len()).sum()
+    }
+
+    pub(crate) fn txt_count(&self) -> usize {
+        self.txt.values().map(|v| v.len()).sum()
+    }
+
+    pub(crate) fn addr_count(&self) -> usize {
+        self.addr.values().map(|v| v.len()).sum()
+    }
+
+    pub(crate) fn nsec_count(&self) -> usize {
+        self.nsec.values().map(|v| v.len()).sum()
+    }
+
+    pub(crate) fn subtype_count(&self) -> usize {
+        self.subtype.len()
+    }
+
     pub(crate) fn get_ptr(&self, ty_domain: &str) -> Option<&Vec<DnsRecordBox>> {
         self.ptr.get(ty_domain)
     }
@@ -168,12 +193,13 @@ impl DnsCache {
         intf: &Interface,
         incoming: DnsRecordBox,
         timers: &mut Vec<u64>,
+        is_for_us: bool,
     ) -> Option<(&DnsRecordBox, bool)> {
         let entry_name = incoming.get_name().to_string();
 
         // If it is PTR with subtype, store a mapping from the instance fullname
         // to the subtype in this cache.
-        if incoming.get_type() == RRType::PTR {
+        if incoming.get_type() == RRType::PTR && is_for_us {
             let (_, subtype_opt) = split_sub_domain(&entry_name);
             if let Some(subtype) = subtype_opt {
                 if let Some(ptr) = incoming.any().downcast_ref::<DnsPointer>() {
@@ -210,6 +236,12 @@ impl DnsCache {
             RRType::NSEC => self.nsec.entry(entry_name).or_default(),
             _ => return None,
         };
+
+        // No existing records for this name and type, and not for us.
+        if record_vec.is_empty() && !is_for_us {
+            trace!("add_or_update: not for us: {}", incoming.get_name());
+            return None;
+        }
 
         if incoming.get_cache_flush() {
             let now = current_time_millis();
