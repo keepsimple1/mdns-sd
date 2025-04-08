@@ -1,3 +1,10 @@
+# Version 0.13.6 (2025-04-07)
+
+This is a bugfix release that reduces / limits the memory footprint of the cached records and timers.
+
+* `5fa1b31 2025-04-07` optimization: remove expired timers and skip DNS datagrams that are not for us (#338) (keepsimple1)
+* `3e3aec9 2025-03-29` refactoring: make tiebreaking more modular (#336) (keepsimple1)
+
 # Version 0.13.5 (2025-03-25)
 
 This is a patch fix release as the previous release (0.13.4) was broken in service resolution.
