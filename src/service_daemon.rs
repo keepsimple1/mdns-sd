@@ -1301,7 +1301,7 @@ impl Zeroconf {
 
         for (_, service_info) in self.my_services.iter_mut() {
             if service_info.is_addr_auto() {
-                service_info.insert_ipaddr(new_ip);
+                service_info.insert_scoped_addr(new_ip, Some((&intf).into()));
 
                 if announce_service_on_intf(dns_registry, service_info, &intf, &sock) {
                     debug!(
@@ -1344,7 +1344,7 @@ impl Zeroconf {
         if info.is_addr_auto() {
             let selected_addrs = self.selected_addrs(my_ip_interfaces(true));
             for addr in selected_addrs {
-                info.insert_ipaddr(addr);
+                info.insert_scoped_addr(addr, None);
             }
         }
 
@@ -1616,6 +1616,7 @@ impl Zeroconf {
                     CLASS_IN | CLASS_CACHE_FLUSH,
                     0,
                     address,
+                    Some(intf.into()),
                 ),
                 0,
             );
@@ -1739,7 +1740,7 @@ impl Zeroconf {
 
         buf.truncate(sz); // reduce potential processing errors
 
-        match DnsIncoming::new(buf) {
+        match DnsIncoming::new(buf, Some(intf.into())) {
             Ok(msg) => {
                 if msg.is_query() {
                     self.handle_query(msg, intf);
@@ -1906,7 +1907,7 @@ impl Zeroconf {
                     if dns_a.get_record().is_expired(now) {
                         trace!("Addr expired: {}", dns_a.address());
                     } else {
-                        info.insert_ipaddr(dns_a.address());
+                        info.insert_scoped_addr(dns_a.address(), dns_a.scope().clone());
                     }
                 }
             }
@@ -2395,6 +2396,7 @@ impl Zeroconf {
                                         CLASS_IN | CLASS_CACHE_FLUSH,
                                         service.get_host_ttl(),
                                         address,
+                                        Some(intf.into()),
                                     ),
                                 );
                             }
@@ -2466,6 +2468,7 @@ impl Zeroconf {
                             CLASS_IN | CLASS_CACHE_FLUSH,
                             service.get_host_ttl(),
                             address,
+                            Some(intf.into()),
                         ));
                     }
                 }
@@ -3459,6 +3462,7 @@ fn prepare_announce(
             CLASS_IN | CLASS_CACHE_FLUSH,
             info.get_host_ttl(),
             address,
+            Some(intf.into()),
         );
 
         if let Some(new_name) = dns_registry.name_changes.get(hostname) {
@@ -3637,6 +3641,7 @@ fn add_answer_with_additionals(
             CLASS_IN | CLASS_CACHE_FLUSH,
             service.get_host_ttl(),
             address,
+            Some(intf.into()),
         ));
     }
 }
@@ -3851,13 +3856,10 @@ mod tests {
         let mut resolved = false;
 
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
-            match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    resolved = true;
-                    println!("Resolved a service of {}", &info.get_fullname());
-                    break;
-                }
-                _ => {}
+            if let ServiceEvent::ServiceResolved(info) = event {
+                resolved = true;
+                println!("Resolved a service of {}", &info.get_fullname());
+                break;
             }
         }
 
@@ -3869,12 +3871,9 @@ mod tests {
         // SRV record in the client cache will expire.
         let expire_timeout = Duration::from_secs(new_ttl as u64);
         while let Ok(event) = browse_chan.recv_timeout(expire_timeout) {
-            match event {
-                ServiceEvent::ServiceRemoved(service_type, full_name) => {
-                    println!("Service removed: {}: {}", &service_type, &full_name);
-                    break;
-                }
-                _ => {}
+            if let ServiceEvent::ServiceRemoved(service_type, full_name) = event {
+                println!("Service removed: {}: {}", &service_type, &full_name);
+                break;
             }
         }
     }
@@ -3894,7 +3893,7 @@ mod tests {
             "_host_res_test._tcp.local.",
             "my_instance",
             hostname,
-            &service_ip_addr,
+            service_ip_addr,
             1234,
             None,
         )
@@ -3970,7 +3969,7 @@ mod tests {
             service_type,
             instance,
             host_name,
-            &service_ip_addr,
+            service_ip_addr,
             5023,
             None,
         )
@@ -3991,13 +3990,10 @@ mod tests {
 
         // resolve the service first.
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
-            match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    resolved = true;
-                    println!("Resolved a service of {}", &info.get_fullname());
-                    break;
-                }
-                _ => {}
+            if let ServiceEvent::ServiceResolved(info) = event {
+                resolved = true;
+                println!("Resolved a service of {}", &info.get_fullname());
+                break;
             }
         }
 

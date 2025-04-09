@@ -369,11 +369,12 @@ fn service_without_properties_with_alter_net_v6() {
                     );
                     // match only our service and not v4 one
                     if fullname.as_str() == info.get_fullname() {
-                        let addrs: Vec<&IpAddr> = info
+                        let addrs = info
                             .get_addresses()
                             .iter()
                             .filter(|a| a.is_ipv6())
-                            .collect();
+                            .copied()
+                            .collect::<Vec<_>>();
                         if addrs.is_empty() {
                             continue; // In case IPv4 addr received first.
                         }
@@ -1540,11 +1541,11 @@ fn test_cache_flush_record() {
         match event {
             ServiceEvent::ServiceResolved(info) => {
                 // Verify the address flushed and updated.
-                let new_addrs = info.get_addresses();
+                let new_addrs = info.get_scoped_addresses();
                 timed_println(format!("new address resolved: {:?}", new_addrs));
                 if new_addrs.len() == 1 {
                     let first_addr = new_addrs.iter().next().unwrap();
-                    assert_eq!(first_addr, &service_ip_addr);
+                    assert_eq!(first_addr.address(), &service_ip_addr);
                     resolved = true;
                     break;
                 }
@@ -1568,10 +1569,10 @@ fn test_cache_flush_remove_one_addr() {
     let host_name = "remove_one_addr_host.local.";
 
     // Get a single IPv4 address
-    let ip_addr1 = my_ip_interfaces()
+    let (ip_addr1, intf1) = my_ip_interfaces()
         .iter()
         .find(|iface| iface.ip().is_ipv4())
-        .map(|iface| iface.ip())
+        .map(|iface| (iface.ip(), iface.clone()))
         .unwrap();
 
     // Make 2nd IPv4 address for the service.
@@ -1624,8 +1625,7 @@ fn test_cache_flush_remove_one_addr() {
     sleep(Duration::from_secs(2)); // Wait 1 more second for the 2nd annoucement
 
     // Re-register the service to have only 1 addr.
-    my_service =
-        ServiceInfo::new(service, "my_instance", host_name, &ip_addr1, port, None).unwrap();
+    my_service = ServiceInfo::new(service, "my_instance", host_name, ip_addr1, port, None).unwrap();
     let result = server.register(my_service.clone());
     assert!(result.is_ok());
 
@@ -1641,10 +1641,12 @@ fn test_cache_flush_remove_one_addr() {
         match event {
             ServiceEvent::ServiceResolved(info) => {
                 // Verify the address flushed and updated.
-                let new_addrs = info.get_addresses();
+                let new_addrs = info.get_scoped_addresses();
                 if new_addrs.len() == 1 {
                     let first_addr = new_addrs.iter().next().unwrap();
-                    assert_eq!(first_addr, &ip_addr1);
+                    assert_eq!(first_addr.address(), &ip_addr1);
+                    assert!(&first_addr.scope().is_some());
+                    assert_eq!(first_addr.scope().clone().unwrap(), &intf1);
                     resolved = true;
                     break;
                 }
@@ -1941,8 +1943,12 @@ fn test_name_tiebreaking() {
     // Verify that server2 (its ip_addr2) won the tiebreaking for the hostname.
     for resolved_service in resolved_services {
         if resolved_service.get_hostname() == host_name {
-            let service_addr = resolved_service.get_addresses().iter().next().unwrap();
-            assert_eq!(service_addr, &ip_addr2);
+            let service_addr = resolved_service
+                .get_scoped_addresses()
+                .iter()
+                .next()
+                .unwrap();
+            assert_eq!(service_addr.address(), &ip_addr2);
             println!("server2 won the tiebreaking");
         }
     }
