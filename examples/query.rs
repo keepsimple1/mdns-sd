@@ -44,7 +44,7 @@ fn main() {
                     info.get_hostname(),
                     info.get_port(),
                 );
-                for addr in info.get_addresses().iter() {
+                for addr in info.get_scoped_addresses().iter() {
                     println!(" Address: {}", addr);
                 }
                 for prop in info.get_properties().iter() {
