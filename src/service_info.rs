@@ -1237,10 +1237,10 @@ pub struct ResolvedService {
     /// Port of the service. I.e. TCP or UDP port.
     pub port: u16,
 
-    /// Addresses of the service.
+    /// Addresses of the service. IPv4 or IPv6 addresses.
     pub addresses: HashSet<IpAddr>,
 
-    /// Addresses of the service with an optional scope ID.
+    /// Addresses of the service. IPv4 or IPv6 addresse with an optional interface scope.
     pub scoped_addresses: HashSet<ScopedAddress>,
 
     /// Properties of the service, decoded from TXT record.
