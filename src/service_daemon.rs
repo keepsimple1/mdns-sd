@@ -1815,10 +1815,6 @@ impl Zeroconf {
                             Err(e) => debug!("failed to send service resolved: {}", e),
                         }
                     } else {
-                        debug!(
-                            "Service {} not ready yet, waiting for SRV and TXT records",
-                            ptr.alias()
-                        );
                         unresolved.insert(ptr.alias().to_string());
                     }
                 }
@@ -2262,10 +2258,6 @@ impl Zeroconf {
                                     ServiceEvent::ServiceResolved(info),
                                 );
                             } else {
-                                debug!(
-                                    "info not ready yet, waiting for SRV and TXT records: {}",
-                                    dns_ptr.alias()
-                                );
                                 if self.resolved.remove(dns_ptr.alias()) {
                                     removed_instances
                                         .entry(ty_domain.to_string())
