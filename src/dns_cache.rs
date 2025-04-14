@@ -415,6 +415,62 @@ impl DnsCache {
         expired_instances
     }
 
+    /// Removes all records of a service type: PTR, SRV, TXT records and any ADDR records
+    /// that are not referenced by any SRV record.
+    pub(crate) fn remove_service_type(&mut self, ty_domain: &str) {
+        let Some(ptr_records) = self.ptr.get_mut(ty_domain) else {
+            return;
+        };
+
+        let mut hosts = HashSet::new();
+
+        for ptr in ptr_records.iter() {
+            if let Some(dns_ptr) = ptr.any().downcast_ref::<DnsPointer>() {
+                let instance_name = dns_ptr.alias();
+
+                // collect all hostnames from SRV records of this instance
+                if let Some(srv_records) = self.srv.get_mut(instance_name) {
+                    for srv in srv_records.iter() {
+                        if let Some(dns_srv) = srv.any().downcast_ref::<DnsSrv>() {
+                            hosts.insert(dns_srv.host().to_lowercase());
+                        }
+                    }
+                }
+
+                // remove all SRV records of this instance
+                self.srv.remove(instance_name);
+
+                // remove all TXT records of this instance
+                self.txt.remove(instance_name);
+            }
+        }
+
+        self.ptr.remove(ty_domain);
+
+        // Check all hostnames in `hosts`: for each hostname, check if any SRV record
+        // has `hostname` as its host. If no such SRV, remove the ADDR records of this hostname.
+        for host in hosts {
+            let mut has_srv = false;
+            for srv_records in self.srv.values() {
+                for srv in srv_records.iter() {
+                    if let Some(dns_srv) = srv.any().downcast_ref::<DnsSrv>() {
+                        if dns_srv.host().to_lowercase() == host {
+                            has_srv = true;
+                            break;
+                        }
+                    }
+                }
+                if has_srv {
+                    break;
+                }
+            }
+
+            if !has_srv {
+                self.addr.remove(&host);
+            }
+        }
+    }
+
     /// Checks refresh due for PTR records of `ty_domain`.
     /// Returns all updated refresh time.
     pub(crate) fn refresh_due_ptr(&mut self, ty_domain: &str) -> HashSet<u64> {

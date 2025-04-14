@@ -2836,6 +2836,9 @@ impl Zeroconf {
                     i += 1;
                 }
 
+                // Remove cache entries.
+                self.cache.remove_service_type(&ty_domain);
+
                 // Notify the client.
                 match sender.send(ServiceEvent::SearchStopped(ty_domain)) {
                     Ok(()) => trace!("Sent SearchStopped to the listener"),
