@@ -1,3 +1,9 @@
+# Version 0.13.7 (2025-04-15)
+
+This is a bugfix release that further reduces the memory footprint of DNS cache.
+
+* `a6a0961 2025-04-15` optimization: remove cache entries when stop_browse (#344) (keepsimple1)
+
 # Version 0.13.6 (2025-04-07)
 
 This is a bugfix release that reduces / limits the memory footprint of the cached records and timers.
