@@ -218,8 +218,9 @@ impl DnsCache {
                 let addr = answer_addr.address();
                 if !valid_ip_on_intf(&addr, intf) {
                     debug!(
-                        "add_or_update: answer addr {addr} not in the subnet of {}",
-                        intf.ip()
+                        "add_or_update: answer addr {addr} not in the subnet of {} ({})",
+                        intf.ip(),
+                        intf.name,
                     );
                     return None;
                 }

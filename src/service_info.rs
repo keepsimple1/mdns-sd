@@ -16,6 +16,72 @@ use std::{
     str::FromStr,
 };
 
+/// InterfaceScope is used to represent the interface name and index
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct InterfaceScope {
+    name: String,
+    index: Option<u32>,
+}
+
+impl InterfaceScope {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn index(&self) -> Option<u32> {
+        self.index
+    }
+}
+
+impl fmt::Display for InterfaceScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.index {
+            Some(index) => write!(f, "{}: {}", index, self.name),
+            None => write!(f, "{}", self.name),
+        }
+    }
+}
+
+impl From<&Interface> for InterfaceScope {
+    fn from(interface: &Interface) -> Self {
+        InterfaceScope {
+            name: interface.name.clone(),
+            index: interface.index,
+        }
+    }
+}
+
+impl PartialEq<Interface> for InterfaceScope {
+    fn eq(&self, other: &Interface) -> bool {
+        self.name == other.name && self.index == other.index
+    }
+}
+
+/// ScopedAddress is used to represent an address and its interface scope
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ScopedAddress {
+    address: IpAddr,
+    scope: Option<InterfaceScope>,
+}
+
+impl ScopedAddress {
+    pub fn address(&self) -> &IpAddr {
+        &self.address
+    }
+    pub fn scope(&self) -> Option<&InterfaceScope> {
+        self.scope.as_ref()
+    }
+}
+
+impl fmt::Display for ScopedAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.scope {
+            Some(scope) => write!(f, "{} ({})", self.address, scope),
+            None => write!(f, "{}", self.address),
+        }
+    }
+}
+
 /// Default TTL values in seconds
 const DNS_HOST_TTL: u32 = 120; // 2 minutes for host records (A, SRV etc) per RFC6762
 const DNS_OTHER_TTL: u32 = 4500; // 75 minutes for non-host records (PTR, TXT etc) per RFC6762
@@ -34,7 +100,7 @@ pub struct ServiceInfo {
 
     fullname: String, // <instance>.<service>.<domain>
     server: String,   // fully qualified name for service host
-    addresses: HashSet<IpAddr>,
+    scoped_addresses: HashSet<ScopedAddress>,
     port: u16,
     host_ttl: u32,  // used for SRV and Address records
     other_ttl: u32, // used for PTR and TXT records
@@ -132,7 +198,13 @@ impl ServiceInfo {
             sub_domain,
             fullname,
             server,
-            addresses,
+            scoped_addresses: addresses
+                .iter()
+                .map(|addr| ScopedAddress {
+                    address: *addr,
+                    scope: None,
+                })
+                .collect(),
             port,
             host_ttl: DNS_HOST_TTL,
             other_ttl: DNS_OTHER_TTL,
@@ -245,16 +317,27 @@ impl ServiceInfo {
 
     /// Returns the service's addresses
     #[inline]
-    pub const fn get_addresses(&self) -> &HashSet<IpAddr> {
-        &self.addresses
+    pub fn get_addresses(&self) -> HashSet<&IpAddr> {
+        let mut addresses = HashSet::new();
+
+        for addr in &self.scoped_addresses {
+            addresses.insert(&addr.address);
+        }
+
+        addresses
+    }
+
+    /// Returns the serivce's scoped addresses
+    pub const fn get_scoped_addresses(&self) -> &HashSet<ScopedAddress> {
+        &self.scoped_addresses
     }
 
     /// Returns the service's IPv4 addresses only.
     pub fn get_addresses_v4(&self) -> HashSet<&Ipv4Addr> {
         let mut ipv4_addresses = HashSet::new();
 
-        for ip in &self.addresses {
-            if let IpAddr::V4(ipv4) = ip {
+        for address in &self.scoped_addresses {
+            if let IpAddr::V4(ipv4) = &address.address {
                 ipv4_addresses.insert(ipv4);
             }
         }
@@ -289,8 +372,9 @@ impl ServiceInfo {
     /// Returns a list of addresses that are in the same LAN as
     /// the interface `intf`.
     pub(crate) fn get_addrs_on_intf(&self, intf: &Interface) -> Vec<IpAddr> {
-        self.addresses
+        self.scoped_addresses
             .iter()
+            .map(|s| &s.address)
             .filter(|a| valid_ip_on_intf(a, intf))
             .copied()
             .collect()
@@ -301,17 +385,18 @@ impl ServiceInfo {
         let some_missing = self.ty_domain.is_empty()
             || self.fullname.is_empty()
             || self.server.is_empty()
-            || self.addresses.is_empty();
+            || self.scoped_addresses.is_empty();
         !some_missing
     }
 
     /// Insert `addr` into service info addresses.
-    pub(crate) fn insert_ipaddr(&mut self, addr: IpAddr) {
-        self.addresses.insert(addr);
+    pub(crate) fn insert_scoped_addr(&mut self, address: IpAddr, scope: Option<InterfaceScope>) {
+        self.scoped_addresses
+            .insert(ScopedAddress { address, scope });
     }
 
     pub(crate) fn remove_ipaddr(&mut self, addr: &IpAddr) {
-        self.addresses.remove(addr);
+        self.scoped_addresses.retain(|a| &a.address != addr);
     }
 
     pub(crate) fn generate_txt(&self) -> Vec<u8> {
@@ -378,7 +463,8 @@ impl ServiceInfo {
             fullname: self.fullname,
             host: self.server,
             port: self.port,
-            addresses: self.addresses,
+            addresses: self.scoped_addresses.iter().map(|s| s.address).collect(),
+            scoped_addresses: self.scoped_addresses,
             txt_properties: self.txt_properties,
         }
     }
@@ -1154,6 +1240,9 @@ pub struct ResolvedService {
     /// Addresses of the service. IPv4 or IPv6 addresses.
     pub addresses: HashSet<IpAddr>,
 
+    /// Addresses of the service. IPv4 or IPv6 addresse with an optional interface scope.
+    pub scoped_addresses: HashSet<ScopedAddress>,
+
     /// Properties of the service, decoded from TXT record.
     pub txt_properties: TxtProperties,
 }
@@ -1164,7 +1253,7 @@ impl ResolvedService {
         let some_missing = self.ty_domain.is_empty()
             || self.fullname.is_empty()
             || self.host.is_empty()
-            || self.addresses.is_empty();
+            || self.scoped_addresses.is_empty();
         !some_missing
     }
 }

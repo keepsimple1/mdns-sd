@@ -7,7 +7,10 @@
 #[cfg(feature = "logging")]
 use crate::log::trace;
 
-use crate::error::{e_fmt, Error, Result};
+use crate::{
+    error::{e_fmt, Error, Result},
+    service_info::InterfaceScope,
+};
 
 use std::{
     any::Any,
@@ -485,16 +488,32 @@ pub trait DnsRecordExt: fmt::Debug {
 pub struct DnsAddress {
     pub(crate) record: DnsRecord,
     address: IpAddr,
+    scope: Option<InterfaceScope>,
 }
 
 impl DnsAddress {
-    pub fn new(name: &str, ty: RRType, class: u16, ttl: u32, address: IpAddr) -> Self {
+    pub fn new(
+        name: &str,
+        ty: RRType,
+        class: u16,
+        ttl: u32,
+        address: IpAddr,
+        scope: Option<InterfaceScope>,
+    ) -> Self {
         let record = DnsRecord::new(name, ty, class, ttl);
-        Self { record, address }
+        Self {
+            record,
+            address,
+            scope,
+        }
     }
 
     pub fn address(&self) -> IpAddr {
         self.address
+    }
+
+    pub fn scope(&self) -> &Option<InterfaceScope> {
+        &self.scope
     }
 }
 
@@ -1661,10 +1680,11 @@ pub struct DnsIncoming {
     num_answers: u16,
     num_authorities: u16,
     num_additionals: u16,
+    scope: Option<InterfaceScope>,
 }
 
 impl DnsIncoming {
-    pub fn new(data: Vec<u8>) -> Result<Self> {
+    pub fn new(data: Vec<u8>, scope: Option<InterfaceScope>) -> Result<Self> {
         let mut incoming = Self {
             offset: 0,
             data,
@@ -1678,6 +1698,7 @@ impl DnsIncoming {
             num_answers: 0,
             num_authorities: 0,
             num_additionals: 0,
+            scope,
         };
 
         /*
@@ -1945,12 +1966,26 @@ impl DnsIncoming {
                         .boxed(),
                     ),
                     RRType::A => Some(
-                        DnsAddress::new(&name, rr_type, class, ttl, self.read_ipv4()?.into())
-                            .boxed(),
+                        DnsAddress::new(
+                            &name,
+                            rr_type,
+                            class,
+                            ttl,
+                            self.read_ipv4()?.into(),
+                            self.scope.clone(),
+                        )
+                        .boxed(),
                     ),
                     RRType::AAAA => Some(
-                        DnsAddress::new(&name, rr_type, class, ttl, self.read_ipv6()?.into())
-                            .boxed(),
+                        DnsAddress::new(
+                            &name,
+                            rr_type,
+                            class,
+                            ttl,
+                            self.read_ipv6()?.into(),
+                            self.scope.clone(),
+                        )
+                        .boxed(),
                     ),
                     RRType::NSEC => Some(
                         DnsNSec::new(
