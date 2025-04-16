@@ -121,6 +121,7 @@ enum Counter {
     DnsRegistryActive,
     DnsRegistryTimer,
     DnsRegistryNameChange,
+    Timer,
 }
 
 impl fmt::Display for Counter {
@@ -147,6 +148,7 @@ impl fmt::Display for Counter {
             Self::DnsRegistryActive => write!(f, "dns-registry-active"),
             Self::DnsRegistryTimer => write!(f, "dns-registry-timer"),
             Self::DnsRegistryNameChange => write!(f, "dns-registry-name-change"),
+            Self::Timer => write!(f, "timer"),
         }
     }
 }
@@ -2619,6 +2621,7 @@ impl Zeroconf {
         self.set_counter(Counter::CachedTxt, self.cache.txt_count() as i64);
         self.set_counter(Counter::CachedNSec, self.cache.nsec_count() as i64);
         self.set_counter(Counter::CachedSubtype, self.cache.subtype_count() as i64);
+        self.set_counter(Counter::Timer, self.timers.len() as i64);
 
         let dns_registry_probe_count: usize = self
             .dns_registry_map
@@ -2832,6 +2835,9 @@ impl Zeroconf {
                     }
                     i += 1;
                 }
+
+                // Remove cache entries.
+                self.cache.remove_service_type(&ty_domain);
 
                 // Notify the client.
                 match sender.send(ServiceEvent::SearchStopped(ty_domain)) {
