@@ -211,21 +211,6 @@ impl DnsCache {
             }
         }
 
-        // Check if address is valid on the interface. When IP_MULTICAST_LOOP is enabled,
-        // a multicast packet would loopback to other interfaces of the same multicast group on Linux.
-        if incoming.get_type() == RRType::A || incoming.get_type() == RRType::AAAA {
-            if let Some(answer_addr) = incoming.any().downcast_ref::<DnsAddress>() {
-                let addr = answer_addr.address();
-                if !valid_ip_on_intf(&addr, intf) {
-                    debug!(
-                        "add_or_update: answer addr {addr} not in the subnet of {}",
-                        intf.ip()
-                    );
-                    return None;
-                }
-            }
-        }
-
         // get the existing records for the type.
         let entry_name_lower = entry_name.to_lowercase();
         let record_vec = match incoming.get_type() {
