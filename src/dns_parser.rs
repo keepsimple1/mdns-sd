@@ -22,7 +22,7 @@ use std::{
     time::SystemTime,
 };
 
-/// InterfaceId is used to represent the interface indentifer
+/// InterfaceId is used to represent the interface identifier
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct InterfaceId {
     name: String,
