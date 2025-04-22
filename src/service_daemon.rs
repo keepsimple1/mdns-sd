@@ -3115,7 +3115,7 @@ enum Command {
     /// Get the current status of the daemon.
     GetStatus(Sender<DaemonStatus>),
 
-    /// Monitor noticable events in the daemon.
+    /// Monitor noticeable events in the daemon.
     Monitor(Sender<DaemonEvent>),
 
     SetOption(DaemonOption),
