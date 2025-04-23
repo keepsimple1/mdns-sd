@@ -2013,6 +2013,13 @@ impl Zeroconf {
                 } else {
                     is_for_us = false;
                 }
+            } else if answer.get_type() == RRType::A || answer.get_type() == RRType::AAAA {
+                // If there is a hostname querier for this address, then it is for us.
+                let answer_lowercase = answer.get_name().to_lowercase();
+                if self.hostname_resolvers.contains_key(&answer_lowercase) {
+                    is_for_us = true;
+                    break; // OK to break: at least one hostname for us.
+                }
             }
         }
 
