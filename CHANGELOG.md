@@ -1,3 +1,10 @@
+# Version 0.13.8 (2025-04-22)
+
+This is a bugfix release that also prepares for adding InterfaceId in resolved service info.
+
+* `f6c7e80 2025-04-23` feat: extend `DnsAddress` with an `InterfaceId` (#342) (hrzlgnm)
+* `513372d 2025-04-20` remove address filter for multicast loopback (#346) (keepsimple1)
+
 # Version 0.13.7 (2025-04-15)
 
 This is a bugfix release that further reduces the memory footprint of DNS cache.
