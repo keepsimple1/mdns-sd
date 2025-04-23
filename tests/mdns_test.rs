@@ -1621,7 +1621,7 @@ fn test_cache_flush_remove_one_addr() {
 
     // Stop browsing for a moment.
     client.stop_browse(service).unwrap();
-    sleep(Duration::from_secs(2)); // Wait 1 more second for the 2nd annoucement
+    sleep(Duration::from_secs(2)); // Wait 1 more second for the 2nd announcement
 
     // Re-register the service to have only 1 addr.
     my_service =

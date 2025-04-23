@@ -1618,6 +1618,7 @@ impl Zeroconf {
                     CLASS_IN | CLASS_CACHE_FLUSH,
                     0,
                     address,
+                    intf.into(),
                 ),
                 0,
             );
@@ -1741,7 +1742,7 @@ impl Zeroconf {
 
         buf.truncate(sz); // reduce potential processing errors
 
-        match DnsIncoming::new(buf) {
+        match DnsIncoming::new(buf, intf.into()) {
             Ok(msg) => {
                 if msg.is_query() {
                     self.handle_query(msg, intf);
@@ -2397,6 +2398,7 @@ impl Zeroconf {
                                         CLASS_IN | CLASS_CACHE_FLUSH,
                                         service.get_host_ttl(),
                                         address,
+                                        intf.into(),
                                     ),
                                 );
                             }
@@ -2468,6 +2470,7 @@ impl Zeroconf {
                             CLASS_IN | CLASS_CACHE_FLUSH,
                             service.get_host_ttl(),
                             address,
+                            intf.into(),
                         ));
                     }
                 }
@@ -3112,7 +3115,7 @@ enum Command {
     /// Get the current status of the daemon.
     GetStatus(Sender<DaemonStatus>),
 
-    /// Monitor noticable events in the daemon.
+    /// Monitor noticeable events in the daemon.
     Monitor(Sender<DaemonEvent>),
 
     SetOption(DaemonOption),
@@ -3465,6 +3468,7 @@ fn prepare_announce(
             CLASS_IN | CLASS_CACHE_FLUSH,
             info.get_host_ttl(),
             address,
+            intf.into(),
         );
 
         if let Some(new_name) = dns_registry.name_changes.get(hostname) {
@@ -3643,6 +3647,7 @@ fn add_answer_with_additionals(
             CLASS_IN | CLASS_CACHE_FLUSH,
             service.get_host_ttl(),
             address,
+            intf.into(),
         ));
     }
 }
