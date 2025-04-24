@@ -363,15 +363,16 @@ impl DnsCache {
                     if let Some(srv_records) = self.srv.get_mut(instance_name) {
                         srv_records.retain(|srv| {
                             let expired = srv.get_record().is_expired(now);
-                            if expired {
-                                trace!("expired SRV: {}: {:?}", ty_domain, srv);
-                                expired_instances
-                                    .entry(ty_domain.to_string())
-                                    .or_insert_with(HashSet::new)
-                                    .insert(srv.get_name().to_string());
-                            }
                             !expired
                         });
+
+                        if srv_records.is_empty() {
+                            trace!("expired SRV for {}: {:?}", ty_domain, instance_name);
+                            expired_instances
+                                .entry(ty_domain.to_string())
+                                .or_insert_with(HashSet::new)
+                                .insert(instance_name.to_string());
+                        }
                     }
 
                     // evict expired TXT records of this instance
