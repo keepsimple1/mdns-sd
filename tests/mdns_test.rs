@@ -1660,6 +1660,105 @@ fn test_cache_flush_remove_one_addr() {
     client.shutdown().unwrap();
 }
 
+/// Test to verify that the cache flush of SRV records
+/// do not remove the service instance.
+#[test]
+fn test_cache_flush_srv() {
+    // Create a daemon
+    let server = ServiceDaemon::new().expect("Failed to create server");
+    let service = "_test_cache_srv._udp.local.";
+    let old_host_name = "old_srv_host.local.";
+    let new_host_name = "new_srv_host.local.";
+
+    // Use a single IPv4 address
+    let service_ip_addr = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv4())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    let port = 5201;
+    let properties = vec![("key", "value")];
+    let mut my_service = ServiceInfo::new(
+        service,
+        "my_instance",
+        old_host_name,
+        &service_ip_addr,
+        port,
+        &properties[..],
+    )
+    .expect("invalid service info");
+    let result = server.register(my_service.clone());
+    assert!(result.is_ok());
+
+    // Browse for the service
+    let client = ServiceDaemon::new().expect("Failed to create client");
+    let browse_chan = client.browse(service).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                resolved = true;
+                assert_eq!(info.get_hostname(), old_host_name);
+                break;
+            }
+            e => {
+                println!("Received event {:?}", e);
+            }
+        }
+    }
+
+    assert!(resolved);
+
+    sleep(Duration::from_secs(2)); // Let the cache record be older than 1 second
+
+    // Re-register the service with a new host
+    my_service = ServiceInfo::new(
+        service,
+        "my_instance",
+        new_host_name,
+        &service_ip_addr,
+        port,
+        &properties[..],
+    )
+    .unwrap();
+    let result = server.register(my_service);
+    assert!(result.is_ok());
+
+    println!("Re-registered with updated SRV host: {}", new_host_name);
+
+    // Wait for the new registration to be sent out and cache flushed
+    sleep(Duration::from_secs(2));
+
+    // Browse for the updated SRV record
+    let timeout = Duration::from_secs(2);
+    let mut removed = false;
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        println!("Received event {:?}", event);
+
+        match event {
+            ServiceEvent::ServiceRemoved(ty_domain, instance_name) => {
+                // Verify the SRV host was flushed and updated
+                assert_eq!(ty_domain, service);
+                assert!(instance_name.starts_with("my_instance"));
+                removed = true;
+            }
+            ServiceEvent::ServiceResolved(info) => {
+                assert_eq!(info.get_hostname(), new_host_name);
+                resolved = true;
+            }
+            _e => {}
+        }
+    }
+
+    assert!(!removed);
+    assert!(resolved);
+    server.shutdown().unwrap();
+    client.shutdown().unwrap();
+}
+
 #[test]
 fn test_known_answer_suppression() {
     // Create a daemon
