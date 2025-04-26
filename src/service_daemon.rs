@@ -1784,12 +1784,17 @@ impl Zeroconf {
 
     /// Checks if `ty_domain` has records in the cache. If yes, sends the
     /// cached records via `sender`.
-    fn query_cache_for_service(&mut self, ty_domain: &str, sender: &Sender<ServiceEvent>) {
+    fn query_cache_for_service(
+        &mut self,
+        ty_domain: &str,
+        sender: &Sender<ServiceEvent>,
+        now: u64,
+    ) {
         let mut resolved: HashSet<String> = HashSet::new();
         let mut unresolved: HashSet<String> = HashSet::new();
 
         if let Some(records) = self.cache.get_ptr(ty_domain) {
-            for record in records.iter() {
+            for record in records.iter().filter(|r| !r.expires_soon(now)) {
                 if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
                     let info = match self.create_service_info_from_cache(ty_domain, ptr.alias()) {
                         Ok(ok) => ok,
@@ -1885,7 +1890,7 @@ impl Zeroconf {
 
         // resolve SRV record
         if let Some(records) = self.cache.get_srv(fullname) {
-            if let Some(answer) = records.first() {
+            if let Some(answer) = records.iter().find(|r| !r.expires_soon(now)) {
                 if let Some(dns_srv) = answer.any().downcast_ref::<DnsSrv>() {
                     info.set_hostname(dns_srv.host().to_string());
                     info.set_port(dns_srv.port());
@@ -1895,7 +1900,7 @@ impl Zeroconf {
 
         // resolve TXT record
         if let Some(records) = self.cache.get_txt(fullname) {
-            if let Some(record) = records.first() {
+            if let Some(record) = records.iter().find(|r| !r.expires_soon(now)) {
                 if let Some(dns_txt) = record.any().downcast_ref::<DnsTxt>() {
                     info.set_properties_from_txt(dns_txt.text());
                 }
@@ -1906,7 +1911,7 @@ impl Zeroconf {
         if let Some(records) = self.cache.get_addr(info.get_hostname()) {
             for answer in records.iter() {
                 if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {
-                    if dns_a.get_record().is_expired(now) {
+                    if dns_a.expires_soon(now) {
                         trace!("Addr expired: {}", dns_a.address());
                     } else {
                         info.insert_ipaddr(dns_a.address());
@@ -2648,6 +2653,8 @@ impl Zeroconf {
             );
             return;
         }
+
+        let now = current_time_millis();
         if !repeating {
             // Binds a `listener` to querying mDNS domain type `ty`.
             //
@@ -2655,13 +2662,13 @@ impl Zeroconf {
             self.service_queriers.insert(ty.clone(), listener.clone());
 
             // if we already have the records in our cache, just send them
-            self.query_cache_for_service(&ty, &listener);
+            self.query_cache_for_service(&ty, &listener, now);
         }
 
         self.send_query(&ty, RRType::PTR);
         self.increase_counter(Counter::Browse, 1);
 
-        let next_time = current_time_millis() + (next_delay * 1000) as u64;
+        let next_time = now + (next_delay * 1000) as u64;
         let max_delay = 60 * 60;
         let delay = cmp::min(next_delay * 2, max_delay);
         self.add_retransmission(next_time, Command::Browse(ty, delay, listener));
@@ -3355,7 +3362,7 @@ fn multicast_on_intf(packet: &[u8], intf: &Interface, socket: &MioUdpSocket) {
 fn send_packet(packet: &[u8], addr: SocketAddr, intf: &Interface, sock: &MioUdpSocket) {
     match sock.send_to(packet, addr) {
         Ok(sz) => trace!("sent out {} bytes on interface {:?}", sz, intf),
-        Err(e) => debug!("Failed to send to {} via {:?}: {}", addr, &intf, e),
+        Err(e) => trace!("Failed to send to {} via {:?}: {}", addr, &intf, e),
     }
 }
 
