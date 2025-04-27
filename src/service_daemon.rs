@@ -2455,7 +2455,7 @@ impl Zeroconf {
                         DnsTxt::new(
                             question.entry_name(),
                             CLASS_IN | CLASS_CACHE_FLUSH,
-                            service.get_host_ttl(),
+                            service.get_other_ttl(),
                             service.generate_txt(),
                         ),
                     );
@@ -3643,7 +3643,7 @@ fn add_answer_with_additionals(
     out.add_additional_answer(DnsTxt::new(
         service_fullname,
         CLASS_IN | CLASS_CACHE_FLUSH,
-        service.get_host_ttl(),
+        service.get_other_ttl(),
         service.generate_txt(),
     ));
 
