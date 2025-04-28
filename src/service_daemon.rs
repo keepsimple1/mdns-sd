@@ -2926,10 +2926,14 @@ impl Zeroconf {
                 new_timers.extend(refreshed_timers);
             }
 
-            let (instances, timers) = self.cache.refresh_due_srv(ty_domain);
-            for instance in instances.iter() {
-                trace!("sending refresh query for SRV: {}", instance);
-                self.send_query(instance, RRType::SRV);
+            let (instances, timers) = self.cache.refresh_due_srv_txt(ty_domain);
+            for (instance, types) in instances {
+                trace!("sending refresh query for: {}", &instance);
+                let query_vec = types
+                    .into_iter()
+                    .map(|ty| (instance.as_str(), ty))
+                    .collect::<Vec<_>>();
+                self.send_query_vec(&query_vec);
                 query_srv_count += 1;
             }
             new_timers.extend(timers);

@@ -473,7 +473,10 @@ impl DnsCache {
 
     /// Returns the set of SRV instance names that are due for refresh
     /// for a `ty_domain`.
-    pub(crate) fn refresh_due_srv(&mut self, ty_domain: &str) -> (HashSet<String>, HashSet<u64>) {
+    pub(crate) fn refresh_due_srv_txt(
+        &mut self,
+        ty_domain: &str,
+    ) -> (HashMap<String, Vec<RRType>>, HashSet<u64>) {
         let now = current_time_millis();
 
         let instances: Vec<_> = self
@@ -490,10 +493,10 @@ impl DnsCache {
             })
             .collect();
 
-        // Check SRV records.
-        let mut refresh_due = HashSet::new();
+        let mut refresh_due: HashMap<String, Vec<RRType>> = HashMap::new();
         let mut new_timers = HashSet::new();
         for instance in instances {
+            // Check SRV records.
             let refresh_timers: HashSet<u64> = self
                 .srv
                 .get_mut(instance)
@@ -503,7 +506,27 @@ impl DnsCache {
                 .collect();
 
             if !refresh_timers.is_empty() {
-                refresh_due.insert(instance.to_string());
+                refresh_due
+                    .entry(instance.to_string())
+                    .and_modify(|v| v.push(RRType::SRV))
+                    .or_insert(vec![RRType::SRV]);
+                new_timers.extend(refresh_timers);
+            }
+
+            // Check TXT records.
+            let refresh_timers: HashSet<u64> = self
+                .txt
+                .get_mut(instance)
+                .into_iter()
+                .flatten()
+                .filter_map(|record| record.updated_refresh_time(now))
+                .collect();
+
+            if !refresh_timers.is_empty() {
+                refresh_due
+                    .entry(instance.to_string())
+                    .and_modify(|v| v.push(RRType::TXT))
+                    .or_insert(vec![RRType::TXT]);
                 new_timers.extend(refresh_timers);
             }
         }
