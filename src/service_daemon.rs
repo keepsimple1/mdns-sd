@@ -2054,7 +2054,7 @@ impl Zeroconf {
 
                     let ty = dns_record.get_type();
                     let name = dns_record.get_name();
-                    if ty == RRType::PTR {
+                    if ty == RRType::PTR && dns_record.get_record().get_ttl() > 1 {
                         if self.service_queriers.contains_key(name) {
                             timers.push(dns_record.get_record().get_refresh_time());
                         }
@@ -2251,13 +2251,15 @@ impl Zeroconf {
         let mut unresolved: HashSet<String> = HashSet::new();
         let mut removed_instances = HashMap::new();
 
+        let now = current_time_millis();
+
         for (ty_domain, records) in self.cache.all_ptr().iter() {
             if !self.service_queriers.contains_key(ty_domain) {
                 // No need to resolve if not in our queries.
                 continue;
             }
 
-            for record in records.iter() {
+            for record in records.iter().filter(|r| !r.expires_soon(now)) {
                 if let Some(dns_ptr) = record.any().downcast_ref::<DnsPointer>() {
                     if updated_instances.contains(dns_ptr.alias()) {
                         if let Ok(info) =

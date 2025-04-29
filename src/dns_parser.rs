@@ -360,12 +360,12 @@ impl DnsRecord {
         self.ttl = other.ttl;
         self.created = other.created;
         self.expires = get_expiration_time(self.created, self.ttl, 100);
-        self.refresh = if self.ttl == 1 {
+        self.refresh = if self.ttl > 1 {
+            get_expiration_time(self.created, self.ttl, 80)
+        } else {
             // If TTL is 1, it means this record is expiring,
             // then we set refresh to the same time as expires.
             self.expires
-        } else {
-            get_expiration_time(self.created, self.ttl, 80)
         };
     }
 
