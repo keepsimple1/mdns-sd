@@ -1494,6 +1494,11 @@ impl DnsOutgoing {
         &self.questions
     }
 
+    /// For testing purposes only.
+    pub(crate) fn _answers(&self) -> &[(DnsRecordBox, u64)] {
+        &self.answers
+    }
+
     pub fn answers_count(&self) -> usize {
         self.answers.len()
     }
