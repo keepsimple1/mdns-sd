@@ -2434,53 +2434,7 @@ impl Zeroconf {
                     continue;
                 }
 
-                if qtype == RRType::SRV || qtype == RRType::ANY {
-                    out.add_answer(
-                        &msg,
-                        DnsSrv::new(
-                            question.entry_name(),
-                            CLASS_IN | CLASS_CACHE_FLUSH,
-                            service.get_host_ttl(),
-                            service.get_priority(),
-                            service.get_weight(),
-                            service.get_port(),
-                            service.get_hostname().to_string(),
-                        ),
-                    );
-                }
-
-                if qtype == RRType::TXT || qtype == RRType::ANY {
-                    out.add_answer(
-                        &msg,
-                        DnsTxt::new(
-                            question.entry_name(),
-                            CLASS_IN | CLASS_CACHE_FLUSH,
-                            service.get_other_ttl(),
-                            service.generate_txt(),
-                        ),
-                    );
-                }
-
-                if qtype == RRType::SRV {
-                    let intf_addrs = service.get_addrs_on_intf(intf);
-                    if intf_addrs.is_empty() {
-                        debug!(
-                            "Cannot find valid addrs for TYPE_SRV response on intf {:?}",
-                            &intf
-                        );
-                        return;
-                    }
-                    for address in intf_addrs {
-                        out.add_additional_answer(DnsAddress::new(
-                            service.get_hostname(),
-                            ip_address_rr_type(&address),
-                            CLASS_IN | CLASS_CACHE_FLUSH,
-                            service.get_host_ttl(),
-                            address,
-                            intf.into(),
-                        ));
-                    }
-                }
+                add_answer_of_service(&mut out, &msg, question.entry_name(), service, qtype, intf);
             }
         }
 
@@ -2995,6 +2949,64 @@ impl Zeroconf {
         self.increase_counter(Counter::CacheRefreshPTR, query_ptr_count);
         self.increase_counter(Counter::CacheRefreshSRV, query_srv_count);
         self.increase_counter(Counter::CacheRefreshAddr, query_addr_count);
+    }
+}
+
+/// Adds one or more answers of a service for incoming msg and RR entry name.
+fn add_answer_of_service(
+    out: &mut DnsOutgoing,
+    msg: &DnsIncoming,
+    entry_name: &str,
+    service: &ServiceInfo,
+    qtype: RRType,
+    intf: &Interface,
+) {
+    if qtype == RRType::SRV || qtype == RRType::ANY {
+        out.add_answer(
+            msg,
+            DnsSrv::new(
+                entry_name,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                service.get_host_ttl(),
+                service.get_priority(),
+                service.get_weight(),
+                service.get_port(),
+                service.get_hostname().to_string(),
+            ),
+        );
+    }
+
+    if qtype == RRType::TXT || qtype == RRType::ANY {
+        out.add_answer(
+            msg,
+            DnsTxt::new(
+                entry_name,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                service.get_other_ttl(),
+                service.generate_txt(),
+            ),
+        );
+    }
+
+    if qtype == RRType::SRV {
+        let intf_addrs = service.get_addrs_on_intf(intf);
+        if intf_addrs.is_empty() {
+            debug!(
+                "Cannot find valid addrs for TYPE_SRV response on intf {:?}",
+                &intf
+            );
+            return;
+        }
+        for address in intf_addrs {
+            out.add_additional_answer(DnsAddress::new(
+                service.get_hostname(),
+                ip_address_rr_type(&address),
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                service.get_host_ttl(),
+                address,
+                intf.into(),
+            ));
+        }
     }
 }
 
@@ -3668,8 +3680,11 @@ mod tests {
         MDNS_PORT,
     };
     use crate::{
-        dns_parser::{DnsOutgoing, DnsPointer, RRType, CLASS_IN, FLAGS_AA, FLAGS_QR_RESPONSE},
-        service_daemon::check_hostname,
+        dns_parser::{
+            DnsIncoming, DnsOutgoing, DnsPointer, InterfaceId, RRType, CLASS_IN, FLAGS_AA,
+            FLAGS_QR_RESPONSE,
+        },
+        service_daemon::{add_answer_of_service, check_hostname},
     };
     use std::{
         net::{SocketAddr, SocketAddrV4},
@@ -4060,5 +4075,58 @@ mod tests {
         assert_eq!(hostname_change("foo-2.local."), "foo-3.local.");
         assert_eq!(hostname_change("foo-9"), "foo-10");
         assert_eq!(hostname_change("test-42.domain."), "test-43.domain.");
+    }
+
+    #[test]
+    fn test_add_answer_txt_ttl() {
+        // construct a simple service info
+        let service_type = "_test_add_answer._udp.local.";
+        let instance = "test_instance";
+        let host_name = "add_answer_host.local.";
+        let service_intf = my_ip_interfaces(false)
+            .into_iter()
+            .find(|iface| iface.ip().is_ipv4())
+            .unwrap();
+        let service_ip_addr = service_intf.ip();
+        let my_service = ServiceInfo::new(
+            service_type,
+            instance,
+            host_name,
+            &service_ip_addr,
+            5023,
+            None,
+        )
+        .unwrap();
+
+        // construct a DnsOutgoing message
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+
+        // Construct a dummy DnsIncoming message
+        let mut dummy_data = out.to_data_on_wire();
+        let interface_id = InterfaceId::from(&service_intf);
+        let incoming = DnsIncoming::new(dummy_data.pop().unwrap(), interface_id).unwrap();
+
+        // Add an answer of TXT type for the service.
+        add_answer_of_service(
+            &mut out,
+            &incoming,
+            instance,
+            &my_service,
+            RRType::TXT,
+            &service_intf,
+        );
+
+        // Check if the answer was added correctly
+        assert!(
+            out.answers_count() > 0,
+            "No answers added to the outgoing message"
+        );
+
+        // Check if the first answer is of type TXT
+        let answer = out._answers().first().unwrap();
+        assert_eq!(answer.0.get_type(), RRType::TXT);
+
+        // Check TTL is set properly for the TXT record
+        assert_eq!(answer.0.get_record().get_ttl(), my_service.get_other_ttl());
     }
 }
