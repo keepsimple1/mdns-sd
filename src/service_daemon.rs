@@ -108,7 +108,7 @@ enum Counter {
     ResolveHostname,
     Respond,
     CacheRefreshPTR,
-    CacheRefreshSRV,
+    CacheRefreshSrvTxt,
     CacheRefreshAddr,
     KnownAnswerSuppression,
     CachedPTR,
@@ -135,7 +135,7 @@ impl fmt::Display for Counter {
             Self::ResolveHostname => write!(f, "resolve-hostname"),
             Self::Respond => write!(f, "respond"),
             Self::CacheRefreshPTR => write!(f, "cache-refresh-ptr"),
-            Self::CacheRefreshSRV => write!(f, "cache-refresh-srv"),
+            Self::CacheRefreshSrvTxt => write!(f, "cache-refresh-srv-txt"),
             Self::CacheRefreshAddr => write!(f, "cache-refresh-addr"),
             Self::KnownAnswerSuppression => write!(f, "known-answer-suppression"),
             Self::CachedPTR => write!(f, "cached-ptr"),
@@ -2951,7 +2951,7 @@ impl Zeroconf {
         }
 
         self.increase_counter(Counter::CacheRefreshPTR, query_ptr_count);
-        self.increase_counter(Counter::CacheRefreshSRV, query_srv_count);
+        self.increase_counter(Counter::CacheRefreshSrvTxt, query_srv_count);
         self.increase_counter(Counter::CacheRefreshAddr, query_addr_count);
     }
 }

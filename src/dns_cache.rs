@@ -471,8 +471,10 @@ impl DnsCache {
             .collect()
     }
 
-    /// Returns the set of SRV instance names that are due for refresh
-    /// for a `ty_domain`.
+    /// Returns a tuple of:
+    /// 1. the map of instance names together with RRType(s) that are due for refresh
+    ///     its SRV or TXT records.
+    /// 2. the set of new timers that are due for refresh.
     pub(crate) fn refresh_due_srv_txt(
         &mut self,
         ty_domain: &str,
