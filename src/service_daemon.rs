@@ -108,7 +108,7 @@ enum Counter {
     ResolveHostname,
     Respond,
     CacheRefreshPTR,
-    CacheRefreshSRV,
+    CacheRefreshSrvTxt,
     CacheRefreshAddr,
     KnownAnswerSuppression,
     CachedPTR,
@@ -135,7 +135,7 @@ impl fmt::Display for Counter {
             Self::ResolveHostname => write!(f, "resolve-hostname"),
             Self::Respond => write!(f, "respond"),
             Self::CacheRefreshPTR => write!(f, "cache-refresh-ptr"),
-            Self::CacheRefreshSRV => write!(f, "cache-refresh-srv"),
+            Self::CacheRefreshSrvTxt => write!(f, "cache-refresh-srv-txt"),
             Self::CacheRefreshAddr => write!(f, "cache-refresh-addr"),
             Self::KnownAnswerSuppression => write!(f, "known-answer-suppression"),
             Self::CachedPTR => write!(f, "cached-ptr"),
@@ -2926,10 +2926,14 @@ impl Zeroconf {
                 new_timers.extend(refreshed_timers);
             }
 
-            let (instances, timers) = self.cache.refresh_due_srv(ty_domain);
-            for instance in instances.iter() {
-                trace!("sending refresh query for SRV: {}", instance);
-                self.send_query(instance, RRType::SRV);
+            let (instances, timers) = self.cache.refresh_due_srv_txt(ty_domain);
+            for (instance, types) in instances {
+                trace!("sending refresh query for: {}", &instance);
+                let query_vec = types
+                    .into_iter()
+                    .map(|ty| (instance.as_str(), ty))
+                    .collect::<Vec<_>>();
+                self.send_query_vec(&query_vec);
                 query_srv_count += 1;
             }
             new_timers.extend(timers);
@@ -2947,7 +2951,7 @@ impl Zeroconf {
         }
 
         self.increase_counter(Counter::CacheRefreshPTR, query_ptr_count);
-        self.increase_counter(Counter::CacheRefreshSRV, query_srv_count);
+        self.increase_counter(Counter::CacheRefreshSrvTxt, query_srv_count);
         self.increase_counter(Counter::CacheRefreshAddr, query_addr_count);
     }
 }
@@ -4045,8 +4049,10 @@ mod tests {
         // verify refresh counter.
         let metrics_chan = mdns_client.get_metrics().unwrap();
         let metrics = metrics_chan.recv_timeout(timeout).unwrap();
-        let refresh_counter = metrics["cache-refresh-ptr"];
-        assert_eq!(refresh_counter, 1);
+        let ptr_refresh_counter = metrics["cache-refresh-ptr"];
+        assert_eq!(ptr_refresh_counter, 1);
+        let srvtxt_refresh_counter = metrics["cache-refresh-srv-txt"];
+        assert_eq!(srvtxt_refresh_counter, 1);
 
         // Exit the server so that no more responses.
         mdns_server.shutdown().unwrap();
