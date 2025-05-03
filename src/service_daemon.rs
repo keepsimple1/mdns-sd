@@ -4049,8 +4049,10 @@ mod tests {
         // verify refresh counter.
         let metrics_chan = mdns_client.get_metrics().unwrap();
         let metrics = metrics_chan.recv_timeout(timeout).unwrap();
-        let refresh_counter = metrics["cache-refresh-ptr"];
-        assert_eq!(refresh_counter, 1);
+        let ptr_refresh_counter = metrics["cache-refresh-ptr"];
+        assert_eq!(ptr_refresh_counter, 1);
+        let srvtxt_refresh_counter = metrics["cache-refresh-srv-txt"];
+        assert_eq!(srvtxt_refresh_counter, 1);
 
         // Exit the server so that no more responses.
         mdns_server.shutdown().unwrap();
