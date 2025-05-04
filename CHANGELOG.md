@@ -1,3 +1,11 @@
+# Version 0.13.9 (2025-04-22)
+
+This is a bugfix release.
+
+* `a734dd2 2025-05-02` bugfix: refresh TXT when needed (#354) (keepsimple1)
+* `51c03c3 2025-05-01` bugfix: TXT records should use OTHER_TTL same as PTR (#355) (keepsimple1)
+* `07750cb 2025-04-25` bugfix: only remove a service instance if all its SRV are gone (#350) (keepsimple1)
+
 # Version 0.13.8 (2025-04-22)
 
 This is a bugfix release that also prepares for adding InterfaceId in resolved service info.
