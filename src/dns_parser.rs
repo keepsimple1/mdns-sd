@@ -282,6 +282,13 @@ impl DnsRecord {
         now >= self.expires
     }
 
+    /// Returns whether record expires in 1 second.
+    ///
+    /// This is useful because mDNS sets TTL to 1 (not 0) for expiring records.
+    pub const fn expires_soon(&self, now: u64) -> bool {
+        now + 1000 >= self.expires
+    }
+
     pub const fn refresh_due(&self, now: u64) -> bool {
         now >= self.refresh
     }
@@ -352,8 +359,14 @@ impl DnsRecord {
     fn reset_ttl(&mut self, other: &Self) {
         self.ttl = other.ttl;
         self.created = other.created;
-        self.refresh = get_expiration_time(self.created, self.ttl, 80);
         self.expires = get_expiration_time(self.created, self.ttl, 100);
+        self.refresh = if self.ttl > 1 {
+            get_expiration_time(self.created, self.ttl, 80)
+        } else {
+            // If TTL is 1, it means this record is expiring,
+            // then we set refresh to the same time as expires.
+            self.expires
+        };
     }
 
     /// Modify TTL to reflect the remaining life time from `now`.
@@ -477,6 +490,11 @@ pub trait DnsRecordExt: fmt::Debug {
         if expire_at < self.get_expire() {
             self.get_record_mut().set_expire(expire_at);
         }
+    }
+
+    /// Returns true if the record expires in 1 second from `now`.
+    fn expires_soon(&self, now: u64) -> bool {
+        self.get_record().expires_soon(now)
     }
 
     /// Given `now`, if the record is due to refresh, this method updates the refresh time

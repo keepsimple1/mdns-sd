@@ -148,6 +148,7 @@ fn integration_success() {
     assert!(matches!(response, UnregisterStatus::OK));
 
     let mut remove_count = 0;
+    let mut resolved = false;
     while let Ok(event) = browse_chan.recv_timeout(timeout) {
         match event {
             ServiceEvent::ServiceRemoved(_ty_domain, fullname) => {
@@ -157,11 +158,21 @@ fn integration_success() {
                 }
                 break;
             }
+            ServiceEvent::ServiceResolved(info) => {
+                if info.get_fullname() == &fullname {
+                    println!("Received a resolved service event after unregister");
+                    resolved = true;
+                }
+            }
             _ => {}
         }
     }
 
     assert_eq!(remove_count, 1);
+    assert!(
+        !resolved,
+        "Resolved event should not be received after unregister"
+    );
 
     // Stop browsing the service.
     d.stop_browse(ty_domain).expect("Failed to stop browsing");
