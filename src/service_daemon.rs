@@ -1912,7 +1912,7 @@ impl Zeroconf {
             for answer in records.iter() {
                 if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {
                     if dns_a.expires_soon(now) {
-                        trace!("Addr expired: {}", dns_a.address());
+                        trace!("Addr expired or expires soon: {}", dns_a.address());
                     } else {
                         info.insert_ipaddr(dns_a.address());
                     }
@@ -2054,6 +2054,8 @@ impl Zeroconf {
 
                     let ty = dns_record.get_type();
                     let name = dns_record.get_name();
+
+                    // Only process PTR that does not expire soon (i.e. TTL > 1).
                     if ty == RRType::PTR && dns_record.get_record().get_ttl() > 1 {
                         if self.service_queriers.contains_key(name) {
                             timers.push(dns_record.get_record().get_refresh_time());
