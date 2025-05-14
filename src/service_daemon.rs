@@ -1431,7 +1431,7 @@ impl Zeroconf {
                 continue;
             };
 
-            let (out, expired_probe_names) = check_probing(dns_registry, &mut self.timers, now);
+            let (out, expired_probes) = check_probing(dns_registry, &mut self.timers, now);
 
             // send probing.
             if !out.questions().is_empty() {
@@ -1439,53 +1439,10 @@ impl Zeroconf {
                 send_dns_outgoing(&out, intf, sock);
             }
 
-            let mut waiting_services = HashSet::new();
+            // For finished probes, wake up services that are waiting for the probes.
+            let waiting_services =
+                handle_expired_probes(expired_probes, &intf.name, dns_registry, &mut self.monitors);
 
-            for name in expired_probe_names {
-                let Some(probe) = dns_registry.probing.remove(&name) else {
-                    continue;
-                };
-
-                // send notifications about name changes
-                for record in probe.records.iter() {
-                    if let Some(new_name) = record.get_record().get_new_name() {
-                        dns_registry
-                            .name_changes
-                            .insert(name.clone(), new_name.to_string());
-
-                        let event = DnsNameChange {
-                            original: record.get_record().get_original_name().to_string(),
-                            new_name: new_name.to_string(),
-                            rr_type: record.get_type(),
-                            intf_name: intf.name.to_string(),
-                        };
-                        notify_monitors(&mut self.monitors, DaemonEvent::NameChange(event));
-                    }
-                }
-
-                // move RR from probe to active.
-                debug!(
-                    "probe of '{name}' finished: move {} records to active. ({} waiting services)",
-                    probe.records.len(),
-                    probe.waiting_services.len(),
-                );
-
-                // Move records to active and plan to wake up services if records are not empty.
-                if !probe.records.is_empty() {
-                    match dns_registry.active.get_mut(&name) {
-                        Some(records) => {
-                            records.extend(probe.records);
-                        }
-                        None => {
-                            dns_registry.active.insert(name, probe.records);
-                        }
-                    }
-
-                    waiting_services.extend(probe.waiting_services);
-                }
-            }
-
-            // wake up services waiting.
             for service_name in waiting_services {
                 debug!(
                     "try to announce service {service_name} on intf {}",
@@ -3665,14 +3622,14 @@ fn check_probing(
     timers: &mut BinaryHeap<Reverse<u64>>,
     now: u64,
 ) -> (DnsOutgoing, Vec<String>) {
-    let mut expired_probe_names = Vec::new();
+    let mut expired_probes = Vec::new();
     let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
 
     for (name, probe) in dns_registry.probing.iter_mut() {
         if now >= probe.next_send {
             if probe.expired(now) {
                 // move the record to active
-                expired_probe_names.push(name.clone());
+                expired_probes.push(name.clone());
             } else {
                 out.add_question(name, RRType::ANY);
 
@@ -3695,7 +3652,66 @@ fn check_probing(
         }
     }
 
-    (out, expired_probe_names)
+    (out, expired_probes)
+}
+
+/// Process expired probes on an interface and return a list of services
+/// that are waiting for the probe to finish.
+///
+/// `DnsNameChange` events are sent to the monitors.
+fn handle_expired_probes(
+    expired_probes: Vec<String>,
+    intf_name: &str,
+    dns_registry: &mut DnsRegistry,
+    monitors: &mut Vec<Sender<DaemonEvent>>,
+) -> HashSet<String> {
+    let mut waiting_services = HashSet::new();
+
+    for name in expired_probes {
+        let Some(probe) = dns_registry.probing.remove(&name) else {
+            continue;
+        };
+
+        // send notifications about name changes
+        for record in probe.records.iter() {
+            if let Some(new_name) = record.get_record().get_new_name() {
+                dns_registry
+                    .name_changes
+                    .insert(name.clone(), new_name.to_string());
+
+                let event = DnsNameChange {
+                    original: record.get_record().get_original_name().to_string(),
+                    new_name: new_name.to_string(),
+                    rr_type: record.get_type(),
+                    intf_name: intf_name.to_string(),
+                };
+                notify_monitors(monitors, DaemonEvent::NameChange(event));
+            }
+        }
+
+        // move RR from probe to active.
+        debug!(
+            "probe of '{name}' finished: move {} records to active. ({} waiting services)",
+            probe.records.len(),
+            probe.waiting_services.len(),
+        );
+
+        // Move records to active and plan to wake up services if records are not empty.
+        if !probe.records.is_empty() {
+            match dns_registry.active.get_mut(&name) {
+                Some(records) => {
+                    records.extend(probe.records);
+                }
+                None => {
+                    dns_registry.active.insert(name, probe.records);
+                }
+            }
+
+            waiting_services.extend(probe.waiting_services);
+        }
+    }
+
+    waiting_services
 }
 
 #[cfg(test)]
