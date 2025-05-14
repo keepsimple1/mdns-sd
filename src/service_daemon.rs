@@ -1431,35 +1431,7 @@ impl Zeroconf {
                 continue;
             };
 
-            let mut expired_probe_names = Vec::new();
-            let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
-
-            for (name, probe) in dns_registry.probing.iter_mut() {
-                if now >= probe.next_send {
-                    if probe.expired(now) {
-                        // move the record to active
-                        expired_probe_names.push(name.clone());
-                    } else {
-                        out.add_question(name, RRType::ANY);
-
-                        /*
-                        RFC 6762 section 8.2: https://datatracker.ietf.org/doc/html/rfc6762#section-8.2
-                        ...
-                        for tiebreaking to work correctly in all
-                        cases, the Authority Section must contain *all* the records and
-                        proposed rdata being probed for uniqueness.
-                         */
-                        for record in probe.records.iter() {
-                            out.add_authority(record.clone());
-                        }
-
-                        probe.update_next_send(now);
-
-                        // add timer
-                        self.timers.push(Reverse(probe.next_send));
-                    }
-                }
-            }
+            let (out, expired_probe_names) = check_probing(dns_registry, &mut self.timers, now);
 
             // send probing.
             if !out.questions().is_empty() {
@@ -3684,6 +3656,46 @@ fn add_answer_with_additionals(
             intf.into(),
         ));
     }
+}
+
+/// Check probes in a registry and returns: a probing packet to send out, and a list of probe names
+/// that are finished.
+fn check_probing(
+    dns_registry: &mut DnsRegistry,
+    timers: &mut BinaryHeap<Reverse<u64>>,
+    now: u64,
+) -> (DnsOutgoing, Vec<String>) {
+    let mut expired_probe_names = Vec::new();
+    let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
+
+    for (name, probe) in dns_registry.probing.iter_mut() {
+        if now >= probe.next_send {
+            if probe.expired(now) {
+                // move the record to active
+                expired_probe_names.push(name.clone());
+            } else {
+                out.add_question(name, RRType::ANY);
+
+                /*
+                RFC 6762 section 8.2: https://datatracker.ietf.org/doc/html/rfc6762#section-8.2
+                ...
+                for tiebreaking to work correctly in all
+                cases, the Authority Section must contain *all* the records and
+                proposed rdata being probed for uniqueness.
+                    */
+                for record in probe.records.iter() {
+                    out.add_authority(record.clone());
+                }
+
+                probe.update_next_send(now);
+
+                // add timer
+                timers.push(Reverse(probe.next_send));
+            }
+        }
+    }
+
+    (out, expired_probe_names)
 }
 
 #[cfg(test)]
