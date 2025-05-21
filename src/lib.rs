@@ -99,6 +99,17 @@
 //! mdns.shutdown().unwrap();
 //! ```
 //!
+//! ## Conflict resolution
+//!
+//! When a service responder receives another DNS record with the same name as its own record, a conflict occurs.
+//! The mDNS [RFC 6762 section 9](https://datatracker.ietf.org/doc/html/rfc6762#section-9) defines a conflict resolution
+//! mechanism, which is implemented in this library. When an application wishes to be notified of conflict resolutions,
+//! it follows the steps below:
+//!
+//! 1. The application calls [`ServiceDaemon::monitor()`] to monitor all events from the daemon service responder.
+//! 2. When a conflict resolution causes a name change, the library sends an event to the application: [`DaemonEvent::NameChange`],
+//! which provides [`DnsNameChange`] with details.
+//!
 //! # Limitations
 //!
 //! This implementation is based on the following RFCs:
