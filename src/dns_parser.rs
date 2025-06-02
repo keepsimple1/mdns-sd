@@ -23,7 +23,7 @@ use std::{
 };
 
 /// InterfaceId is used to represent the interface identifier
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Default)]
 pub struct InterfaceId {
     name: String,
     index: u32,
@@ -32,6 +32,10 @@ pub struct InterfaceId {
 impl InterfaceId {
     pub fn index(&self) -> u32 {
         self.index
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
     }
 }
 
@@ -555,6 +559,10 @@ impl DnsAddress {
 
     pub fn address(&self) -> IpAddr {
         self.address
+    }
+
+    pub fn interface_id(&self) -> &InterfaceId {
+        &self.interface_id
     }
 }
 
