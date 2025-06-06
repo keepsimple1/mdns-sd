@@ -698,6 +698,9 @@ fn new_socket_bind(intf: &Interface, should_loop: bool) -> Result<MioUdpSocket> 
             sock.set_multicast_if_v4(ip)
                 .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
 
+            sock.set_multicast_ttl_v4(255)
+                .map_err(|e| e_fmt!("set set_multicast_ttl_v4 on addr {}: {}", ip, e))?;
+
             if !should_loop {
                 sock.set_multicast_loop_v4(false)
                     .map_err(|e| e_fmt!("failed to set multicast loop v4 for {ip}: {e}"))?;
@@ -723,6 +726,9 @@ fn new_socket_bind(intf: &Interface, should_loop: bool) -> Result<MioUdpSocket> 
             // Set IPV6_MULTICAST_IF to send packets.
             sock.set_multicast_if_v6(intf.index.unwrap_or(0))
                 .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
+
+            sock.set_multicast_hops_v6(255)
+                .map_err(|e| e_fmt!("set set_multicast_hops_v6 on addr {}: {}", ip, e))?;
 
             // We are not sending multicast packets to test this socket as there might
             // be many IPv6 interfaces on a host and could cause such send error:
