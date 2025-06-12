@@ -2635,10 +2635,10 @@ fn test_use_service_detailed_v6() {
                     resolved.addresses.len() > 0,
                     "Should have at least one address"
                 );
-                let first_addr = resolved.addresses.into_iter().next().unwrap();
+                let (first_addr, interfaces) = resolved.addresses.into_iter().next().unwrap();
                 assert!(first_addr.is_ipv6(), "Address should be IPv6");
-                let interface_id = first_addr.scope();
-                println!("Resolved address: {:?}", first_addr.ip());
+                let interface_id = interfaces.get(0).unwrap();
+                println!("Resolved address: {:?}", first_addr);
                 println!(
                     "Interface ID of the first addr: {} index: {}",
                     interface_id.name(),
