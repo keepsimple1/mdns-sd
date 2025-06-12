@@ -39,8 +39,7 @@ use crate::{
     },
     error::{e_fmt, Error, Result},
     service_info::{
-        split_sub_domain, valid_ip_on_intf, DnsRegistry, Probe, ScopedAddr, ServiceInfo,
-        ServiceStatus,
+        split_sub_domain, valid_ip_on_intf, DnsRegistry, Probe, ServiceInfo, ServiceStatus,
     },
     Receiver, ResolvedService, TxtProperties,
 };
@@ -1912,7 +1911,7 @@ impl Zeroconf {
             fullname: fullname.to_string(),
             host: String::new(),
             port: 0,
-            addresses: HashSet::new(),
+            addresses: HashMap::new(),
             txt_properties: TxtProperties::new(),
         };
 
@@ -1955,9 +1954,11 @@ impl Zeroconf {
                     if dns_a.expires_soon(now) {
                         trace!("Addr expired or expires soon: {}", dns_a.address());
                     } else {
-                        let intf_addr =
-                            ScopedAddr::new(dns_a.address(), dns_a.interface_id().clone());
-                        resolved_service.addresses.insert(intf_addr);
+                        resolved_service
+                            .addresses
+                            .entry(dns_a.address())
+                            .or_default()
+                            .push(dns_a.interface_id().clone());
                     }
                 }
             }

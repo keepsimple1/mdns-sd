@@ -12,7 +12,6 @@ use std::{
     collections::{HashMap, HashSet},
     convert::TryInto,
     fmt,
-    hash::Hash,
     net::{IpAddr, Ipv4Addr},
     str::FromStr,
 };
@@ -48,68 +47,6 @@ pub struct ServiceInfo {
 
     /// Whether we need to probe names before announcing this service.
     requires_probe: bool,
-}
-
-/// An IP address that is scoped to a specific interface.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ScopedAddr {
-    addr: IpAddr,
-
-    /// The interface that this address is scoped to.
-    scope: InterfaceId,
-}
-
-impl ScopedAddr {
-    pub(crate) fn new(addr: IpAddr, interface: InterfaceId) -> Self {
-        Self {
-            addr,
-            scope: interface,
-        }
-    }
-
-    pub fn is_ipv4(&self) -> bool {
-        self.addr.is_ipv4()
-    }
-
-    pub fn is_ipv6(&self) -> bool {
-        self.addr.is_ipv6()
-    }
-
-    pub fn is_loopback(&self) -> bool {
-        self.addr.is_loopback()
-    }
-
-    pub fn ip(&self) -> &IpAddr {
-        &self.addr
-    }
-
-    /// Returns the interface which this address is scoped to.
-    ///
-    /// I.e. via which interface this address is detected.
-    pub fn scope(&self) -> &InterfaceId {
-        &self.scope
-    }
-}
-
-impl From<IpAddr> for ScopedAddr {
-    fn from(addr: IpAddr) -> Self {
-        Self {
-            addr,
-            scope: InterfaceId::default(), // Default interface ID, can be set later.
-        }
-    }
-}
-
-impl From<ScopedAddr> for IpAddr {
-    fn from(intf_addr: ScopedAddr) -> Self {
-        intf_addr.addr
-    }
-}
-
-impl fmt::Display for ScopedAddr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({})", self.addr, self.scope)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -435,11 +372,11 @@ impl ServiceInfo {
 
     /// Consumes self and returns a resolved service, i.e. a lite version of `ServiceInfo`.
     pub fn as_resolved_service(self) -> ResolvedService {
-        let addresses = self
+        let addresses: HashMap<IpAddr, Vec<InterfaceId>> = self
             .addresses
             .into_iter()
-            .map(|a| a.into())
-            .collect::<HashSet<ScopedAddr>>();
+            .map(|a| (a, Vec::new()))
+            .collect();
         ResolvedService {
             ty_domain: self.ty_domain,
             sub_ty_domain: self.sub_domain,
@@ -1239,8 +1176,10 @@ pub struct ResolvedService {
     /// Port of the service. I.e. TCP or UDP port.
     pub port: u16,
 
-    /// Addresses of the service. IPv4 or IPv6 addresses.
-    pub addresses: HashSet<ScopedAddr>,
+    /// Addresses of the service.
+    /// Each address maps to the list of interfaces on which the address is found.
+    /// The interface list is particularly useful for link-local IPv6 addresses.
+    pub addresses: HashMap<IpAddr, Vec<InterfaceId>>,
 
     /// Properties of the service, decoded from TXT record.
     pub txt_properties: TxtProperties,
