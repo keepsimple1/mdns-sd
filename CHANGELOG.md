@@ -1,3 +1,15 @@
+# Version 0.13.10 (2025-6-21)
+
+This is a bugfix release.
+
+* `14841ac 2025-06-21` add comments for setting TTL (#364) (keepsimple1)
+* `3db5e1b 2025-06-17` bugfix: set multicast TTL to 255 (#361) (Sameer Puri)
+* `22a2688 2025-05-20` doc: add a section for Conflict resolution (#359) (keepsimple1)
+* `60888b7 2025-05-13` Refactoring only: extract parts of probing_handler into functions (#357) (keepsimple1)
+* `db2f484 2025-05-11` bugfix: not to resolve records that expires soon (#353) (keepsimple1)
+
+Welcome our new contributor @sameer !
+
 # Version 0.13.9 (2025-04-22)
 
 This is a bugfix release.
