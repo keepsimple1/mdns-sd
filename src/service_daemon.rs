@@ -698,6 +698,10 @@ fn new_socket_bind(intf: &Interface, should_loop: bool) -> Result<MioUdpSocket> 
             sock.set_multicast_if_v4(ip)
                 .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
 
+            // Per RFC 6762 section 11:
+            // "All Multicast DNS responses (including responses sent via unicast) SHOULD
+            // be sent with IP TTL set to 255."
+            // Here we set the TTL to 255 for multicast as we don't support unicast yet.
             sock.set_multicast_ttl_v4(255)
                 .map_err(|e| e_fmt!("set set_multicast_ttl_v4 on addr {}: {}", ip, e))?;
 
@@ -727,6 +731,9 @@ fn new_socket_bind(intf: &Interface, should_loop: bool) -> Result<MioUdpSocket> 
             sock.set_multicast_if_v6(intf.index.unwrap_or(0))
                 .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
 
+            // Per RFC 6762 section 11:
+            // "All Multicast DNS responses (including responses sent via unicast) SHOULD
+            // be sent with IP TTL set to 255."
             sock.set_multicast_hops_v6(255)
                 .map_err(|e| e_fmt!("set set_multicast_hops_v6 on addr {}: {}", ip, e))?;
 
