@@ -2969,7 +2969,7 @@ fn add_answer_of_service(
 
 /// All possible events sent to the client from the daemon
 /// regarding service discovery.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ServiceEvent {
     /// Started searching for a service type.
     SearchStarted(String),
@@ -2989,7 +2989,7 @@ pub enum ServiceEvent {
 
 /// All possible events sent to the client from the daemon
 /// regarding host resolution.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum HostnameResolutionEvent {
     /// Started searching for the ip address of a hostname.
