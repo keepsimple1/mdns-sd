@@ -108,7 +108,7 @@
 //!
 //! 1. The application calls [`ServiceDaemon::monitor()`] to monitor all events from the daemon service responder.
 //! 2. When a conflict resolution causes a name change, the library sends an event to the application: [`DaemonEvent::NameChange`],
-//! which provides [`DnsNameChange`] with details.
+//!    which provides [`DnsNameChange`] with details.
 //!
 //! # Limitations
 //!
