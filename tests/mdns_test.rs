@@ -2641,8 +2641,7 @@ fn test_use_service_detailed_v6() {
                 println!("Resolved address: {:?}", first_addr);
                 println!(
                     "Interface ID of the first addr: {} index: {}",
-                    interface_id.name(),
-                    interface_id.index()
+                    interface_id.name, interface_id.index
                 );
                 break;
             }

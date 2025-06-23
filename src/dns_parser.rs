@@ -22,26 +22,19 @@ use std::{
     time::SystemTime,
 };
 
-/// InterfaceId is used to represent the interface identifier
+/// Represents a network interface identifier defined by the OS.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Default)]
 pub struct InterfaceId {
-    name: String,
-    index: u32,
-}
+    /// Interface name, e.g. "en0", "wlan0", etc.
+    pub name: String,
 
-impl InterfaceId {
-    pub fn index(&self) -> u32 {
-        self.index
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
+    /// Interface index assigned by the OS, e.g. 1, 2, etc.
+    pub index: u32,
 }
 
 impl fmt::Display for InterfaceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.index, self.name)
+        write!(f, "{}(idx {})", self.name, self.index)
     }
 }
 

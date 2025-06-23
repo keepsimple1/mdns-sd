@@ -50,7 +50,7 @@ fn main() {
                     println!(
                         " Address: {} ({:?})",
                         addr,
-                        interfaces.iter().map(|i| i.name()).collect::<Vec<_>>()
+                        interfaces.iter().map(|i| &i.name).collect::<Vec<_>>()
                     );
                 }
                 for prop in info.txt_properties.iter() {
