@@ -1154,7 +1154,7 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
 
 /// Represents a resolved service as a plain data struct.
 /// This is from a client (i.e. querier) point of view.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct ResolvedService {
     /// Service type and domain. For example, "_http._tcp.local."
