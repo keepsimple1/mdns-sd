@@ -530,7 +530,7 @@ pub trait DnsRecordExt: fmt::Debug {
 pub struct DnsAddress {
     pub(crate) record: DnsRecord,
     address: IpAddr,
-    interface_id: InterfaceId,
+    pub(crate) interface_id: InterfaceId,
 }
 
 impl DnsAddress {
@@ -552,10 +552,6 @@ impl DnsAddress {
 
     pub fn address(&self) -> IpAddr {
         self.address
-    }
-
-    pub fn interface_id(&self) -> &InterfaceId {
-        &self.interface_id
     }
 }
 

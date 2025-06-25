@@ -485,7 +485,7 @@ impl ServiceDaemon {
 
     /// Enable or disable the use of [ServiceEvent::ServiceDetailed] instead of [ServiceEvent::ServiceResolved].
     pub fn use_service_detailed(&self, on: bool) -> Result<()> {
-        self.send_cmd(Command::SetOption(DaemonOption::UseResolvedService(on)))
+        self.send_cmd(Command::SetOption(DaemonOption::UseServiceDetailed(on)))
     }
 
     /// Proactively confirms whether a service instance still valid.
@@ -991,7 +991,8 @@ struct Zeroconf {
 
     multicast_loop_v6: bool,
 
-    use_resolved_service: bool,
+    /// Whether to use [ServiceEvent::ServiceDetailed] instead of [ServiceEvent::ServiceResolved].
+    use_service_detailed: bool,
 }
 
 impl Zeroconf {
@@ -1062,7 +1063,7 @@ impl Zeroconf {
             resolved: HashSet::new(),
             multicast_loop_v4: true,
             multicast_loop_v6: true,
-            use_resolved_service: false,
+            use_service_detailed: false,
         }
     }
 
@@ -1074,7 +1075,7 @@ impl Zeroconf {
             DaemonOption::DisableInterface(if_kind) => self.disable_interface(if_kind),
             DaemonOption::MulticastLoopV4(on) => self.set_multicast_loop_v4(on),
             DaemonOption::MulticastLoopV6(on) => self.set_multicast_loop_v6(on),
-            DaemonOption::UseResolvedService(on) => self.use_resolved_service = on,
+            DaemonOption::UseServiceDetailed(on) => self.use_service_detailed = on,
         }
     }
 
@@ -1748,7 +1749,7 @@ impl Zeroconf {
             for record in records.iter().filter(|r| !r.expires_soon(now)) {
                 if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
                     let mut new_event = None;
-                    if self.use_resolved_service {
+                    if self.use_service_detailed {
                         match self.resolve_service_from_cache(ty_domain, ptr.alias()) {
                             Ok(resolved_service) => {
                                 if resolved_service.is_valid() {
@@ -1765,6 +1766,7 @@ impl Zeroconf {
                             }
                         }
                     } else {
+                        // Support legacy behavior.
                         match self.create_service_info_from_cache(ty_domain, ptr.alias()) {
                             Ok(info) => {
                                 if info.is_ready() {
@@ -1899,6 +1901,7 @@ impl Zeroconf {
         Ok(info)
     }
 
+    /// Creates a `ResolvedService` from the cache.
     fn resolve_service_from_cache(
         &self,
         ty_domain: &str,
@@ -1958,7 +1961,7 @@ impl Zeroconf {
                             .addresses
                             .entry(dns_a.address())
                             .or_default()
-                            .push(dns_a.interface_id().clone());
+                            .push(dns_a.interface_id.clone());
                     }
                 }
             }
@@ -2311,7 +2314,7 @@ impl Zeroconf {
                         let mut instance_found = false;
                         let mut new_event = None;
 
-                        if self.use_resolved_service {
+                        if self.use_service_detailed {
                             if let Ok(resolved) =
                                 self.resolve_service_from_cache(ty_domain, dns_ptr.alias())
                             {
@@ -3268,7 +3271,7 @@ enum DaemonOption {
     DisableInterface(Vec<IfKind>),
     MulticastLoopV4(bool),
     MulticastLoopV6(bool),
-    UseResolvedService(bool),
+    UseServiceDetailed(bool),
 }
 
 /// The length of Service Domain name supported in this lib.
