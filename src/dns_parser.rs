@@ -607,7 +607,7 @@ pub trait DnsRecordExt: fmt::Debug {
 pub struct DnsAddress {
     pub(crate) record: DnsRecord,
     address: IpAddr,
-    pub(crate) interface_id: InterfaceId,
+    interface_id: InterfaceId,
 }
 
 impl DnsAddress {
