@@ -3,7 +3,7 @@
 #[cfg(feature = "logging")]
 use crate::log::debug;
 use crate::{
-    dns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, InterfaceId, RRType},
+    dns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, HostIp, RRType},
     Error, Result,
 };
 use if_addrs::{IfAddr, Interface};
@@ -372,11 +372,7 @@ impl ServiceInfo {
 
     /// Consumes self and returns a resolved service, i.e. a lite version of `ServiceInfo`.
     pub fn as_resolved_service(self) -> ResolvedService {
-        let addresses: HashMap<IpAddr, Vec<InterfaceId>> = self
-            .addresses
-            .into_iter()
-            .map(|a| (a, Vec::new()))
-            .collect();
+        let addresses: HashSet<HostIp> = self.addresses.into_iter().map(|a| a.into()).collect();
         ResolvedService {
             ty_domain: self.ty_domain,
             sub_ty_domain: self.sub_domain,
@@ -1180,7 +1176,7 @@ pub struct ResolvedService {
     /// Each address maps to the list of interfaces on which the address is found.
     /// The interface list is particularly useful for link-local IPv6 addresses,
     /// where the same address can be found on multiple interfaces.
-    pub addresses: HashMap<IpAddr, Vec<InterfaceId>>,
+    pub addresses: HashSet<HostIp>,
 
     /// Properties of the service, decoded from TXT record.
     pub txt_properties: TxtProperties,

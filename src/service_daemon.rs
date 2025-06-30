@@ -34,8 +34,8 @@ use crate::{
     dns_cache::{current_time_millis, DnsCache},
     dns_parser::{
         ip_address_rr_type, DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer,
-        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA,
-        FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
+        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, HostIp, RRType, CLASS_CACHE_FLUSH, CLASS_IN,
+        FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
     },
     error::{e_fmt, Error, Result},
     service_info::{
@@ -644,7 +644,7 @@ impl ServiceDaemon {
                 for (hostname, ip_addr) in
                     zc.cache.refresh_due_hostname_resolutions(hostname).iter()
                 {
-                    zc.send_query(hostname, ip_address_rr_type(ip_addr));
+                    zc.send_query(hostname, ip_address_rr_type(&ip_addr.to_ip_addr()));
                     query_count += 1;
                 }
             }
@@ -1890,9 +1890,12 @@ impl Zeroconf {
             for answer in records.iter() {
                 if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {
                     if dns_a.expires_soon(now) {
-                        trace!("Addr expired or expires soon: {}", dns_a.address());
+                        trace!(
+                            "Addr expired or expires soon: {}",
+                            dns_a.address().to_ip_addr()
+                        );
                     } else {
-                        info.insert_ipaddr(dns_a.address());
+                        info.insert_ipaddr(dns_a.address().to_ip_addr());
                     }
                 }
             }
@@ -1914,7 +1917,7 @@ impl Zeroconf {
             fullname: fullname.to_string(),
             host: String::new(),
             port: 0,
-            addresses: HashMap::new(),
+            addresses: HashSet::new(),
             txt_properties: TxtProperties::new(),
         };
 
@@ -1955,13 +1958,12 @@ impl Zeroconf {
             for answer in records.iter() {
                 if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {
                     if dns_a.expires_soon(now) {
-                        trace!("Addr expired or expires soon: {}", dns_a.address());
+                        trace!(
+                            "Addr expired or expires soon: {}",
+                            dns_a.address().to_ip_addr()
+                        );
                     } else {
-                        resolved_service
-                            .addresses
-                            .entry(dns_a.address())
-                            .or_default()
-                            .push(dns_a.interface_id.clone());
+                        resolved_service.addresses.insert(dns_a.address());
                     }
                 }
             }
@@ -2192,7 +2194,7 @@ impl Zeroconf {
             // check against possible multicast forwarding
             if answer.get_type() == RRType::A || answer.get_type() == RRType::AAAA {
                 if let Some(answer_addr) = answer.any().downcast_ref::<DnsAddress>() {
-                    if !valid_ip_on_intf(&answer_addr.address(), intf) {
+                    if !valid_ip_on_intf(&answer_addr.address().to_ip_addr(), intf) {
                         debug!(
                             "conflict handler: answer addr {:?} not in the subnet of {:?}",
                             answer_addr, intf
@@ -3123,9 +3125,9 @@ pub enum HostnameResolutionEvent {
     /// Started searching for the ip address of a hostname.
     SearchStarted(String),
     /// One or more addresses for a hostname has been found.
-    AddressesFound(String, HashSet<IpAddr>),
+    AddressesFound(String, HashSet<HostIp>),
     /// One or more addresses for a hostname has been removed.
-    AddressesRemoved(String, HashSet<IpAddr>),
+    AddressesRemoved(String, HashSet<HostIp>),
     /// The search for the ip address of a hostname has timed out.
     SearchTimeout(String),
     /// Stopped searching for the ip address of a hostname.
@@ -3866,7 +3868,7 @@ mod tests {
     };
     use crate::{
         dns_parser::{
-            DnsIncoming, DnsOutgoing, DnsPointer, InterfaceId, RRType, CLASS_IN, FLAGS_AA,
+            DnsIncoming, DnsOutgoing, DnsPointer, HostIp, InterfaceId, RRType, CLASS_IN, FLAGS_AA,
             FLAGS_QR_RESPONSE,
         },
         service_daemon::{add_answer_of_service, check_hostname},
@@ -4102,17 +4104,17 @@ mod tests {
         // Create a mDNS server
         let server = ServiceDaemon::new().expect("Failed to create server");
         let hostname = "addr_remove_host._tcp.local.";
-        let service_ip_addr = my_ip_interfaces(false)
+        let service_ip_addr: HostIp = my_ip_interfaces(false)
             .iter()
             .find(|iface| iface.ip().is_ipv4())
-            .map(|iface| iface.ip())
+            .map(|iface| iface.ip().into())
             .unwrap();
 
         let mut my_service = ServiceInfo::new(
             "_host_res_test._tcp.local.",
             "my_instance",
             hostname,
-            &service_ip_addr,
+            &service_ip_addr.to_ip_addr(),
             1234,
             None,
         )

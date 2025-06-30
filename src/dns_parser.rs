@@ -47,6 +47,83 @@ impl From<&Interface> for InterfaceId {
     }
 }
 
+/// An IPv4 address used in `HostIp`.
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct HostIpV4 {
+    addr: Ipv4Addr,
+}
+
+/// An IPv6 address with scope_id (interface identifier).
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct HostIpV6 {
+    addr: Ipv6Addr,
+    scope_id: InterfaceId,
+}
+
+/// A host IP address, either IPv4 or IPv6, that supports scope_id for IPv6.
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[non_exhaustive]
+pub enum HostIp {
+    V4(HostIpV4),
+    V6(HostIpV6),
+}
+
+impl HostIp {
+    pub const fn to_ip_addr(&self) -> IpAddr {
+        match self {
+            HostIp::V4(v4) => IpAddr::V4(v4.addr),
+            HostIp::V6(v6) => IpAddr::V6(v6.addr),
+        }
+    }
+
+    pub const fn is_ipv4(&self) -> bool {
+        matches!(self, HostIp::V4(_))
+    }
+
+    pub const fn is_ipv6(&self) -> bool {
+        matches!(self, HostIp::V6(_))
+    }
+}
+
+impl From<IpAddr> for HostIp {
+    fn from(ip: IpAddr) -> Self {
+        match ip {
+            IpAddr::V4(v4) => HostIp::V4(HostIpV4 { addr: v4 }),
+            IpAddr::V6(v6) => HostIp::V6(HostIpV6 {
+                addr: v6,
+                scope_id: InterfaceId::default(),
+            }),
+        }
+    }
+}
+
+impl From<&Interface> for HostIp {
+    fn from(interface: &Interface) -> Self {
+        match interface.ip() {
+            IpAddr::V4(v4) => HostIp::V4(HostIpV4 { addr: v4 }),
+            IpAddr::V6(v6) => HostIp::V6(HostIpV6 {
+                addr: v6,
+                scope_id: InterfaceId::from(interface),
+            }),
+        }
+    }
+}
+
+impl fmt::Display for HostIp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HostIp::V4(v4) => write!(f, "{}", v4.addr),
+            HostIp::V6(v6) => {
+                if v6.scope_id.index != 0 {
+                    write!(f, "{}%{}", v6.addr, v6.scope_id.name)
+                } else {
+                    write!(f, "{}", v6.addr)
+                }
+            }
+        }
+    }
+}
+
 /// DNS resource record types, stored as `u16`. Can do `as u16` when needed.
 ///
 /// See [RFC 1035 section 3.2.2](https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.2)
@@ -550,8 +627,14 @@ impl DnsAddress {
         }
     }
 
-    pub fn address(&self) -> IpAddr {
-        self.address
+    pub fn address(&self) -> HostIp {
+        match self.address {
+            IpAddr::V4(v4) => HostIp::V4(HostIpV4 { addr: v4 }),
+            IpAddr::V6(v6) => HostIp::V6(HostIpV6 {
+                addr: v6,
+                scope_id: self.interface_id.clone(),
+            }),
+        }
     }
 }
 

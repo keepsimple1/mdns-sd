@@ -46,12 +46,8 @@ fn main() {
                     info.host,
                     info.port,
                 );
-                for (addr, interfaces) in info.addresses.iter() {
-                    println!(
-                        " Address: {} ({:?})",
-                        addr,
-                        interfaces.iter().map(|i| &i.name).collect::<Vec<_>>()
-                    );
+                for addr in info.addresses.iter() {
+                    println!(" Address: {addr}");
                 }
                 for prop in info.txt_properties.iter() {
                     println!(" Property: {}", prop);

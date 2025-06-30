@@ -1,7 +1,7 @@
 use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
-    DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, IntoTxtProperties, ServiceDaemon,
-    ServiceEvent, ServiceInfo, TxtProperty, UnregisterStatus,
+    DaemonEvent, DaemonStatus, HostIp, HostnameResolutionEvent, IfKind, IntoTxtProperties,
+    ServiceDaemon, ServiceEvent, ServiceInfo, TxtProperty, UnregisterStatus,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -1331,17 +1331,17 @@ fn test_shutdown() {
 fn test_hostname_resolution() {
     let d = ServiceDaemon::new().expect("Failed to create daemon");
     let hostname = "my_host._tcp.local.";
-    let service_ip_addr = my_ip_interfaces()
+    let service_ip_addr: HostIp = my_ip_interfaces()
         .iter()
         .find(|iface| iface.ip().is_ipv4())
-        .map(|iface| iface.ip())
+        .map(|iface| iface.into())
         .unwrap();
 
     let my_service = ServiceInfo::new(
         "_host_res_test._tcp.local.",
         "my_instance",
         hostname,
-        &[service_ip_addr] as &[IpAddr],
+        &[service_ip_addr.to_ip_addr()] as &[IpAddr],
         1234,
         None,
     )
@@ -1370,17 +1370,17 @@ fn test_hostname_resolution() {
 fn test_hostname_resolution_case_insensitive() {
     let d = ServiceDaemon::new().expect("Failed to create daemon");
     let hostname = "My_casE_HOST.local.";
-    let service_ip_addr = my_ip_interfaces()
+    let service_ip_addr: HostIp = my_ip_interfaces()
         .iter()
         .find(|iface| iface.ip().is_ipv4())
-        .map(|iface| iface.ip())
+        .map(|iface| iface.into())
         .unwrap();
 
     let my_service = ServiceInfo::new(
         "_host_case_test._tcp.local.",
         "my_instance",
         hostname,
-        &[service_ip_addr] as &[IpAddr],
+        &[service_ip_addr.to_ip_addr()] as &[IpAddr],
         1234,
         None,
     )
@@ -2635,14 +2635,9 @@ fn test_use_service_detailed_v6() {
                     resolved.addresses.len() > 0,
                     "Should have at least one address"
                 );
-                let (first_addr, interfaces) = resolved.addresses.into_iter().next().unwrap();
+                let first_addr = resolved.addresses.into_iter().next().unwrap();
                 assert!(first_addr.is_ipv6(), "Address should be IPv6");
-                let interface_id = interfaces.get(0).unwrap();
-                println!("Resolved address: {:?}", first_addr);
-                println!(
-                    "Interface ID of the first addr: {} index: {}",
-                    interface_id.name, interface_id.index
-                );
+                println!("Resolved address: {}", first_addr);
                 break;
             }
             ServiceEvent::ServiceResolved(_) => {
