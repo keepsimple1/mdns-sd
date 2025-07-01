@@ -115,14 +115,7 @@ impl fmt::Display for HostIp {
             HostIp::V4(v4) => write!(f, "{}", v4.addr),
             HostIp::V6(v6) => {
                 if v6.scope_id.index != 0 {
-                    #[cfg(not(windows))]
-                    {
-                        write!(f, "{}%{}", v6.addr, v6.scope_id.name)
-                    }
-                    #[cfg(windows)]
-                    {
-                        write!(f, "{}%{}", v6.addr, v6.scope_id.index)
-                    }
+                    write!(f, "{}%{}", v6.addr, v6.scope_id.index)
                 } else {
                     write!(f, "{}", v6.addr)
                 }
