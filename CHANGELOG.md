@@ -1,3 +1,11 @@
+# Version 0.13.11 (2025-7-7)
+
+This is a small bugfix release before we add potential breaking changes.
+
+* `8b221d2 2025-06-22` derive `Clone` for `ServiceEvent` and `HostnameResolutionEvent` (#366) (Shadowcat650)
+
+Welcome our new contributor @Shadowcat650 !
+
 # Version 0.13.10 (2025-6-21)
 
 This is a bugfix release.
