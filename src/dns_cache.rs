@@ -7,11 +7,11 @@ use crate::log::{debug, trace};
 use crate::{
     dns_parser::{DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, RRType},
     service_info::{split_sub_domain, valid_ip_on_intf, valid_two_addrs_on_intf},
+    HostIp,
 };
 use if_addrs::Interface;
 use std::{
     collections::{HashMap, HashSet},
-    net::IpAddr,
     time::SystemTime,
 };
 
@@ -120,7 +120,7 @@ impl DnsCache {
     ///
     /// Note that the keys in the returned HashMap are the same hostname, with different cases
     /// of letters (e.g. "example.local.", "Example.local.", "EXAMPLE.local.").
-    pub(crate) fn get_addresses_for_host(&self, host: &str) -> HashMap<String, HashSet<IpAddr>> {
+    pub(crate) fn get_addresses_for_host(&self, host: &str) -> HashMap<String, HashSet<HostIp>> {
         let hostname_lower = host.to_lowercase();
         let mut result = HashMap::new();
 
@@ -255,8 +255,8 @@ impl DnsCache {
                         if let Some(addr) = r.any().downcast_ref::<DnsAddress>() {
                             if let Some(addr_b) = incoming.any().downcast_ref::<DnsAddress>() {
                                 should_flush = valid_two_addrs_on_intf(
-                                    &addr.address(),
-                                    &addr_b.address(),
+                                    &addr.address().to_ip_addr(),
+                                    &addr_b.address().to_ip_addr(),
                                     intf,
                                 );
                             }
@@ -321,7 +321,7 @@ impl DnsCache {
 
     /// Iterates all ADDR records and remove ones that expired.
     /// Returns the expired ones in a map of names and addresses.
-    pub(crate) fn evict_expired_addr(&mut self, now: u64) -> HashMap<String, HashSet<IpAddr>> {
+    pub(crate) fn evict_expired_addr(&mut self, now: u64) -> HashMap<String, HashSet<HostIp>> {
         let mut removed = HashMap::new();
 
         self.addr.retain(|_, records| {
@@ -598,7 +598,7 @@ impl DnsCache {
     pub(crate) fn refresh_due_hostname_resolutions(
         &mut self,
         hostname: &str,
-    ) -> HashSet<(String, IpAddr)> {
+    ) -> HashSet<(String, HostIp)> {
         let now = current_time_millis();
 
         self.addr
@@ -663,7 +663,7 @@ impl DnsCache {
                 };
 
                 // Remove the record if it is on this interface.
-                if valid_ip_on_intf(&dns_addr.address(), disabled_intf) {
+                if valid_ip_on_intf(&dns_addr.address().to_ip_addr(), disabled_intf) {
                     debug!(
                         "removing ADDR on disabled intf: {:?} host {host}",
                         dns_addr.address()

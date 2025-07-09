@@ -34,14 +34,14 @@ use crate::{
     dns_cache::{current_time_millis, DnsCache},
     dns_parser::{
         ip_address_rr_type, DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer,
-        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA,
-        FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
+        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, HostIp, RRType, CLASS_CACHE_FLUSH, CLASS_IN,
+        FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
     },
     error::{e_fmt, Error, Result},
     service_info::{
         split_sub_domain, valid_ip_on_intf, DnsRegistry, Probe, ServiceInfo, ServiceStatus,
     },
-    Receiver,
+    Receiver, ResolvedService, TxtProperties,
 };
 use flume::{bounded, Sender, TrySendError};
 use if_addrs::{IfAddr, Interface};
@@ -483,6 +483,13 @@ impl ServiceDaemon {
         self.send_cmd(Command::SetOption(DaemonOption::MulticastLoopV6(on)))
     }
 
+    /// Enable or disable the use of [ServiceEvent::ServiceDetailed] instead of [ServiceEvent::ServiceResolved].
+    ///
+    /// This is recommended for clients using IPv6 as it will include scope_id in the address.
+    pub fn use_service_detailed(&self, on: bool) -> Result<()> {
+        self.send_cmd(Command::SetOption(DaemonOption::UseServiceDetailed(on)))
+    }
+
     /// Proactively confirms whether a service instance still valid.
     ///
     /// This call will issue queries for a service instance's SRV record and Address records.
@@ -639,7 +646,7 @@ impl ServiceDaemon {
                 for (hostname, ip_addr) in
                     zc.cache.refresh_due_hostname_resolutions(hostname).iter()
                 {
-                    zc.send_query(hostname, ip_address_rr_type(ip_addr));
+                    zc.send_query(hostname, ip_address_rr_type(&ip_addr.to_ip_addr()));
                     query_count += 1;
                 }
             }
@@ -985,6 +992,9 @@ struct Zeroconf {
     multicast_loop_v4: bool,
 
     multicast_loop_v6: bool,
+
+    /// Whether to use [ServiceEvent::ServiceDetailed] instead of [ServiceEvent::ServiceResolved].
+    use_service_detailed: bool,
 }
 
 impl Zeroconf {
@@ -1055,6 +1065,7 @@ impl Zeroconf {
             resolved: HashSet::new(),
             multicast_loop_v4: true,
             multicast_loop_v6: true,
+            use_service_detailed: false,
         }
     }
 
@@ -1066,6 +1077,7 @@ impl Zeroconf {
             DaemonOption::DisableInterface(if_kind) => self.disable_interface(if_kind),
             DaemonOption::MulticastLoopV4(on) => self.set_multicast_loop_v4(on),
             DaemonOption::MulticastLoopV6(on) => self.set_multicast_loop_v6(on),
+            DaemonOption::UseServiceDetailed(on) => self.use_service_detailed = on,
         }
     }
 
@@ -1738,13 +1750,39 @@ impl Zeroconf {
         if let Some(records) = self.cache.get_ptr(ty_domain) {
             for record in records.iter().filter(|r| !r.expires_soon(now)) {
                 if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
-                    let info = match self.create_service_info_from_cache(ty_domain, ptr.alias()) {
-                        Ok(ok) => ok,
-                        Err(err) => {
-                            debug!("Error while creating service info from cache: {}", err);
-                            continue;
+                    let mut new_event = None;
+                    if self.use_service_detailed {
+                        match self.resolve_service_from_cache(ty_domain, ptr.alias()) {
+                            Ok(resolved_service) => {
+                                if resolved_service.is_valid() {
+                                    new_event = Some(ServiceEvent::ServiceDetailed(Box::new(
+                                        resolved_service,
+                                    )));
+                                } else {
+                                    debug!("Resolved service is not valid: {}", ptr.alias());
+                                }
+                            }
+                            Err(err) => {
+                                debug!("Error while resolving service from cache: {}", err);
+                                continue;
+                            }
                         }
-                    };
+                    } else {
+                        // Support legacy behavior.
+                        match self.create_service_info_from_cache(ty_domain, ptr.alias()) {
+                            Ok(info) => {
+                                if info.is_ready() {
+                                    new_event = Some(ServiceEvent::ServiceResolved(info));
+                                } else {
+                                    debug!("Service info is not ready: {}", ptr.alias());
+                                }
+                            }
+                            Err(err) => {
+                                debug!("Error while creating service info from cache: {}", err);
+                                continue;
+                            }
+                        }
+                    }
 
                     match sender.send(ServiceEvent::ServiceFound(
                         ty_domain.to_string(),
@@ -1757,9 +1795,9 @@ impl Zeroconf {
                         }
                     }
 
-                    if info.is_ready() {
+                    if let Some(event) = new_event {
                         resolved.insert(ptr.alias().to_string());
-                        match sender.send(ServiceEvent::ServiceResolved(info)) {
+                        match sender.send(event) {
                             Ok(()) => debug!("sent service resolved: {}", ptr.alias()),
                             Err(e) => debug!("failed to send service resolved: {}", e),
                         }
@@ -1854,15 +1892,86 @@ impl Zeroconf {
             for answer in records.iter() {
                 if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {
                     if dns_a.expires_soon(now) {
-                        trace!("Addr expired or expires soon: {}", dns_a.address());
+                        trace!(
+                            "Addr expired or expires soon: {}",
+                            dns_a.address().to_ip_addr()
+                        );
                     } else {
-                        info.insert_ipaddr(dns_a.address());
+                        info.insert_ipaddr(dns_a.address().to_ip_addr());
                     }
                 }
             }
         }
 
         Ok(info)
+    }
+
+    /// Creates a `ResolvedService` from the cache.
+    fn resolve_service_from_cache(
+        &self,
+        ty_domain: &str,
+        fullname: &str,
+    ) -> Result<ResolvedService> {
+        let now = current_time_millis();
+        let mut resolved_service = ResolvedService {
+            ty_domain: ty_domain.to_string(),
+            sub_ty_domain: None,
+            fullname: fullname.to_string(),
+            host: String::new(),
+            port: 0,
+            addresses: HashSet::new(),
+            txt_properties: TxtProperties::new(),
+        };
+
+        // Be sure setting `subtype` if available even when querying for the parent domain.
+        if let Some(subtype) = self.cache.get_subtype(fullname) {
+            trace!(
+                "ty_domain: {} found subtype {} for instance: {}",
+                ty_domain,
+                subtype,
+                fullname
+            );
+            if resolved_service.sub_ty_domain.is_none() {
+                resolved_service.sub_ty_domain = Some(subtype.to_string());
+            }
+        }
+
+        // resolve SRV record
+        if let Some(records) = self.cache.get_srv(fullname) {
+            if let Some(answer) = records.iter().find(|r| !r.expires_soon(now)) {
+                if let Some(dns_srv) = answer.any().downcast_ref::<DnsSrv>() {
+                    resolved_service.host = dns_srv.host().to_string();
+                    resolved_service.port = dns_srv.port();
+                }
+            }
+        }
+
+        // resolve TXT record
+        if let Some(records) = self.cache.get_txt(fullname) {
+            if let Some(record) = records.iter().find(|r| !r.expires_soon(now)) {
+                if let Some(dns_txt) = record.any().downcast_ref::<DnsTxt>() {
+                    resolved_service.txt_properties = dns_txt.text().into();
+                }
+            }
+        }
+
+        // resolve A and AAAA records
+        if let Some(records) = self.cache.get_addr(&resolved_service.host) {
+            for answer in records.iter() {
+                if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {
+                    if dns_a.expires_soon(now) {
+                        trace!(
+                            "Addr expired or expires soon: {}",
+                            dns_a.address().to_ip_addr()
+                        );
+                    } else {
+                        resolved_service.addresses.insert(dns_a.address());
+                    }
+                }
+            }
+        }
+
+        Ok(resolved_service)
     }
 
     fn handle_poller_events(&mut self, events: &mio::Events) {
@@ -2087,7 +2196,7 @@ impl Zeroconf {
             // check against possible multicast forwarding
             if answer.get_type() == RRType::A || answer.get_type() == RRType::AAAA {
                 if let Some(answer_addr) = answer.any().downcast_ref::<DnsAddress>() {
-                    if !valid_ip_on_intf(&answer_addr.address(), intf) {
+                    if !valid_ip_on_intf(&answer_addr.address().to_ip_addr(), intf) {
                         debug!(
                             "conflict handler: answer addr {:?} not in the subnet of {:?}",
                             answer_addr, intf
@@ -2206,17 +2315,37 @@ impl Zeroconf {
             for record in records.iter().filter(|r| !r.expires_soon(now)) {
                 if let Some(dns_ptr) = record.any().downcast_ref::<DnsPointer>() {
                     if updated_instances.contains(dns_ptr.alias()) {
-                        if let Ok(info) =
+                        let mut instance_found = false;
+                        let mut new_event = None;
+
+                        if self.use_service_detailed {
+                            if let Ok(resolved) =
+                                self.resolve_service_from_cache(ty_domain, dns_ptr.alias())
+                            {
+                                instance_found = true;
+                                if resolved.is_valid() {
+                                    new_event =
+                                        Some(ServiceEvent::ServiceDetailed(Box::new(resolved)));
+                                } else {
+                                    debug!("Resolved service is not valid: {}", dns_ptr.alias());
+                                }
+                            }
+                        } else if let Ok(info) =
                             self.create_service_info_from_cache(ty_domain, dns_ptr.alias())
                         {
+                            instance_found = true;
                             if info.is_ready() {
+                                new_event = Some(ServiceEvent::ServiceResolved(info));
+                            } else {
+                                debug!("Service info is not ready: {}", dns_ptr.alias());
+                            }
+                        }
+
+                        if instance_found {
+                            if let Some(event) = new_event {
                                 debug!("call queriers to resolve {}", dns_ptr.alias());
                                 resolved.insert(dns_ptr.alias().to_string());
-                                call_service_listener(
-                                    &self.service_queriers,
-                                    ty_domain,
-                                    ServiceEvent::ServiceResolved(info),
-                                );
+                                call_service_listener(&self.service_queriers, ty_domain, event);
                             } else {
                                 if self.resolved.remove(dns_ptr.alias()) {
                                     removed_instances
@@ -2980,6 +3109,9 @@ pub enum ServiceEvent {
     /// Resolved a service instance with detailed info.
     ServiceResolved(ServiceInfo),
 
+    /// Resolved a service instance in a ResolvedService struct.
+    ServiceDetailed(Box<ResolvedService>),
+
     /// A service instance (service_type, fullname) was removed.
     ServiceRemoved(String, String),
 
@@ -2995,9 +3127,9 @@ pub enum HostnameResolutionEvent {
     /// Started searching for the ip address of a hostname.
     SearchStarted(String),
     /// One or more addresses for a hostname has been found.
-    AddressesFound(String, HashSet<IpAddr>),
+    AddressesFound(String, HashSet<HostIp>),
     /// One or more addresses for a hostname has been removed.
-    AddressesRemoved(String, HashSet<IpAddr>),
+    AddressesRemoved(String, HashSet<HostIp>),
     /// The search for the ip address of a hostname has timed out.
     SearchTimeout(String),
     /// Stopped searching for the ip address of a hostname.
@@ -3143,6 +3275,7 @@ enum DaemonOption {
     DisableInterface(Vec<IfKind>),
     MulticastLoopV4(bool),
     MulticastLoopV6(bool),
+    UseServiceDetailed(bool),
 }
 
 /// The length of Service Domain name supported in this lib.
@@ -3270,7 +3403,7 @@ fn my_ip_interfaces(with_loopback: bool) -> Vec<Interface> {
 /// Send an outgoing mDNS query or response, and returns the packet bytes.
 fn send_dns_outgoing(out: &DnsOutgoing, intf: &Interface, sock: &MioUdpSocket) -> Vec<Vec<u8>> {
     let qtype = if out.is_query() { "query" } else { "response" };
-    trace!(
+    debug!(
         "send outgoing {}: {} questions {} answers {} authorities {} additional",
         qtype,
         out.questions().len(),
@@ -3340,7 +3473,7 @@ fn prepare_announce(
 ) -> Option<DnsOutgoing> {
     let intf_addrs = info.get_addrs_on_intf(intf);
     if intf_addrs.is_empty() {
-        trace!("No valid addrs to add on intf {:?}", &intf);
+        debug!("No valid addrs to add on intf {:?}", &intf);
         return None;
     }
 
@@ -3737,7 +3870,7 @@ mod tests {
     };
     use crate::{
         dns_parser::{
-            DnsIncoming, DnsOutgoing, DnsPointer, InterfaceId, RRType, CLASS_IN, FLAGS_AA,
+            DnsIncoming, DnsOutgoing, DnsPointer, HostIp, InterfaceId, RRType, CLASS_IN, FLAGS_AA,
             FLAGS_QR_RESPONSE,
         },
         service_daemon::{add_answer_of_service, check_hostname},
@@ -3973,17 +4106,17 @@ mod tests {
         // Create a mDNS server
         let server = ServiceDaemon::new().expect("Failed to create server");
         let hostname = "addr_remove_host._tcp.local.";
-        let service_ip_addr = my_ip_interfaces(false)
+        let service_ip_addr: HostIp = my_ip_interfaces(false)
             .iter()
             .find(|iface| iface.ip().is_ipv4())
-            .map(|iface| iface.ip())
+            .map(|iface| iface.ip().into())
             .unwrap();
 
         let mut my_service = ServiceInfo::new(
             "_host_res_test._tcp.local.",
             "my_instance",
             hostname,
-            &service_ip_addr,
+            &service_ip_addr.to_ip_addr(),
             1234,
             None,
         )

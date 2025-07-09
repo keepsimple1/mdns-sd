@@ -162,7 +162,7 @@ mod error;
 mod service_daemon;
 mod service_info;
 
-pub use dns_parser::RRType;
+pub use dns_parser::{HostIp, HostIpV4, HostIpV6, InterfaceId, RRType};
 pub use error::{Error, Result};
 pub use service_daemon::{
     DaemonEvent, DaemonStatus, DnsNameChange, HostnameResolutionEvent, IfKind, Metrics,

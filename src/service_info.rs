@@ -3,7 +3,7 @@
 #[cfg(feature = "logging")]
 use crate::log::debug;
 use crate::{
-    dns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, RRType},
+    dns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, HostIp, RRType},
     Error, Result,
 };
 use if_addrs::{IfAddr, Interface};
@@ -372,13 +372,14 @@ impl ServiceInfo {
 
     /// Consumes self and returns a resolved service, i.e. a lite version of `ServiceInfo`.
     pub fn as_resolved_service(self) -> ResolvedService {
+        let addresses: HashSet<HostIp> = self.addresses.into_iter().map(|a| a.into()).collect();
         ResolvedService {
             ty_domain: self.ty_domain,
             sub_ty_domain: self.sub_domain,
             fullname: self.fullname,
             host: self.server,
             port: self.port,
-            addresses: self.addresses,
+            addresses,
             txt_properties: self.txt_properties,
         }
     }
@@ -473,7 +474,19 @@ pub struct TxtProperties {
     properties: Vec<TxtProperty>,
 }
 
+impl Default for TxtProperties {
+    fn default() -> Self {
+        TxtProperties::new()
+    }
+}
+
 impl TxtProperties {
+    pub fn new() -> Self {
+        TxtProperties {
+            properties: Vec::new(),
+        }
+    }
+
     /// Returns an iterator for all properties.
     pub fn iter(&self) -> impl Iterator<Item = &TxtProperty> {
         self.properties.iter()
@@ -542,6 +555,13 @@ impl fmt::Display for TxtProperties {
         let delimiter = ", ";
         let props: Vec<String> = self.properties.iter().map(|p| p.to_string()).collect();
         write!(f, "({})", props.join(delimiter))
+    }
+}
+
+impl From<&[u8]> for TxtProperties {
+    fn from(txt: &[u8]) -> Self {
+        let properties = decode_txt_unique(txt);
+        TxtProperties { properties }
     }
 }
 
@@ -1130,6 +1150,7 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
 
 /// Represents a resolved service as a plain data struct.
 /// This is from a client (i.e. querier) point of view.
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct ResolvedService {
     /// Service type and domain. For example, "_http._tcp.local."
@@ -1152,7 +1173,7 @@ pub struct ResolvedService {
     pub port: u16,
 
     /// Addresses of the service. IPv4 or IPv6 addresses.
-    pub addresses: HashSet<IpAddr>,
+    pub addresses: HashSet<HostIp>,
 
     /// Properties of the service, decoded from TXT record.
     pub txt_properties: TxtProperties,
