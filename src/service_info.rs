@@ -1172,10 +1172,7 @@ pub struct ResolvedService {
     /// Port of the service. I.e. TCP or UDP port.
     pub port: u16,
 
-    /// Addresses of the service.
-    /// Each address maps to the list of interfaces on which the address is found.
-    /// The interface list is particularly useful for link-local IPv6 addresses,
-    /// where the same address can be found on multiple interfaces.
+    /// Addresses of the service. IPv4 or IPv6 addresses.
     pub addresses: HashSet<HostIp>,
 
     /// Properties of the service, decoded from TXT record.

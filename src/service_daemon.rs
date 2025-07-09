@@ -484,6 +484,8 @@ impl ServiceDaemon {
     }
 
     /// Enable or disable the use of [ServiceEvent::ServiceDetailed] instead of [ServiceEvent::ServiceResolved].
+    ///
+    /// This is recommended for clients using IPv6 as it will include scope_id in the address.
     pub fn use_service_detailed(&self, on: bool) -> Result<()> {
         self.send_cmd(Command::SetOption(DaemonOption::UseServiceDetailed(on)))
     }
