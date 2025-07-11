@@ -34,7 +34,7 @@ pub struct InterfaceId {
 
 impl fmt::Display for InterfaceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}(idx {})", self.name, self.index)
+        write!(f, "{}('{}')", self.index, self.name)
     }
 }
 
@@ -53,11 +53,30 @@ pub struct HostIpV4 {
     addr: Ipv4Addr,
 }
 
+impl HostIpV4 {
+    /// Returns the IPv4 address.
+    pub const fn addr(&self) -> &Ipv4Addr {
+        &self.addr
+    }
+}
+
 /// An IPv6 address with scope_id (interface identifier).
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct HostIpV6 {
     addr: Ipv6Addr,
     scope_id: InterfaceId,
+}
+
+impl HostIpV6 {
+    /// Returns the IPv6 address.
+    pub const fn addr(&self) -> &Ipv6Addr {
+        &self.addr
+    }
+
+    /// Returns the scope_id for this IPv6 address.
+    pub const fn scope_id(&self) -> &InterfaceId {
+        &self.scope_id
+    }
 }
 
 /// A host IP address, either IPv4 or IPv6, that supports scope_id for IPv6.

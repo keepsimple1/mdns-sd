@@ -2532,7 +2532,13 @@ fn test_use_service_detailed() {
         match event {
             ServiceEvent::ServiceDetailed(resolved) => {
                 got_detailed = true;
-                println!("Scoped address: {:?}", resolved.addresses);
+                println!("address: {:?}", resolved.addresses);
+                let first_addr = resolved.addresses.iter().next().unwrap();
+                let HostIp::V4(ip_v4) = first_addr else {
+                    assert!(false, "Address should be IPv4");
+                    return;
+                };
+                println!("Resolved address: {}", ip_v4.addr());
                 break;
             }
             ServiceEvent::ServiceResolved(_) => {
@@ -2638,6 +2644,20 @@ fn test_use_service_detailed_v6() {
                 let first_addr = resolved.addresses.into_iter().next().unwrap();
                 assert!(first_addr.is_ipv6(), "Address should be IPv6");
                 println!("Resolved address: {}", first_addr);
+                let HostIp::V6(ip_v6) = first_addr else {
+                    assert!(false, "Address should be IPv6");
+                    return;
+                };
+                assert!(
+                    ip_v6.addr().is_unicast_link_local(),
+                    "Address should be link-local"
+                );
+                let scope_id = ip_v6.scope_id();
+                assert!(
+                    scope_id.index != 0,
+                    "Link-local address should have a scope ID"
+                );
+                println!("Scope ID: {}", scope_id);
                 break;
             }
             ServiceEvent::ServiceResolved(_) => {
