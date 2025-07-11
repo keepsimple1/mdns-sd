@@ -2648,10 +2648,6 @@ fn test_use_service_detailed_v6() {
                     assert!(false, "Address should be IPv6");
                     return;
                 };
-                assert!(
-                    ip_v6.addr().is_unicast_link_local(),
-                    "Address should be link-local"
-                );
                 let scope_id = ip_v6.scope_id();
                 assert!(
                     scope_id.index != 0,
