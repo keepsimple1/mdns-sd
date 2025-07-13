@@ -1375,6 +1375,7 @@ mod tests {
             name: "e0".to_string(),
             addr: ipv4_intf_addr,
             index: Some(1),
+            oper_status: if_addrs::IfOperStatus::Up,
             #[cfg(windows)]
             adapter_name: "ethernet".to_string(),
         };
@@ -1401,6 +1402,7 @@ mod tests {
             name: "eth0".to_string(),
             addr: ipv6_intf_addr,
             index: Some(2),
+            oper_status: if_addrs::IfOperStatus::Up,
             #[cfg(windows)]
             adapter_name: "ethernet".to_string(),
         };
