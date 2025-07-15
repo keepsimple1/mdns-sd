@@ -324,7 +324,7 @@ impl DnsEntryExt for DnsQuestion {
 /// RFC: https://www.rfc-editor.org/rfc/rfc1035#section-3.2.1
 ///      https://www.rfc-editor.org/rfc/rfc1035#section-4.1.3
 #[derive(Debug, Clone)]
-pub struct DnsRecord {
+pub(crate) struct DnsRecord {
     pub(crate) entry: DnsEntry,
     ttl: u32,     // in seconds, 0 means this record should not be cached
     created: u64, // UNIX time in millis
@@ -499,7 +499,7 @@ impl PartialEq for DnsRecord {
 }
 
 /// Common methods for DNS resource records.
-pub trait DnsRecordExt: fmt::Debug {
+pub(crate) trait DnsRecordExt: fmt::Debug {
     fn get_record(&self) -> &DnsRecord;
     fn get_record_mut(&mut self) -> &mut DnsRecord;
     fn write(&self, packet: &mut DnsOutPacket);
@@ -623,7 +623,7 @@ pub trait DnsRecordExt: fmt::Debug {
 
 /// Resource Record for IPv4 address or IPv6 address.
 #[derive(Debug, Clone)]
-pub struct DnsAddress {
+pub(crate) struct DnsAddress {
     pub(crate) record: DnsRecord,
     address: IpAddr,
     interface_id: InterfaceId,
@@ -1356,7 +1356,7 @@ enum PacketState {
 }
 
 /// A single packet for outgoing DNS message.
-pub struct DnsOutPacket {
+pub(crate) struct DnsOutPacket {
     /// All bytes in `data` concatenated is the actual packet on the wire.
     data: Vec<Vec<u8>>,
 
@@ -1378,14 +1378,6 @@ impl DnsOutPacket {
             state: PacketState::Init,
             names: HashMap::new(),
         }
-    }
-
-    pub fn size(&self) -> usize {
-        self.size
-    }
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        self.data.concat()
     }
 
     fn write_question(&mut self, question: &DnsQuestion) {
@@ -1892,10 +1884,6 @@ impl DnsIncoming {
         &self.authorities
     }
 
-    pub fn additionals(&self) -> &[DnsRecordBox] {
-        &self.additional
-    }
-
     pub fn answers_mut(&mut self) -> &mut Vec<DnsRecordBox> {
         &mut self.answers
     }
@@ -1921,10 +1909,6 @@ impl DnsIncoming {
 
     pub fn num_authorities(&self) -> u16 {
         self.num_authorities
-    }
-
-    pub fn num_questions(&self) -> u16 {
-        self.num_questions
     }
 
     pub const fn is_query(&self) -> bool {
