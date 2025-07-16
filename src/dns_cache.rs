@@ -15,6 +15,7 @@ use std::{
     time::SystemTime,
 };
 
+/// Associate a DnsRecord with the interface it was received on.
 pub(crate) struct DnsRecordIntf {
     pub(crate) record: DnsRecordBox,
     pub(crate) src_intf: InterfaceId,
@@ -698,6 +699,7 @@ impl DnsCache {
         }
     }
 
+    /// Removes all records that were received on `intf_id`.
     pub(crate) fn remove_records_on_intf(
         &mut self,
         intf_id: InterfaceId,
