@@ -2403,7 +2403,7 @@ impl Zeroconf {
 
                         if instance_found {
                             if let Some(event) = new_event {
-                                debug!("call queriers to resolve {}", dns_ptr.alias());
+                                trace!("call queriers to resolve {}", dns_ptr.alias());
                                 resolved.insert(dns_ptr.alias().to_string());
                                 call_service_listener(&self.service_queriers, ty_domain, event);
                             } else {
@@ -3474,7 +3474,7 @@ fn my_ip_interfaces(with_loopback: bool) -> Vec<Interface> {
 /// Send an outgoing mDNS query or response, and returns the packet bytes.
 fn send_dns_outgoing(out: &DnsOutgoing, intf: &Interface, sock: &MioUdpSocket) -> Vec<Vec<u8>> {
     let qtype = if out.is_query() { "query" } else { "response" };
-    debug!(
+    trace!(
         "send outgoing {}: {} questions {} answers {} authorities {} additional",
         qtype,
         out.questions().len(),

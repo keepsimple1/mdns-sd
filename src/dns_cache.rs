@@ -298,6 +298,12 @@ impl DnsCache {
                     record: incoming,
                     src_intf: intf.into(),
                 };
+                if new_record.record.get_type() == RRType::AAAA {
+                    debug!(
+                        "add_or_update: new AAAA record: {:?} from {:?}",
+                        &new_record.record, &new_record.src_intf
+                    );
+                }
                 record_vec.insert(0, new_record); // A new record.
                 (0, true)
             }
