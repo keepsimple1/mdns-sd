@@ -34,8 +34,8 @@ use crate::{
     dns_cache::{current_time_millis, DnsCache},
     dns_parser::{
         ip_address_rr_type, DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer,
-        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, HostIp, RRType, CLASS_CACHE_FLUSH, CLASS_IN,
-        FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
+        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, HostIp, InterfaceId, RRType, CLASS_CACHE_FLUSH,
+        CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
     },
     error::{e_fmt, Error, Result},
     service_info::{
@@ -445,6 +445,20 @@ impl ServiceDaemon {
         )))
     }
 
+    #[cfg(test)]
+    pub fn test_down_interface(&self, ifname: &str) -> Result<()> {
+        self.send_cmd(Command::SetOption(DaemonOption::TestDownInterface(
+            ifname.to_string(),
+        )))
+    }
+
+    #[cfg(test)]
+    pub fn test_up_interface(&self, ifname: &str) -> Result<()> {
+        self.send_cmd(Command::SetOption(DaemonOption::TestUpInterface(
+            ifname.to_string(),
+        )))
+    }
+
     /// Enable or disable the loopback for locally sent multicast packets in IPv4.
     ///
     /// By default, multicast loop is enabled for IPv4. When disabled, a querier will not
@@ -658,7 +672,13 @@ impl ServiceDaemon {
 
             // Notify service listeners about the expired records.
             let expired_services = zc.cache.evict_expired_services(now);
-            zc.notify_service_removal(expired_services);
+            if !expired_services.is_empty() {
+                debug!(
+                    "run: send {} service removal to listeners",
+                    expired_services.len()
+                );
+                zc.notify_service_removal(expired_services);
+            }
 
             // Notify hostname listeners about the expired records.
             let expired_addrs = zc.cache.evict_expired_addr(now);
@@ -995,6 +1015,9 @@ struct Zeroconf {
 
     /// Whether to use [ServiceEvent::ServiceDetailed] instead of [ServiceEvent::ServiceResolved].
     use_service_detailed: bool,
+
+    #[cfg(test)]
+    test_down_interfaces: HashSet<String>,
 }
 
 impl Zeroconf {
@@ -1066,6 +1089,9 @@ impl Zeroconf {
             multicast_loop_v4: true,
             multicast_loop_v6: true,
             use_service_detailed: false,
+
+            #[cfg(test)]
+            test_down_interfaces: HashSet::new(),
         }
     }
 
@@ -1078,6 +1104,14 @@ impl Zeroconf {
             DaemonOption::MulticastLoopV4(on) => self.set_multicast_loop_v4(on),
             DaemonOption::MulticastLoopV6(on) => self.set_multicast_loop_v6(on),
             DaemonOption::UseServiceDetailed(on) => self.use_service_detailed = on,
+            #[cfg(test)]
+            DaemonOption::TestDownInterface(ifname) => {
+                self.test_down_interfaces.insert(ifname);
+            }
+            #[cfg(test)]
+            DaemonOption::TestUpInterface(ifname) => {
+                self.test_down_interfaces.remove(&ifname);
+            }
         }
     }
 
@@ -1257,10 +1291,16 @@ impl Zeroconf {
         // Get the current interfaces.
         let my_ifaddrs = my_ip_interfaces(true);
 
+        #[cfg(test)]
+        let my_ifaddrs: Vec<_> = my_ifaddrs
+            .into_iter()
+            .filter(|intf| !self.test_down_interfaces.contains(&intf.name))
+            .collect();
+
         let poll_ids = &mut self.poll_ids;
         let poller = &mut self.poller;
         // Remove unused sockets in the poller.
-        let deleted_addrs = self
+        let deleted_interfaces = self
             .intf_socks
             .iter_mut()
             .filter_map(|(intf, sock)| {
@@ -1270,17 +1310,21 @@ impl Zeroconf {
                     }
                     // Remove from poll_ids
                     poll_ids.retain(|_, v| v != intf);
-                    Some(intf.ip())
+                    Some((intf.ip(), InterfaceId::from(intf)))
                 } else {
                     None
                 }
             })
-            .collect::<Vec<IpAddr>>();
+            .collect::<Vec<_>>();
 
         // Remove deleted addrs from my services that enabled `addr_auto`.
-        for ip in deleted_addrs.iter() {
-            self.del_addr_in_my_services(ip);
-            self.notify_monitors(DaemonEvent::IpDel(*ip));
+        for (ip, intf_id) in deleted_interfaces {
+            self.del_addr_in_my_services(&ip);
+            self.notify_monitors(DaemonEvent::IpDel(ip));
+
+            // Remove cache records for this interface.
+            let removed_instances = self.cache.remove_records_on_intf(intf_id);
+            self.notify_service_removal(removed_instances);
         }
 
         // Keep the interfaces only if they still exist.
@@ -1347,6 +1391,21 @@ impl Zeroconf {
         }
 
         self.intf_socks.insert(intf, sock);
+
+        // As we added a new interface, we want to execute all active "Browse" reruns now.
+        let mut browse_reruns = Vec::new();
+        let mut i = 0;
+        while i < self.retransmissions.len() {
+            if matches!(self.retransmissions[i].command, Command::Browse(..)) {
+                browse_reruns.push(self.retransmissions.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+
+        for rerun in browse_reruns {
+            self.exec_command(rerun.command, true);
+        }
 
         // Notify the monitors.
         self.notify_monitors(DaemonEvent::IpAdd(new_ip));
@@ -1621,8 +1680,8 @@ impl Zeroconf {
                     some answers, it populates the Answer Section of the DNS query
                     message with those answers.
                  */
-                trace!("add known answer: {:?}", record);
-                let mut new_record = record.clone();
+                trace!("add known answer: {:?}", record.record);
+                let mut new_record = record.record.clone();
                 new_record.get_record_mut().update_ttl(now);
                 out.add_answer_box(new_record);
             }
@@ -1721,7 +1780,7 @@ impl Zeroconf {
 
         if let Some(records) = self.cache.get_srv(instance) {
             for record in records {
-                if let Some(srv) = record.any().downcast_ref::<DnsSrv>() {
+                if let Some(srv) = record.record.any().downcast_ref::<DnsSrv>() {
                     if self.cache.get_addr(srv.host()).is_none() {
                         self.send_query_vec(&[(srv.host(), RRType::A), (srv.host(), RRType::AAAA)]);
                         return true;
@@ -1748,8 +1807,8 @@ impl Zeroconf {
         let mut unresolved: HashSet<String> = HashSet::new();
 
         if let Some(records) = self.cache.get_ptr(ty_domain) {
-            for record in records.iter().filter(|r| !r.expires_soon(now)) {
-                if let Some(ptr) = record.any().downcast_ref::<DnsPointer>() {
+            for record in records.iter().filter(|r| !r.record.expires_soon(now)) {
+                if let Some(ptr) = record.record.any().downcast_ref::<DnsPointer>() {
                     let mut new_event = None;
                     if self.use_service_detailed {
                         match self.resolve_service_from_cache(ty_domain, ptr.alias()) {
@@ -1870,8 +1929,8 @@ impl Zeroconf {
 
         // resolve SRV record
         if let Some(records) = self.cache.get_srv(fullname) {
-            if let Some(answer) = records.iter().find(|r| !r.expires_soon(now)) {
-                if let Some(dns_srv) = answer.any().downcast_ref::<DnsSrv>() {
+            if let Some(answer) = records.iter().find(|r| !r.record.expires_soon(now)) {
+                if let Some(dns_srv) = answer.record.any().downcast_ref::<DnsSrv>() {
                     info.set_hostname(dns_srv.host().to_string());
                     info.set_port(dns_srv.port());
                 }
@@ -1880,8 +1939,8 @@ impl Zeroconf {
 
         // resolve TXT record
         if let Some(records) = self.cache.get_txt(fullname) {
-            if let Some(record) = records.iter().find(|r| !r.expires_soon(now)) {
-                if let Some(dns_txt) = record.any().downcast_ref::<DnsTxt>() {
+            if let Some(record) = records.iter().find(|r| !r.record.expires_soon(now)) {
+                if let Some(dns_txt) = record.record.any().downcast_ref::<DnsTxt>() {
                     info.set_properties_from_txt(dns_txt.text());
                 }
             }
@@ -1890,7 +1949,7 @@ impl Zeroconf {
         // resolve A and AAAA records
         if let Some(records) = self.cache.get_addr(info.get_hostname()) {
             for answer in records.iter() {
-                if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {
+                if let Some(dns_a) = answer.record.any().downcast_ref::<DnsAddress>() {
                     if dns_a.expires_soon(now) {
                         trace!(
                             "Addr expired or expires soon: {}",
@@ -1938,8 +1997,8 @@ impl Zeroconf {
 
         // resolve SRV record
         if let Some(records) = self.cache.get_srv(fullname) {
-            if let Some(answer) = records.iter().find(|r| !r.expires_soon(now)) {
-                if let Some(dns_srv) = answer.any().downcast_ref::<DnsSrv>() {
+            if let Some(answer) = records.iter().find(|r| !r.record.expires_soon(now)) {
+                if let Some(dns_srv) = answer.record.any().downcast_ref::<DnsSrv>() {
                     resolved_service.host = dns_srv.host().to_string();
                     resolved_service.port = dns_srv.port();
                 }
@@ -1948,8 +2007,8 @@ impl Zeroconf {
 
         // resolve TXT record
         if let Some(records) = self.cache.get_txt(fullname) {
-            if let Some(record) = records.iter().find(|r| !r.expires_soon(now)) {
-                if let Some(dns_txt) = record.any().downcast_ref::<DnsTxt>() {
+            if let Some(record) = records.iter().find(|r| !r.record.expires_soon(now)) {
+                if let Some(dns_txt) = record.record.any().downcast_ref::<DnsTxt>() {
                     resolved_service.txt_properties = dns_txt.text().into();
                 }
             }
@@ -1958,7 +2017,7 @@ impl Zeroconf {
         // resolve A and AAAA records
         if let Some(records) = self.cache.get_addr(&resolved_service.host) {
             for answer in records.iter() {
-                if let Some(dns_a) = answer.any().downcast_ref::<DnsAddress>() {
+                if let Some(dns_a) = answer.record.any().downcast_ref::<DnsAddress>() {
                     if dns_a.expires_soon(now) {
                         trace!(
                             "Addr expired or expires soon: {}",
@@ -2100,20 +2159,21 @@ impl Zeroconf {
                 .add_or_update(intf, record, &mut timers, is_for_us)
             {
                 Some((dns_record, true)) => {
-                    timers.push(dns_record.get_record().get_expire_time());
-                    timers.push(dns_record.get_record().get_refresh_time());
+                    timers.push(dns_record.record.get_record().get_expire_time());
+                    timers.push(dns_record.record.get_record().get_refresh_time());
 
-                    let ty = dns_record.get_type();
-                    let name = dns_record.get_name();
+                    let ty = dns_record.record.get_type();
+                    let name = dns_record.record.get_name();
 
                     // Only process PTR that does not expire soon (i.e. TTL > 1).
-                    if ty == RRType::PTR && dns_record.get_record().get_ttl() > 1 {
+                    if ty == RRType::PTR && dns_record.record.get_record().get_ttl() > 1 {
                         if self.service_queriers.contains_key(name) {
-                            timers.push(dns_record.get_record().get_refresh_time());
+                            timers.push(dns_record.record.get_record().get_refresh_time());
                         }
 
                         // send ServiceFound
-                        if let Some(dns_ptr) = dns_record.any().downcast_ref::<DnsPointer>() {
+                        if let Some(dns_ptr) = dns_record.record.any().downcast_ref::<DnsPointer>()
+                        {
                             call_service_listener(
                                 &self.service_queriers,
                                 name,
@@ -2135,8 +2195,8 @@ impl Zeroconf {
                     }
                 }
                 Some((dns_record, false)) => {
-                    timers.push(dns_record.get_record().get_expire_time());
-                    timers.push(dns_record.get_record().get_refresh_time());
+                    timers.push(dns_record.record.get_record().get_expire_time());
+                    timers.push(dns_record.record.get_record().get_refresh_time());
                 }
                 _ => {}
             }
@@ -2312,8 +2372,8 @@ impl Zeroconf {
                 continue;
             }
 
-            for record in records.iter().filter(|r| !r.expires_soon(now)) {
-                if let Some(dns_ptr) = record.any().downcast_ref::<DnsPointer>() {
+            for record in records.iter().filter(|r| !r.record.expires_soon(now)) {
+                if let Some(dns_ptr) = record.record.any().downcast_ref::<DnsPointer>() {
                     if updated_instances.contains(dns_ptr.alias()) {
                         let mut instance_found = false;
                         let mut new_event = None;
@@ -2370,7 +2430,13 @@ impl Zeroconf {
             self.add_pending_resolve(instance);
         }
 
-        self.notify_service_removal(removed_instances);
+        if !removed_instances.is_empty() {
+            debug!(
+                "resolve_updated_instances: removed {}",
+                &removed_instances.len()
+            );
+            self.notify_service_removal(removed_instances);
+        }
     }
 
     /// Handle incoming query packets, figure out whether and what to respond.
@@ -2564,6 +2630,7 @@ impl Zeroconf {
     }
 
     /// Sends service removal event to listeners for expired service records.
+    /// `expired`: map of service type domain to set of instance names.
     fn notify_service_removal(&self, expired: HashMap<String, HashSet<String>>) {
         for (ty_domain, sender) in self.service_queriers.iter() {
             if let Some(instances) = expired.get(ty_domain) {
@@ -3276,6 +3343,10 @@ enum DaemonOption {
     MulticastLoopV4(bool),
     MulticastLoopV6(bool),
     UseServiceDetailed(bool),
+    #[cfg(test)]
+    TestDownInterface(String),
+    #[cfg(test)]
+    TestUpInterface(String),
 }
 
 /// The length of Service Domain name supported in this lib.
@@ -3877,7 +3948,7 @@ mod tests {
     };
     use std::{
         net::{SocketAddr, SocketAddrV4},
-        time::Duration,
+        time::{Duration, SystemTime},
     };
     use test_log::test;
 
@@ -4319,5 +4390,101 @@ mod tests {
 
         // Check TTL is set properly for the TXT record
         assert_eq!(answer.0.get_record().get_ttl(), my_service.get_other_ttl());
+    }
+
+    #[test]
+    fn test_interface_flip() {
+        // start a server
+        let ty_domain = "_intf-flip._udp.local.";
+        let host_name = "intf_flip.local.";
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap();
+        let instance_name = now.as_micros().to_string(); // Create a unique name.
+        let port = 5200;
+
+        // Get a single IPv4 address
+        let (ip_addr1, intf_name) = my_ip_interfaces(false)
+            .iter()
+            .find(|iface| iface.ip().is_ipv4())
+            .map(|iface| (iface.ip(), iface.name.clone()))
+            .unwrap();
+
+        println!("Using interface {} with IP {}", intf_name, ip_addr1);
+
+        // Register the service.
+        let service1 =
+            ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
+                .expect("valid service info");
+        let server1 = ServiceDaemon::new().expect("failed to start server");
+        server1
+            .register(service1)
+            .expect("Failed to register service1");
+
+        // wait for the service announced.
+        std::thread::sleep(Duration::from_secs(1));
+
+        // start a client
+        let client = ServiceDaemon::new().expect("failed to start client");
+        client.use_service_detailed(true).unwrap();
+
+        let receiver = client.browse(ty_domain).unwrap();
+
+        let timeout = Duration::from_secs(3);
+        let mut got_detailed = false;
+
+        while let Ok(event) = receiver.recv_timeout(timeout) {
+            match event {
+                ServiceEvent::ServiceDetailed(_) => {
+                    got_detailed = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(got_detailed, "Should receive ServiceDetailed event");
+
+        // Set a short IP check interval to detect interface changes quickly.
+        client.set_ip_check_interval(1).unwrap();
+
+        // Now shutdown the interface and expect the client to lose the service.
+        println!("Shutting down interface {}", &intf_name);
+        client.test_down_interface(&intf_name).unwrap();
+
+        let mut got_removed = false;
+
+        while let Ok(event) = receiver.recv_timeout(timeout) {
+            match event {
+                ServiceEvent::ServiceRemoved(ty_domain, instance) => {
+                    got_removed = true;
+                    println!("removed: {ty_domain} : {instance}");
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(got_removed, "Should receive ServiceRemoved event");
+
+        println!("Bringing up interface {}", &intf_name);
+        client.test_up_interface(&intf_name).unwrap();
+        let mut got_detailed = false;
+        while let Ok(event) = receiver.recv_timeout(timeout) {
+            match event {
+                ServiceEvent::ServiceDetailed(resolved) => {
+                    got_detailed = true;
+                    println!("Received ServiceDetailed: {:?}", resolved);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            got_detailed,
+            "Should receive ServiceDetailed event after interface is back up"
+        );
+
+        server1.shutdown().unwrap();
+        client.shutdown().unwrap();
     }
 }
