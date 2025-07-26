@@ -1119,7 +1119,7 @@ impl Zeroconf {
 
         for intf in my_ifaddrs.iter() {
             if intf.ip().is_ipv4() {
-                match socket_config(&sock, &intf) {
+                match socket_config(&sock, intf) {
                     Ok(s) => s,
                     Err(e) => {
                         debug!("bind a IPv6 socket to {}: {}. Skipped.", &intf.ip(), e);
@@ -1146,7 +1146,7 @@ impl Zeroconf {
 
         for intf in my_ifaddrs.iter() {
             if intf.ip().is_ipv6() {
-                match socket_config(&sock, &intf) {
+                match socket_config(&sock, intf) {
                     Ok(s) => s,
                     Err(e) => {
                         debug!("bind a IPv6 socket to {}: {}. Skipped.", &intf.ip(), e);
@@ -2261,15 +2261,6 @@ impl Zeroconf {
     /// Deal with incoming response packets.  All answers
     /// are held in the cache, and listeners are notified.
     fn handle_response(&mut self, mut msg: DnsIncoming, intf: &Interface) {
-        if self.my_services.len() > 0 {
-            debug!(
-                "handle_response: {} questions {} answers {} authorities {} additionals",
-                msg.questions().len(),
-                msg.answers().len(),
-                &msg.authorities().len(),
-                &msg.num_additionals()
-            );
-        }
         let now = current_time_millis();
 
         // remove records that are expired.
@@ -2652,10 +2643,6 @@ impl Zeroconf {
             debug!("missing dns registry for intf {}", intf.ip());
             return;
         };
-
-        if self.my_services.len() > 0 && intf.ip().is_ipv4() {
-            debug!("receivec IPv4 question: {}", msg.questions().len());
-        }
 
         for question in msg.questions().iter() {
             let qtype = question.entry_type();
