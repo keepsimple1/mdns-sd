@@ -205,8 +205,8 @@ impl Source for MyUdpSocket {
 /// The main purpose is to help monitoring the mDNS packet traffic.
 pub type Metrics = HashMap<String, i64>;
 
-const IPV4_SOCK_EVENT_KEY: usize = 4;
-const IPV6_SOCK_EVENT_KEY: usize = 6;
+const IPV4_SOCK_EVENT_KEY: usize = 4; // Pick a key just to indicate IPv4.
+const IPV6_SOCK_EVENT_KEY: usize = 6; // Pick a key just to indicate IPv6.
 const SIGNAL_SOCK_EVENT_KEY: usize = usize::MAX - 1; // avoid to overlap with zc.poll_ids
 
 /// A daemon thread for mDNS
@@ -996,7 +996,11 @@ struct IfSelection {
 struct Zeroconf {
     /// Local interfaces.
     my_intfs: HashSet<Interface>,
+
+    /// A common socket for IPv4 interfaces.
     ipv4_sock: MyUdpSocket,
+
+    /// A common socket for IPv6 interfaces.
     ipv6_sock: MyUdpSocket,
 
     /// Local registered services， keyed by service full names.
@@ -1062,7 +1066,6 @@ struct Zeroconf {
     /// Whether to use [ServiceEvent::ServiceDetailed] instead of [ServiceEvent::ServiceResolved].
     use_service_detailed: bool,
 
-    signal_local_addr: SocketAddr,
     #[cfg(test)]
     test_down_interfaces: HashSet<String>,
 }
@@ -1117,20 +1120,6 @@ impl Zeroconf {
             .map_err(|e| e_fmt!("set set_multicast_ttl_v4 on addr: {}", e))
             .unwrap();
 
-        for intf in my_ifaddrs.iter() {
-            if intf.ip().is_ipv4() {
-                match socket_config(&sock, intf) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        debug!("bind a IPv6 socket to {}: {}. Skipped.", &intf.ip(), e);
-                        continue;
-                    }
-                }
-                dns_registry_map.insert(intf.clone(), DnsRegistry::new());
-                my_intfs.insert(intf.clone());
-            }
-        }
-
         // This clones a socket.
         let ipv4_sock = MyUdpSocket::new(sock).unwrap();
 
@@ -1144,22 +1133,29 @@ impl Zeroconf {
             .map_err(|e| e_fmt!("set set_multicast_hops_v6: {}", e))
             .unwrap();
 
-        for intf in my_ifaddrs.iter() {
-            if intf.ip().is_ipv6() {
-                match socket_config(&sock, intf) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        debug!("bind a IPv6 socket to {}: {}. Skipped.", &intf.ip(), e);
-                        continue;
-                    }
-                }
-                dns_registry_map.insert(intf.clone(), DnsRegistry::new());
-                my_intfs.insert(intf.clone());
-            }
-        }
-
         // This clones the ipv6 socket.
         let ipv6_sock = MyUdpSocket::new(sock).unwrap();
+
+        // Configure sockets to join multicast groups.
+        for intf in my_ifaddrs {
+            let sock = if intf.ip().is_ipv4() {
+                &ipv4_sock
+            } else {
+                &ipv6_sock
+            };
+
+            if let Err(e) = socket_config(&sock.pktinfo, &intf) {
+                debug!(
+                    "config socket to join multicast: {}: {}. Skipped.",
+                    &intf.ip(),
+                    e
+                );
+                continue;
+            }
+
+            dns_registry_map.insert(intf.clone(), DnsRegistry::new());
+            my_intfs.insert(intf);
+        }
 
         let monitors = Vec::new();
         let service_name_len_max = SERVICE_NAME_LEN_MAX_DEFAULT;
@@ -1180,9 +1176,6 @@ impl Zeroconf {
         ];
 
         let status = DaemonStatus::Running;
-        let signal_local_addr = signal_sock
-            .local_addr()
-            .unwrap_or(SocketAddr::from(([0, 0, 0, 0], MDNS_PORT)));
 
         debug!("my intfs len: {}", my_intfs.len());
         Self {
@@ -1210,8 +1203,6 @@ impl Zeroconf {
             multicast_loop_v4: true,
             multicast_loop_v6: true,
             use_service_detailed: false,
-
-            signal_local_addr,
 
             #[cfg(test)]
             test_down_interfaces: HashSet::new(),
@@ -1886,13 +1877,14 @@ impl Zeroconf {
         // Find the interface that received the packet.
         let pkt_if_index = pktinfo.if_index as u32;
         let Some(intf) = self.my_intfs.iter().find(|intf| {
+            // The if_index should match and the IP version should match.
             intf.index == Some(pkt_if_index) && intf.ip().is_ipv4() == pktinfo.addr_dst.is_ipv4()
         }) else {
             debug!(
                 "handle_read: no interface found for pktinfo if_index: {}",
                 pktinfo.if_index
             );
-            return true;
+            return true; // We still return true to indicate that we read something.
         };
 
         let intf = intf.clone();
@@ -2246,15 +2238,6 @@ impl Zeroconf {
                     debug!("modify poller for IPv6 socket: {}", e);
                 }
             }
-
-            // if let Err(e) =
-            //     self.poller
-            //         .registry()
-            //         .reregister(sock, ev.token(), mio::Interest::READABLE)
-            // {
-            //     debug!("modify poller for interface {}", e);
-            //     break;
-            // }
         }
     }
 
@@ -2301,11 +2284,6 @@ impl Zeroconf {
         for answer in msg.answers() {
             if answer.get_type() == RRType::PTR {
                 if self.service_queriers.contains_key(answer.get_name()) {
-                    debug!(
-                        "handle_response: PTR {} is for us at {}",
-                        answer.get_name(),
-                        self.signal_local_addr
-                    );
                     is_for_us = true;
                     break; // OK to break: at least one PTR for us.
                 } else {
@@ -2646,15 +2624,6 @@ impl Zeroconf {
 
         for question in msg.questions().iter() {
             let qtype = question.entry_type();
-
-            if intf.ip().is_ipv4() {
-                debug!(
-                    "query for PTR type {}, my services len: {} at {}",
-                    question.entry_name(),
-                    self.my_services.len(),
-                    self.signal_local_addr
-                );
-            }
 
             if qtype == RRType::PTR {
                 for service in self.my_services.values() {
