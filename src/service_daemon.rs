@@ -3680,15 +3680,9 @@ fn my_ip_interfaces(with_loopback: bool) -> Vec<Interface> {
 /// Send an outgoing mDNS query or response, and returns the packet bytes.
 fn send_dns_outgoing(out: &DnsOutgoing, intf: &Interface, sock: &PktInfoUdpSocket) -> Vec<Vec<u8>> {
     let qtype = if out.is_query() {
-        debug!("sending query: {} questions", out.questions().len());
         "query"
     } else {
         if out.answers_count() == 0 && out.additionals().is_empty() {
-            debug!(
-                "sending empty response: {} questions on {}",
-                out.questions().len(),
-                intf.ip()
-            );
             return vec![]; // no need to send empty response
         }
         "response"
@@ -3702,8 +3696,24 @@ fn send_dns_outgoing(out: &DnsOutgoing, intf: &Interface, sock: &PktInfoUdpSocke
         out.additionals().len()
     );
     match intf.ip() {
-        IpAddr::V4(ipv4) => sock.set_multicast_if_v4(&ipv4).unwrap(),
-        IpAddr::V6(_) => sock.set_multicast_if_v6(intf.index.unwrap_or(0)).unwrap(),
+        IpAddr::V4(ipv4) => {
+            if let Err(e) = sock.set_multicast_if_v4(&ipv4) {
+                debug!(
+                    "send_dns_outgoing: failed to set multicast interface for IPv4 {}: {}",
+                    ipv4, e
+                );
+                return vec![]; // cannot send without a valid interface
+            }
+        }
+        IpAddr::V6(ipv6) => {
+            if let Err(e) = sock.set_multicast_if_v6(intf.index.unwrap_or(0)) {
+                debug!(
+                    "send_dns_outgoing: failed to set multicast interface for IPv6 {}: {}",
+                    ipv6, e
+                );
+                return vec![]; // cannot send without a valid interface
+            }
+        }
     }
 
     let packet_list = out.to_data_on_wire();
