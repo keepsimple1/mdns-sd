@@ -23,8 +23,7 @@ if-addrs = { version = "0.14", features = ["link-local"] } # get local IP addres
 log = { version = "0.4", optional = true }             # logging
 mio = { version = "1.0", features = ["os-poll", "net"] }  # select/poll sockets
 socket2 = { version = "0.6", features = ["all"] }      # socket APIs
-socket-pktinfo = { git = "https://github.com/keepsimple1/socket-pktinfo", branch = "try-clone"}
-
+socket-pktinfo = "0.3.2"
 
 [dev-dependencies]
 env_logger = { version = "= 0.10.2", default-features = false, features= ["humantime"] }
