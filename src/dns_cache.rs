@@ -486,7 +486,7 @@ impl DnsCache {
 
     /// Returns a tuple of:
     /// 1. the map of instance names together with RRType(s) that are due for refresh
-    ///     its SRV or TXT records.
+    ///    its SRV or TXT records.
     /// 2. the set of new timers that are due for refresh.
     pub(crate) fn refresh_due_srv_txt(
         &mut self,

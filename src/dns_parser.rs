@@ -1125,7 +1125,7 @@ impl fmt::Debug for TxtProperty {
             |v| {
                 std::str::from_utf8(&v[..]).map_or_else(
                     |_| format!("Some({})", u8_slice_to_hex(&v[..])),
-                    |s| format!("Some(\"{}\")", s),
+                    |s| format!("Some(\"{s}\")"),
                 )
             },
         );
@@ -1983,8 +1983,7 @@ impl DnsIncoming {
 
             let Some(rr_type) = RRType::from_u16(ty) else {
                 return Err(Error::Msg(format!(
-                    "DNS incoming: question idx {} qtype unknown: {}",
-                    i, ty
+                    "DNS incoming: question idx {i} qtype unknown: {ty}",
                 )));
             };
 
@@ -2209,16 +2208,14 @@ impl DnsIncoming {
         self.offset += 1;
         if block_num != 0 {
             return Err(Error::Msg(format!(
-                "NSEC block number is not 0: {}",
-                block_num
+                "NSEC block number is not 0: {block_num}"
             )));
         }
 
         let block_len = self.data[self.offset] as usize;
         if !(1..=32).contains(&block_len) {
             return Err(Error::Msg(format!(
-                "NSEC block length must be in the range 1-32: {}",
-                block_len
+                "NSEC block length must be in the range 1-32: {block_len}"
             )));
         }
         self.offset += 1;
@@ -2343,7 +2340,7 @@ impl DnsIncoming {
                     }
 
                     name += str::from_utf8(&data[offset..ending])
-                        .map_err(|e| Error::Msg(format!("read_name: from_utf8: {}", e)))?;
+                        .map_err(|e| Error::Msg(format!("read_name: from_utf8: {e}")))?;
                     name += ".";
                     offset += length as usize;
                 }
