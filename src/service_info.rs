@@ -101,7 +101,7 @@ impl ServiceInfo {
     ) -> Result<Self> {
         let (ty_domain, sub_domain) = split_sub_domain(ty_domain);
 
-        let fullname = format!("{}.{}", my_name, ty_domain);
+        let fullname = format!("{my_name}.{ty_domain}");
         let ty_domain = ty_domain.to_string();
         let sub_domain = sub_domain.map(str::to_string);
         let server = normalize_hostname(host_name.to_string());
@@ -651,7 +651,7 @@ impl fmt::Debug for TxtProperty {
             |v| {
                 std::str::from_utf8(&v[..]).map_or_else(
                     |_| format!("Some({})", u8_slice_to_hex(&v[..])),
-                    |s| format!("Some(\"{}\")", s),
+                    |s| format!("Some(\"{s}\")"),
                 )
             },
         );

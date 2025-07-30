@@ -437,8 +437,7 @@ impl ServiceDaemon {
 
         if len_max > SERVICE_NAME_LEN_MAX_LIMIT {
             return Err(Error::Msg(format!(
-                "service name length max {} is too large",
-                len_max
+                "service name length max {len_max} is too large"
             )));
         }
 
@@ -3341,6 +3340,7 @@ fn add_answer_of_service(
 /// All possible events sent to the client from the daemon
 /// regarding service discovery.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum ServiceEvent {
     /// Started searching for a service type.
     SearchStarted(String),
@@ -3903,7 +3903,7 @@ fn name_change(original: &str) -> String {
         return format!("{original} (2)");
     };
 
-    let mut new_name = format!("{} (2)", first_part);
+    let mut new_name = format!("{first_part} (2)");
 
     // check if there is already has `(<num>)` suffix.
     if let Some(paren_pos) = first_part.rfind(" (") {
@@ -3939,7 +3939,7 @@ fn hostname_change(original: &str) -> String {
         return format!("{original}-2");
     };
 
-    let mut new_name = format!("{}-2", first_part);
+    let mut new_name = format!("{first_part}-2");
 
     // check if there is already a `-<num>` suffix
     if let Some(hyphen_pos) = first_part.rfind('-') {
