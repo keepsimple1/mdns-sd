@@ -44,7 +44,7 @@ use crate::{
     Receiver, ResolvedService, TxtProperties,
 };
 use flume::{bounded, Sender, TrySendError};
-use if_addrs::{IfAddr, Interface};
+use if_addrs::Interface;
 use mio::{event::Source, net::UdpSocket as MioUdpSocket, Interest, Poll, Registry, Token};
 use socket_pktinfo::PktInfoUdpSocket;
 use std::{
@@ -686,37 +686,6 @@ struct ReRun {
     /// UNIX timestamp in millis.
     next_time: u64,
     command: Command,
-}
-
-/// Enum to represent the IP version.
-#[derive(Debug, Eq, Hash, PartialEq)]
-enum IpVersion {
-    V4,
-    V6,
-}
-
-/// A struct to track multicast send status for a network interface.
-#[derive(Debug, Eq, Hash, PartialEq)]
-struct MulticastSendTracker {
-    intf_index: u32,
-    ip_version: IpVersion,
-}
-
-/// Returns the multicast send tracker if the interface index is valid
-fn multicast_send_tracker(intf: &Interface) -> Option<MulticastSendTracker> {
-    match intf.index {
-        Some(index) => {
-            let ip_ver = match intf.addr {
-                IfAddr::V4(_) => IpVersion::V4,
-                IfAddr::V6(_) => IpVersion::V6,
-            };
-            Some(MulticastSendTracker {
-                intf_index: index,
-                ip_version: ip_ver,
-            })
-        }
-        None => None,
-    }
 }
 
 /// Specify kinds of interfaces. It is used to enable or to disable interfaces in the daemon.
@@ -1578,18 +1547,9 @@ impl Zeroconf {
     /// Returns the list of interface IPs that sent out the announcement.
     fn send_unsolicited_response(&mut self, info: &mut ServiceInfo) -> Vec<IpAddr> {
         let mut outgoing_addrs = Vec::new();
-        // Send the announcement on one interface per ip version.
-        let mut multicast_sent_trackers = HashSet::new();
-
         let mut outgoing_intfs = Vec::new();
 
         for intf in self.my_intfs.iter() {
-            if let Some(tracker) = multicast_send_tracker(intf) {
-                if multicast_sent_trackers.contains(&tracker) {
-                    continue; // No need to send again on the same interface with same ip version.
-                }
-            }
-
             let dns_registry = match self.dns_registry_map.get_mut(intf) {
                 Some(registry) => registry,
                 None => self
@@ -1605,9 +1565,6 @@ impl Zeroconf {
             };
 
             if announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo) {
-                if let Some(tracker) = multicast_send_tracker(intf) {
-                    multicast_sent_trackers.insert(tracker);
-                }
                 outgoing_addrs.push(intf.ip());
                 outgoing_intfs.push(intf.clone());
 
@@ -1823,16 +1780,7 @@ impl Zeroconf {
             }
         }
 
-        // Send the query on one interface per ip version.
-        let mut multicast_sent_trackers = HashSet::new();
         for intf in self.my_intfs.iter() {
-            if let Some(tracker) = multicast_send_tracker(intf) {
-                if multicast_sent_trackers.contains(&tracker) {
-                    continue; // no need to send query the same interface with same ip version.
-                }
-                multicast_sent_trackers.insert(tracker);
-            }
-
             let sock = if intf.ip().is_ipv4() {
                 &self.ipv4_sock
             } else {
@@ -3053,16 +3001,8 @@ impl Zeroconf {
             }
             Some((_k, info)) => {
                 let mut timers = Vec::new();
-                // Send one unregister per interface and ip version
-                let mut multicast_sent_trackers = HashSet::new();
 
                 for intf in self.my_intfs.iter() {
-                    if let Some(tracker) = multicast_send_tracker(intf) {
-                        if multicast_sent_trackers.contains(&tracker) {
-                            continue; // no need to send unregister the same interface with same ip version.
-                        }
-                        multicast_sent_trackers.insert(tracker);
-                    }
                     let sock = if intf.ip().is_ipv4() {
                         &self.ipv4_sock
                     } else {
