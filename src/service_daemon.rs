@@ -570,9 +570,9 @@ impl ServiceDaemon {
     }
 
     fn daemon_thread(signal_sock: MioUdpSocket, poller: Poll, receiver: Receiver<Command>) {
-        let zc = Zeroconf::new(signal_sock, poller);
+        let mut zc = Zeroconf::new(signal_sock, poller);
 
-        if let Some(cmd) = Self::run(zc, receiver) {
+        if let Some(cmd) = zc.run(receiver) {
             match cmd {
                 Command::Exit(resp_s) => {
                     // It is guaranteed that the receiver already dropped,
@@ -584,176 +584,6 @@ impl ServiceDaemon {
                 _ => {
                     debug!("Unexpected command: {:?}", cmd);
                 }
-            }
-        }
-    }
-
-    /// The main event loop of the daemon thread
-    ///
-    /// In each round, it will:
-    /// 1. select the listening sockets with a timeout.
-    /// 2. process the incoming packets if any.
-    /// 3. try_recv on its channel and execute commands.
-    /// 4. announce its registered services.
-    /// 5. process retransmissions if any.
-    fn run(mut zc: Zeroconf, receiver: Receiver<Command>) -> Option<Command> {
-        // Add the daemon's signal socket to the poller.
-        if let Err(e) = zc.poller.registry().register(
-            &mut zc.signal_sock,
-            mio::Token(SIGNAL_SOCK_EVENT_KEY),
-            mio::Interest::READABLE,
-        ) {
-            debug!("failed to add signal socket to the poller: {}", e);
-            return None;
-        }
-
-        if let Err(e) = zc.poller.registry().register(
-            &mut zc.ipv4_sock,
-            mio::Token(IPV4_SOCK_EVENT_KEY),
-            mio::Interest::READABLE,
-        ) {
-            debug!("failed to register ipv4 socket: {}", e);
-            return None;
-        }
-
-        if let Err(e) = zc.poller.registry().register(
-            &mut zc.ipv6_sock,
-            mio::Token(IPV6_SOCK_EVENT_KEY),
-            mio::Interest::READABLE,
-        ) {
-            debug!("failed to register ipv6 socket: {}", e);
-            return None;
-        }
-
-        // Setup timer for IP checks.
-        let mut next_ip_check = if zc.ip_check_interval > 0 {
-            current_time_millis() + zc.ip_check_interval
-        } else {
-            0
-        };
-
-        if next_ip_check > 0 {
-            zc.add_timer(next_ip_check);
-        }
-
-        // Start the run loop.
-
-        let mut events = mio::Events::with_capacity(1024);
-        loop {
-            let now = current_time_millis();
-
-            let earliest_timer = zc.peek_earliest_timer();
-            let timeout = earliest_timer.map(|timer| {
-                // If `timer` already passed, set `timeout` to be 1ms.
-                let millis = if timer > now { timer - now } else { 1 };
-                Duration::from_millis(millis)
-            });
-
-            // Process incoming packets, command events and optional timeout.
-            events.clear();
-            match zc.poller.poll(&mut events, timeout) {
-                Ok(_) => zc.handle_poller_events(&events),
-                Err(e) => debug!("failed to select from sockets: {}", e),
-            }
-
-            let now = current_time_millis();
-
-            // Remove the timers if already passed.
-            zc.pop_timers_till(now);
-
-            // Remove hostname resolvers with expired timeouts.
-            for hostname in zc
-                .hostname_resolvers
-                .clone()
-                .into_iter()
-                .filter(|(_, (_, timeout))| timeout.map(|t| now >= t).unwrap_or(false))
-                .map(|(hostname, _)| hostname)
-            {
-                trace!("hostname resolver timeout for {}", &hostname);
-                call_hostname_resolution_listener(
-                    &zc.hostname_resolvers,
-                    &hostname,
-                    HostnameResolutionEvent::SearchTimeout(hostname.to_owned()),
-                );
-                call_hostname_resolution_listener(
-                    &zc.hostname_resolvers,
-                    &hostname,
-                    HostnameResolutionEvent::SearchStopped(hostname.to_owned()),
-                );
-                zc.hostname_resolvers.remove(&hostname);
-            }
-
-            // process commands from the command channel
-            while let Ok(command) = receiver.try_recv() {
-                if matches!(command, Command::Exit(_)) {
-                    zc.status = DaemonStatus::Shutdown;
-                    return Some(command);
-                }
-                zc.exec_command(command, false);
-            }
-
-            // check for repeated commands and run them if their time is up.
-            let mut i = 0;
-            while i < zc.retransmissions.len() {
-                if now >= zc.retransmissions[i].next_time {
-                    let rerun = zc.retransmissions.remove(i);
-                    zc.exec_command(rerun.command, true);
-                } else {
-                    i += 1;
-                }
-            }
-
-            // Refresh cached service records with active queriers
-            zc.refresh_active_services();
-
-            // Refresh cached A/AAAA records with active queriers
-            let mut query_count = 0;
-            for (hostname, _sender) in zc.hostname_resolvers.iter() {
-                for (hostname, ip_addr) in
-                    zc.cache.refresh_due_hostname_resolutions(hostname).iter()
-                {
-                    zc.send_query(hostname, ip_address_rr_type(&ip_addr.to_ip_addr()));
-                    query_count += 1;
-                }
-            }
-
-            zc.increase_counter(Counter::CacheRefreshAddr, query_count);
-
-            // check and evict expired records in our cache
-            let now = current_time_millis();
-
-            // Notify service listeners about the expired records.
-            let expired_services = zc.cache.evict_expired_services(now);
-            if !expired_services.is_empty() {
-                debug!(
-                    "run: send {} service removal to listeners",
-                    expired_services.len()
-                );
-                zc.notify_service_removal(expired_services);
-            }
-
-            // Notify hostname listeners about the expired records.
-            let expired_addrs = zc.cache.evict_expired_addr(now);
-            for (hostname, addrs) in expired_addrs {
-                call_hostname_resolution_listener(
-                    &zc.hostname_resolvers,
-                    &hostname,
-                    HostnameResolutionEvent::AddressesRemoved(hostname.clone(), addrs),
-                );
-                let instances = zc.cache.get_instances_on_host(&hostname);
-                let instance_set: HashSet<String> = instances.into_iter().collect();
-                zc.resolve_updated_instances(&instance_set);
-            }
-
-            // Send out probing queries.
-            zc.probing_handler();
-
-            // check IP changes if next_ip_check is reached.
-            if now >= next_ip_check && next_ip_check > 0 {
-                next_ip_check = now + zc.ip_check_interval;
-                zc.add_timer(next_ip_check);
-
-                zc.check_ip_changes();
             }
         }
     }
@@ -1205,6 +1035,176 @@ impl Zeroconf {
 
             #[cfg(test)]
             test_down_interfaces: HashSet::new(),
+        }
+    }
+
+    /// The main event loop of the daemon thread
+    ///
+    /// In each round, it will:
+    /// 1. select the listening sockets with a timeout.
+    /// 2. process the incoming packets if any.
+    /// 3. try_recv on its channel and execute commands.
+    /// 4. announce its registered services.
+    /// 5. process retransmissions if any.
+    fn run(&mut self, receiver: Receiver<Command>) -> Option<Command> {
+        // Add the daemon's signal socket to the poller.
+        if let Err(e) = self.poller.registry().register(
+            &mut self.signal_sock,
+            mio::Token(SIGNAL_SOCK_EVENT_KEY),
+            mio::Interest::READABLE,
+        ) {
+            debug!("failed to add signal socket to the poller: {}", e);
+            return None;
+        }
+
+        if let Err(e) = self.poller.registry().register(
+            &mut self.ipv4_sock,
+            mio::Token(IPV4_SOCK_EVENT_KEY),
+            mio::Interest::READABLE,
+        ) {
+            debug!("failed to register ipv4 socket: {}", e);
+            return None;
+        }
+
+        if let Err(e) = self.poller.registry().register(
+            &mut self.ipv6_sock,
+            mio::Token(IPV6_SOCK_EVENT_KEY),
+            mio::Interest::READABLE,
+        ) {
+            debug!("failed to register ipv6 socket: {}", e);
+            return None;
+        }
+
+        // Setup timer for IP checks.
+        let mut next_ip_check = if self.ip_check_interval > 0 {
+            current_time_millis() + self.ip_check_interval
+        } else {
+            0
+        };
+
+        if next_ip_check > 0 {
+            self.add_timer(next_ip_check);
+        }
+
+        // Start the run loop.
+
+        let mut events = mio::Events::with_capacity(1024);
+        loop {
+            let now = current_time_millis();
+
+            let earliest_timer = self.peek_earliest_timer();
+            let timeout = earliest_timer.map(|timer| {
+                // If `timer` already passed, set `timeout` to be 1ms.
+                let millis = if timer > now { timer - now } else { 1 };
+                Duration::from_millis(millis)
+            });
+
+            // Process incoming packets, command events and optional timeout.
+            events.clear();
+            match self.poller.poll(&mut events, timeout) {
+                Ok(_) => self.handle_poller_events(&events),
+                Err(e) => debug!("failed to select from sockets: {}", e),
+            }
+
+            let now = current_time_millis();
+
+            // Remove the timers if already passed.
+            self.pop_timers_till(now);
+
+            // Remove hostname resolvers with expired timeouts.
+            for hostname in self
+                .hostname_resolvers
+                .clone()
+                .into_iter()
+                .filter(|(_, (_, timeout))| timeout.map(|t| now >= t).unwrap_or(false))
+                .map(|(hostname, _)| hostname)
+            {
+                trace!("hostname resolver timeout for {}", &hostname);
+                call_hostname_resolution_listener(
+                    &self.hostname_resolvers,
+                    &hostname,
+                    HostnameResolutionEvent::SearchTimeout(hostname.to_owned()),
+                );
+                call_hostname_resolution_listener(
+                    &self.hostname_resolvers,
+                    &hostname,
+                    HostnameResolutionEvent::SearchStopped(hostname.to_owned()),
+                );
+                self.hostname_resolvers.remove(&hostname);
+            }
+
+            // process commands from the command channel
+            while let Ok(command) = receiver.try_recv() {
+                if matches!(command, Command::Exit(_)) {
+                    self.status = DaemonStatus::Shutdown;
+                    return Some(command);
+                }
+                self.exec_command(command, false);
+            }
+
+            // check for repeated commands and run them if their time is up.
+            let mut i = 0;
+            while i < self.retransmissions.len() {
+                if now >= self.retransmissions[i].next_time {
+                    let rerun = self.retransmissions.remove(i);
+                    self.exec_command(rerun.command, true);
+                } else {
+                    i += 1;
+                }
+            }
+
+            // Refresh cached service records with active queriers
+            self.refresh_active_services();
+
+            // Refresh cached A/AAAA records with active queriers
+            let mut query_count = 0;
+            for (hostname, _sender) in self.hostname_resolvers.iter() {
+                for (hostname, ip_addr) in
+                    self.cache.refresh_due_hostname_resolutions(hostname).iter()
+                {
+                    self.send_query(hostname, ip_address_rr_type(&ip_addr.to_ip_addr()));
+                    query_count += 1;
+                }
+            }
+
+            self.increase_counter(Counter::CacheRefreshAddr, query_count);
+
+            // check and evict expired records in our cache
+            let now = current_time_millis();
+
+            // Notify service listeners about the expired records.
+            let expired_services = self.cache.evict_expired_services(now);
+            if !expired_services.is_empty() {
+                debug!(
+                    "run: send {} service removal to listeners",
+                    expired_services.len()
+                );
+                self.notify_service_removal(expired_services);
+            }
+
+            // Notify hostname listeners about the expired records.
+            let expired_addrs = self.cache.evict_expired_addr(now);
+            for (hostname, addrs) in expired_addrs {
+                call_hostname_resolution_listener(
+                    &self.hostname_resolvers,
+                    &hostname,
+                    HostnameResolutionEvent::AddressesRemoved(hostname.clone(), addrs),
+                );
+                let instances = self.cache.get_instances_on_host(&hostname);
+                let instance_set: HashSet<String> = instances.into_iter().collect();
+                self.resolve_updated_instances(&instance_set);
+            }
+
+            // Send out probing queries.
+            self.probing_handler();
+
+            // check IP changes if next_ip_check is reached.
+            if now >= next_ip_check && next_ip_check > 0 {
+                next_ip_check = now + self.ip_check_interval;
+                self.add_timer(next_ip_check);
+
+                self.check_ip_changes();
+            }
         }
     }
 
