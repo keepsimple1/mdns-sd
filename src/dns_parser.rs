@@ -134,7 +134,7 @@ impl fmt::Display for HostIp {
             HostIp::V4(v4) => write!(f, "{}", v4.addr),
             HostIp::V6(v6) => {
                 if v6.scope_id.index != 0 {
-                    write!(f, "{}%{}", v6.addr, v6.scope_id.index)
+                    write!(f, "{}%{}", v6.addr, v6.scope_id.name)
                 } else {
                     write!(f, "{}", v6.addr)
                 }
@@ -623,10 +623,10 @@ pub trait DnsRecordExt: fmt::Debug {
 
 /// Resource Record for IPv4 address or IPv6 address.
 #[derive(Debug, Clone)]
-pub struct DnsAddress {
+pub(crate) struct DnsAddress {
     pub(crate) record: DnsRecord,
     address: IpAddr,
-    interface_id: InterfaceId,
+    pub(crate) interface_id: InterfaceId,
 }
 
 impl DnsAddress {
