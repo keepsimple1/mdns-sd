@@ -2505,7 +2505,7 @@ fn test_use_service_detailed() {
                 got_resolved = true;
                 break;
             }
-            ServiceEvent::ServiceDetailed(_) => {
+            ServiceEvent::ServiceData(_) => {
                 got_detailed = true;
                 break;
             }
@@ -2530,7 +2530,7 @@ fn test_use_service_detailed() {
 
     while let Ok(event) = browse_chan.recv_timeout(timeout) {
         match event {
-            ServiceEvent::ServiceDetailed(resolved) => {
+            ServiceEvent::ServiceData(resolved) => {
                 got_detailed = true;
                 println!("address: {:?}", resolved.addresses);
                 let first_addr = resolved.addresses.iter().next().unwrap();
@@ -2610,7 +2610,7 @@ fn test_use_service_detailed_v6() {
                 got_resolved = true;
                 break;
             }
-            ServiceEvent::ServiceDetailed(_) => {
+            ServiceEvent::ServiceData(_) => {
                 got_detailed = true;
                 break;
             }
@@ -2635,7 +2635,7 @@ fn test_use_service_detailed_v6() {
 
     while let Ok(event) = browse_chan.recv_timeout(timeout) {
         match event {
-            ServiceEvent::ServiceDetailed(resolved) => {
+            ServiceEvent::ServiceData(resolved) => {
                 got_detailed = true;
                 assert!(
                     resolved.addresses.len() > 0,

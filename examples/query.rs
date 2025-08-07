@@ -38,7 +38,7 @@ fn main() {
     let now = std::time::Instant::now();
     while let Ok(event) = receiver.recv() {
         match event {
-            ServiceEvent::ServiceDetailed(info) => {
+            ServiceEvent::ServiceData(info) => {
                 println!(
                     "At {:?}: Resolved a new service: {}\n host: {}\n port: {}",
                     now.elapsed(),

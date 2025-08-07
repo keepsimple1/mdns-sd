@@ -2037,9 +2037,8 @@ impl Zeroconf {
                             Ok(resolved_service) => {
                                 if resolved_service.is_valid() {
                                     debug!("Resolved service from cache: {}", ptr.alias());
-                                    new_event = Some(ServiceEvent::ServiceDetailed(Box::new(
-                                        resolved_service,
-                                    )));
+                                    new_event =
+                                        Some(ServiceEvent::ServiceData(Box::new(resolved_service)));
                                 } else {
                                     debug!("Resolved service is not valid: {}", ptr.alias());
                                 }
@@ -2615,8 +2614,7 @@ impl Zeroconf {
                                 );
                                 instance_found = true;
                                 if resolved.is_valid() {
-                                    new_event =
-                                        Some(ServiceEvent::ServiceDetailed(Box::new(resolved)));
+                                    new_event = Some(ServiceEvent::ServiceData(Box::new(resolved)));
                                 } else {
                                     debug!("Resolved service is not valid: {}", dns_ptr.alias());
                                 }
@@ -3470,7 +3468,7 @@ pub enum ServiceEvent {
 
     /// Resolved a service instance in a ResolvedService struct.
     /// Must call [ServiceDaemon::use_service_detailed] to receive this event.
-    ServiceDetailed(Box<ResolvedService>),
+    ServiceData(Box<ResolvedService>),
 
     /// A service instance (service_type, fullname) was removed.
     ServiceRemoved(String, String),
@@ -4813,7 +4811,7 @@ mod tests {
 
         while let Ok(event) = receiver.recv_timeout(timeout) {
             match event {
-                ServiceEvent::ServiceDetailed(_) => {
+                ServiceEvent::ServiceData(_) => {
                     println!("Received ServiceDetailed event");
                     got_detailed = true;
                     break;
@@ -4850,7 +4848,7 @@ mod tests {
         let mut got_detailed = false;
         while let Ok(event) = receiver.recv_timeout(timeout) {
             match event {
-                ServiceEvent::ServiceDetailed(resolved) => {
+                ServiceEvent::ServiceData(resolved) => {
                     got_detailed = true;
                     println!("Received ServiceDetailed: {:?}", resolved);
                     break;
