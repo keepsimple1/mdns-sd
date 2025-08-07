@@ -4,9 +4,9 @@
 use crate::log::debug;
 use crate::{
     dns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, HostIp, RRType},
-    Error, Result,
+    Error, InterfaceId, Result,
 };
-use if_addrs::{IfAddr, Interface};
+use if_addrs::IfAddr;
 use std::{
     cmp,
     collections::{HashMap, HashSet},
@@ -19,6 +19,38 @@ use std::{
 /// Default TTL values in seconds
 const DNS_HOST_TTL: u32 = 120; // 2 minutes for host records (A, SRV etc) per RFC6762
 const DNS_OTHER_TTL: u32 = 4500; // 75 minutes for non-host records (PTR, TXT etc) per RFC6762
+
+/// Represents a network interface.
+#[derive(Debug)]
+pub(crate) struct MyIntf {
+    /// The name of the interface.
+    pub(crate) name: String,
+
+    /// Unique index assigned by the OS. Used by IPv6 for its scope_id.
+    pub(crate) index: u32,
+
+    /// One interface can have multiple IPv4 addresses and/or multiple IPv6 addresses.
+    pub(crate) addrs: HashSet<IfAddr>,
+}
+
+impl MyIntf {
+    pub(crate) fn next_ifaddr_v4(&self) -> Option<&IfAddr> {
+        self.addrs.iter().find(|a| a.ip().is_ipv4())
+    }
+
+    pub(crate) fn next_ifaddr_v6(&self) -> Option<&IfAddr> {
+        self.addrs.iter().find(|a| a.ip().is_ipv6())
+    }
+}
+
+impl From<&MyIntf> for InterfaceId {
+    fn from(my_intf: &MyIntf) -> Self {
+        InterfaceId {
+            name: my_intf.name.clone(),
+            index: my_intf.index,
+        }
+    }
+}
 
 /// Complete info about a Service Instance.
 ///
@@ -43,7 +75,7 @@ pub struct ServiceInfo {
     txt_properties: TxtProperties,
     addr_auto: bool, // Let the system update addresses automatically.
 
-    status: HashMap<Interface, ServiceStatus>,
+    status: HashMap<u32, ServiceStatus>, // keyed by interface index.
 
     /// Whether we need to probe names before announcing this service.
     requires_probe: bool,
@@ -286,12 +318,19 @@ impl ServiceInfo {
         self.weight
     }
 
-    /// Returns a list of addresses that are in the same LAN as
-    /// the interface `intf`.
-    pub(crate) fn get_addrs_on_intf(&self, intf: &Interface) -> Vec<IpAddr> {
+    /// Returns all addresses published
+    pub(crate) fn get_addrs_on_my_intf_v4(&self, my_intf: &MyIntf) -> Vec<IpAddr> {
         self.addresses
             .iter()
-            .filter(|a| valid_ip_on_intf(a, intf))
+            .filter(|a| a.is_ipv4() && my_intf.addrs.iter().any(|x| valid_ip_on_intf(a, x)))
+            .copied()
+            .collect()
+    }
+
+    pub(crate) fn get_addrs_on_my_intf_v6(&self, my_intf: &MyIntf) -> Vec<IpAddr> {
+        self.addresses
+            .iter()
+            .filter(|a| a.is_ipv6() && my_intf.addrs.iter().any(|x| valid_ip_on_intf(a, x)))
             .copied()
             .collect()
     }
@@ -352,20 +391,20 @@ impl ServiceInfo {
         self.other_ttl = ttl;
     }
 
-    pub(crate) fn set_status(&mut self, intf: &Interface, status: ServiceStatus) {
-        match self.status.get_mut(intf) {
+    pub(crate) fn set_status(&mut self, if_index: u32, status: ServiceStatus) {
+        match self.status.get_mut(&if_index) {
             Some(service_status) => {
                 *service_status = status;
             }
             None => {
-                self.status.entry(intf.clone()).or_insert(status);
+                self.status.entry(if_index).or_insert(status);
             }
         }
     }
 
-    pub(crate) fn get_status(&self, intf: &Interface) -> ServiceStatus {
+    pub(crate) fn get_status(&self, intf: u32) -> ServiceStatus {
         self.status
-            .get(intf)
+            .get(&intf)
             .cloned()
             .unwrap_or(ServiceStatus::Unknown)
     }
@@ -826,40 +865,19 @@ fn decode_txt_unique(txt: &[u8]) -> Vec<TxtProperty> {
 }
 
 /// Returns true if `addr` is in the same network of `intf`.
-pub(crate) fn valid_ip_on_intf(addr: &IpAddr, intf: &Interface) -> bool {
-    match (addr, &intf.addr) {
-        (IpAddr::V4(addr), IfAddr::V4(intf)) => {
-            let netmask = u32::from(intf.netmask);
-            let intf_net = u32::from(intf.ip) & netmask;
+pub(crate) fn valid_ip_on_intf(addr: &IpAddr, if_addr: &IfAddr) -> bool {
+    match (addr, if_addr) {
+        (IpAddr::V4(addr), IfAddr::V4(if_v4)) => {
+            let netmask = u32::from(if_v4.netmask);
+            let intf_net = u32::from(if_v4.ip) & netmask;
             let addr_net = u32::from(*addr) & netmask;
             addr_net == intf_net
         }
-        (IpAddr::V6(addr), IfAddr::V6(intf)) => {
-            let netmask = u128::from(intf.netmask);
-            let intf_net = u128::from(intf.ip) & netmask;
+        (IpAddr::V6(addr), IfAddr::V6(if_v6)) => {
+            let netmask = u128::from(if_v6.netmask);
+            let intf_net = u128::from(if_v6.ip) & netmask;
             let addr_net = u128::from(*addr) & netmask;
             addr_net == intf_net
-        }
-        _ => false,
-    }
-}
-
-/// Returns true if `addr_a` and `addr_b` are in the same network as `intf`.
-pub fn valid_two_addrs_on_intf(addr_a: &IpAddr, addr_b: &IpAddr, intf: &Interface) -> bool {
-    match (addr_a, addr_b, &intf.addr) {
-        (IpAddr::V4(ipv4_a), IpAddr::V4(ipv4_b), IfAddr::V4(intf)) => {
-            let netmask = u32::from(intf.netmask);
-            let intf_net = u32::from(intf.ip) & netmask;
-            let net_a = u32::from(*ipv4_a) & netmask;
-            let net_b = u32::from(*ipv4_b) & netmask;
-            net_a == intf_net && net_b == intf_net
-        }
-        (IpAddr::V6(ipv6_a), IpAddr::V6(ipv6_b), IfAddr::V6(intf)) => {
-            let netmask = u128::from(intf.netmask);
-            let intf_net = u128::from(intf.ip) & netmask;
-            let net_a = u128::from(*ipv6_a) & netmask;
-            let net_b = u128::from(*ipv6_b) & netmask;
-            net_a == intf_net && net_b == intf_net
         }
         _ => false,
     }
@@ -1192,11 +1210,7 @@ impl ResolvedService {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        decode_txt, encode_txt, u8_slice_to_hex, valid_two_addrs_on_intf, ServiceInfo, TxtProperty,
-    };
-    use if_addrs::{IfAddr, Ifv4Addr, Ifv6Addr, Interface};
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use super::{decode_txt, encode_txt, u8_slice_to_hex, ServiceInfo, TxtProperty};
 
     #[test]
     fn test_txt_encode_decode() {
@@ -1358,62 +1372,5 @@ mod tests {
         assert_eq!(decoded.len(), 1);
         // Test that the key of the property we parsed is "key1"
         assert_eq!(decoded[0].key, "key1");
-    }
-
-    #[test]
-    fn test_valid_two_addrs_on_intf() {
-        // test IPv4
-
-        let ipv4_netmask = Ipv4Addr::new(192, 168, 1, 0);
-        let ipv4_intf_addr = IfAddr::V4(Ifv4Addr {
-            ip: Ipv4Addr::new(192, 168, 1, 10),
-            netmask: ipv4_netmask,
-            prefixlen: 24,
-            broadcast: None,
-        });
-        let ipv4_intf = Interface {
-            name: "e0".to_string(),
-            addr: ipv4_intf_addr,
-            index: Some(1),
-            oper_status: if_addrs::IfOperStatus::Up,
-            #[cfg(windows)]
-            adapter_name: "ethernet".to_string(),
-        };
-        let ipv4_a = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
-        let ipv4_b = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
-
-        let result = valid_two_addrs_on_intf(&ipv4_a, &ipv4_b, &ipv4_intf);
-        assert!(result);
-
-        let ipv4_c = IpAddr::V4(Ipv4Addr::new(172, 17, 0, 1));
-        let result = valid_two_addrs_on_intf(&ipv4_a, &ipv4_c, &ipv4_intf);
-        assert!(!result);
-
-        // test IPv6 (generated by AI)
-
-        let ipv6_netmask = Ipv6Addr::new(0xffff, 0xffff, 0, 0, 0, 0, 0, 0); // Equivalent to /32 prefix length
-        let ipv6_intf_addr = IfAddr::V6(Ifv6Addr {
-            ip: Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
-            netmask: ipv6_netmask,
-            prefixlen: 32,
-            broadcast: None,
-        });
-        let ipv6_intf = Interface {
-            name: "eth0".to_string(),
-            addr: ipv6_intf_addr,
-            index: Some(2),
-            oper_status: if_addrs::IfOperStatus::Up,
-            #[cfg(windows)]
-            adapter_name: "ethernet".to_string(),
-        };
-        let ipv6_a = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
-        let ipv6_b = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2));
-
-        let result = valid_two_addrs_on_intf(&ipv6_a, &ipv6_b, &ipv6_intf);
-        assert!(result); // Expect true since both addresses are in the same subnet
-
-        let ipv6_c = IpAddr::V6(Ipv6Addr::new(0x2002, 0xdb8, 0, 0, 0, 0, 0, 1));
-        let result = valid_two_addrs_on_intf(&ipv6_a, &ipv6_c, &ipv6_intf);
-        assert!(!result); // Expect false since addresses are in different subnets
     }
 }
