@@ -20,10 +20,16 @@ use std::{
 const DNS_HOST_TTL: u32 = 120; // 2 minutes for host records (A, SRV etc) per RFC6762
 const DNS_OTHER_TTL: u32 = 4500; // 75 minutes for non-host records (PTR, TXT etc) per RFC6762
 
+/// Represents a network interface.
 #[derive(Debug)]
 pub(crate) struct MyIntf {
+    /// The name of the interface.
     pub(crate) name: String,
+
+    /// Unique index assigned by the OS. Used by IPv6 for its scope_id.
     pub(crate) index: u32,
+
+    /// One interface can have multiple IPv4 addresses and/or multiple IPv6 addresses.
     pub(crate) addrs: HashSet<IfAddr>,
 }
 

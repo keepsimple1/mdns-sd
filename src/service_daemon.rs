@@ -868,7 +868,7 @@ struct Zeroconf {
 }
 
 /// Join the multicast group for the given interface.
-fn socket_config(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<()> {
+fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<()> {
     let intf_ip = &intf.ip();
     match intf_ip {
         IpAddr::V4(ip) => {
@@ -941,7 +941,7 @@ impl Zeroconf {
                 &ipv6_sock
             };
 
-            if let Err(e) = socket_config(&sock.pktinfo, &intf) {
+            if let Err(e) = join_multicast_group(&sock.pktinfo, &intf) {
                 debug!(
                     "config socket to join multicast: {}: {e}. Skipped.",
                     &intf.ip()
@@ -950,7 +950,7 @@ impl Zeroconf {
 
             let if_index = intf.index.unwrap_or(0);
 
-            // Add a DnsRegistry for this interface if not already present.
+            // Add this interface address if not already present.
             dns_registry_map
                 .entry(if_index)
                 .or_insert_with(DnsRegistry::new);
@@ -1541,7 +1541,7 @@ impl Zeroconf {
                 // If intf has a new address, add it to the existing interface.
                 let my_intf = entry.get_mut();
                 if !my_intf.addrs.contains(&intf.addr) {
-                    if let Err(e) = socket_config(&sock.pktinfo, &intf) {
+                    if let Err(e) = join_multicast_group(&sock.pktinfo, &intf) {
                         debug!("add_interface: socket_config {}: {e}", &intf.name);
                     }
                     my_intf.addrs.insert(intf.addr.clone());
@@ -1549,7 +1549,7 @@ impl Zeroconf {
                 }
             }
             Entry::Vacant(entry) => {
-                if let Err(e) = socket_config(&sock.pktinfo, &intf) {
+                if let Err(e) = join_multicast_group(&sock.pktinfo, &intf) {
                     debug!("add_interface: socket_config {}: {e}. Skipped.", &intf.name);
                     return;
                 }
