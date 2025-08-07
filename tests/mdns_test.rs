@@ -2523,7 +2523,7 @@ fn test_use_service_detailed() {
     );
 
     // Now enable use_resolved_service and test for ServiceDetailed
-    client.use_service_detailed(true).unwrap();
+    client.use_service_data(true).unwrap();
     let browse_chan = client.browse(ty_domain).unwrap();
     let mut got_detailed = false;
     let mut got_resolved = false;
@@ -2628,7 +2628,7 @@ fn test_use_service_detailed_v6() {
     );
 
     // Now enable use_resolved_service and test for ServiceDetailed
-    client.use_service_detailed(true).unwrap();
+    client.use_service_data(true).unwrap();
     let browse_chan = client.browse(ty_domain).unwrap();
     let mut got_detailed = false;
     let mut got_resolved = false;

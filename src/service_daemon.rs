@@ -545,11 +545,11 @@ impl ServiceDaemon {
         self.send_cmd(Command::SetOption(DaemonOption::MulticastLoopV6(on)))
     }
 
-    /// Enable or disable the use of [ServiceEvent::ServiceDetailed] instead of [ServiceEvent::ServiceResolved].
+    /// Enable or disable the use of [ServiceEvent::ServiceData] instead of [ServiceEvent::ServiceResolved].
     ///
     /// This is recommended for clients using IPv6 as it will include scope_id in the address.
-    pub fn use_service_detailed(&self, on: bool) -> Result<()> {
-        self.send_cmd(Command::SetOption(DaemonOption::UseServiceDetailed(on)))
+    pub fn use_service_data(&self, on: bool) -> Result<()> {
+        self.send_cmd(Command::SetOption(DaemonOption::UseServiceData(on)))
     }
 
     /// Proactively confirms whether a service instance still valid.
@@ -1196,7 +1196,7 @@ impl Zeroconf {
             DaemonOption::DisableInterface(if_kind) => self.disable_interface(if_kind),
             DaemonOption::MulticastLoopV4(on) => self.set_multicast_loop_v4(on),
             DaemonOption::MulticastLoopV6(on) => self.set_multicast_loop_v6(on),
-            DaemonOption::UseServiceDetailed(on) => self.use_service_detailed = on,
+            DaemonOption::UseServiceData(on) => self.use_service_detailed = on,
             #[cfg(test)]
             DaemonOption::TestDownInterface(ifname) => {
                 self.test_down_interfaces.insert(ifname);
@@ -3463,7 +3463,7 @@ pub enum ServiceEvent {
 
     /// Resolved a service instance with detailed info.
     ///
-    /// Will be deprecated in the future by [ServiceEvent::ServiceDetailed].
+    /// Will be deprecated in the future by [ServiceEvent::ServiceData].
     ServiceResolved(ServiceInfo),
 
     /// Resolved a service instance in a ResolvedService struct.
@@ -3633,7 +3633,7 @@ enum DaemonOption {
     DisableInterface(Vec<IfKind>),
     MulticastLoopV4(bool),
     MulticastLoopV6(bool),
-    UseServiceDetailed(bool),
+    UseServiceData(bool),
     #[cfg(test)]
     TestDownInterface(String),
     #[cfg(test)]
@@ -4802,7 +4802,7 @@ mod tests {
 
         // start a client
         let client = ServiceDaemon::new().expect("failed to start client");
-        client.use_service_detailed(true).unwrap();
+        client.use_service_data(true).unwrap();
 
         let receiver = client.browse(ty_domain).unwrap();
 
