@@ -2464,10 +2464,10 @@ fn timed_println(msg: String) {
 }
 
 #[test]
-fn test_use_service_detailed() {
+fn test_use_service_data() {
     // start a server
-    let ty_domain = "_svc-detailed._udp.local.";
-    let host_name = "service_detailed.local.";
+    let ty_domain = "_svc-data._udp.local.";
+    let host_name = "service_data.local.";
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
@@ -2497,7 +2497,7 @@ fn test_use_service_detailed() {
     let receiver = client.browse(ty_domain).unwrap();
     let timeout = Duration::from_secs(2);
     let mut got_resolved = false;
-    let mut got_detailed = false;
+    let mut got_data = false;
 
     while let Ok(event) = receiver.recv_timeout(timeout) {
         match event {
@@ -2505,8 +2505,8 @@ fn test_use_service_detailed() {
                 got_resolved = true;
                 break;
             }
-            ServiceEvent::ServiceDetailed(_) => {
-                got_detailed = true;
+            ServiceEvent::ServiceData(_) => {
+                got_data = true;
                 break;
             }
             _ => {}
@@ -2517,21 +2517,18 @@ fn test_use_service_detailed() {
         got_resolved,
         "Should receive ServiceResolved event by default"
     );
-    assert!(
-        !got_detailed,
-        "Should not receive ServiceDetailed event by default"
-    );
+    assert!(!got_data, "Should not receive ServiceData event by default");
 
-    // Now enable use_resolved_service and test for ServiceDetailed
-    client.use_service_detailed(true).unwrap();
+    // Now enable use_resolved_service and test for ServiceData
+    client.use_service_data(true).unwrap();
     let browse_chan = client.browse(ty_domain).unwrap();
-    let mut got_detailed = false;
+    let mut got_data = false;
     let mut got_resolved = false;
 
     while let Ok(event) = browse_chan.recv_timeout(timeout) {
         match event {
-            ServiceEvent::ServiceDetailed(resolved) => {
-                got_detailed = true;
+            ServiceEvent::ServiceData(resolved) => {
+                got_data = true;
                 println!("address: {:?}", resolved.addresses);
                 let first_addr = resolved.addresses.iter().next().unwrap();
                 let HostIp::V4(ip_v4) = first_addr else {
@@ -2548,13 +2545,10 @@ fn test_use_service_detailed() {
             _ => {}
         }
     }
-    assert!(
-        got_detailed,
-        "Should receive ServiceDetailed event when enabled"
-    );
+    assert!(got_data, "Should receive ServiceData event when enabled");
     assert!(
         !got_resolved,
-        "Should not receive ServiceResolved event when detailed is enabled"
+        "Should not receive ServiceResolved event when ServiceData is enabled"
     );
 
     server1.shutdown().unwrap();
@@ -2562,10 +2556,10 @@ fn test_use_service_detailed() {
 }
 
 #[test]
-fn test_use_service_detailed_v6() {
+fn test_use_service_data_v6() {
     // start a server
-    let ty_domain = "_detailed-v6._udp.local.";
-    let host_name = "service_detailed_v6.local.";
+    let ty_domain = "_data-v6._udp.local.";
+    let host_name = "service_data_v6.local.";
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
@@ -2602,7 +2596,7 @@ fn test_use_service_detailed_v6() {
     let receiver = client.browse(ty_domain).unwrap();
     let timeout = Duration::from_secs(2);
     let mut got_resolved = false;
-    let mut got_detailed = false;
+    let mut got_data = false;
 
     while let Ok(event) = receiver.recv_timeout(timeout) {
         match event {
@@ -2610,8 +2604,8 @@ fn test_use_service_detailed_v6() {
                 got_resolved = true;
                 break;
             }
-            ServiceEvent::ServiceDetailed(_) => {
-                got_detailed = true;
+            ServiceEvent::ServiceData(_) => {
+                got_data = true;
                 break;
             }
             _ => {}
@@ -2622,21 +2616,18 @@ fn test_use_service_detailed_v6() {
         got_resolved,
         "Should receive ServiceResolved event by default"
     );
-    assert!(
-        !got_detailed,
-        "Should not receive ServiceDetailed event by default"
-    );
+    assert!(!got_data, "Should not receive ServiceData event by default");
 
-    // Now enable use_resolved_service and test for ServiceDetailed
-    client.use_service_detailed(true).unwrap();
+    // Now enable use_resolved_service and test for ServiceData
+    client.use_service_data(true).unwrap();
     let browse_chan = client.browse(ty_domain).unwrap();
-    let mut got_detailed = false;
+    let mut got_data = false;
     let mut got_resolved = false;
 
     while let Ok(event) = browse_chan.recv_timeout(timeout) {
         match event {
-            ServiceEvent::ServiceDetailed(resolved) => {
-                got_detailed = true;
+            ServiceEvent::ServiceData(resolved) => {
+                got_data = true;
                 assert!(
                     resolved.addresses.len() > 0,
                     "Should have at least one address"
@@ -2663,13 +2654,10 @@ fn test_use_service_detailed_v6() {
             _ => {}
         }
     }
-    assert!(
-        got_detailed,
-        "Should receive ServiceDetailed event when enabled"
-    );
+    assert!(got_data, "Should receive ServiceData event when enabled");
     assert!(
         !got_resolved,
-        "Should not receive ServiceResolved event when detailed is enabled"
+        "Should not receive ServiceResolved event when ServiceData is enabled"
     );
 
     server1.shutdown().unwrap();

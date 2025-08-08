@@ -545,11 +545,11 @@ impl ServiceDaemon {
         self.send_cmd(Command::SetOption(DaemonOption::MulticastLoopV6(on)))
     }
 
-    /// Enable or disable the use of [ServiceEvent::ServiceDetailed] instead of [ServiceEvent::ServiceResolved].
+    /// Enable or disable the use of [ServiceEvent::ServiceData] instead of [ServiceEvent::ServiceResolved].
     ///
     /// This is recommended for clients using IPv6 as it will include scope_id in the address.
-    pub fn use_service_detailed(&self, on: bool) -> Result<()> {
-        self.send_cmd(Command::SetOption(DaemonOption::UseServiceDetailed(on)))
+    pub fn use_service_data(&self, on: bool) -> Result<()> {
+        self.send_cmd(Command::SetOption(DaemonOption::UseServiceData(on)))
     }
 
     /// Proactively confirms whether a service instance still valid.
@@ -860,8 +860,8 @@ struct Zeroconf {
 
     multicast_loop_v6: bool,
 
-    /// Whether to use [ServiceEvent::ServiceDetailed] instead of [ServiceEvent::ServiceResolved].
-    use_service_detailed: bool,
+    /// Whether to use [ServiceEvent::ServiceData] instead of [ServiceEvent::ServiceResolved].
+    use_service_data: bool,
 
     #[cfg(test)]
     test_down_interfaces: HashSet<String>,
@@ -1011,7 +1011,7 @@ impl Zeroconf {
             resolved: HashSet::new(),
             multicast_loop_v4: true,
             multicast_loop_v6: true,
-            use_service_detailed: false,
+            use_service_data: false,
 
             #[cfg(test)]
             test_down_interfaces: HashSet::new(),
@@ -1196,7 +1196,7 @@ impl Zeroconf {
             DaemonOption::DisableInterface(if_kind) => self.disable_interface(if_kind),
             DaemonOption::MulticastLoopV4(on) => self.set_multicast_loop_v4(on),
             DaemonOption::MulticastLoopV6(on) => self.set_multicast_loop_v6(on),
-            DaemonOption::UseServiceDetailed(on) => self.use_service_detailed = on,
+            DaemonOption::UseServiceData(on) => self.use_service_data = on,
             #[cfg(test)]
             DaemonOption::TestDownInterface(ifname) => {
                 self.test_down_interfaces.insert(ifname);
@@ -2032,14 +2032,13 @@ impl Zeroconf {
             for record in records.iter().filter(|r| !r.record.expires_soon(now)) {
                 if let Some(ptr) = record.record.any().downcast_ref::<DnsPointer>() {
                     let mut new_event = None;
-                    if self.use_service_detailed {
+                    if self.use_service_data {
                         match self.resolve_service_from_cache(ty_domain, ptr.alias()) {
                             Ok(resolved_service) => {
                                 if resolved_service.is_valid() {
                                     debug!("Resolved service from cache: {}", ptr.alias());
-                                    new_event = Some(ServiceEvent::ServiceDetailed(Box::new(
-                                        resolved_service,
-                                    )));
+                                    new_event =
+                                        Some(ServiceEvent::ServiceData(Box::new(resolved_service)));
                                 } else {
                                     debug!("Resolved service is not valid: {}", ptr.alias());
                                 }
@@ -2605,7 +2604,7 @@ impl Zeroconf {
                         let mut instance_found = false;
                         let mut new_event = None;
 
-                        if self.use_service_detailed {
+                        if self.use_service_data {
                             if let Ok(resolved) =
                                 self.resolve_service_from_cache(ty_domain, dns_ptr.alias())
                             {
@@ -2615,8 +2614,7 @@ impl Zeroconf {
                                 );
                                 instance_found = true;
                                 if resolved.is_valid() {
-                                    new_event =
-                                        Some(ServiceEvent::ServiceDetailed(Box::new(resolved)));
+                                    new_event = Some(ServiceEvent::ServiceData(Box::new(resolved)));
                                 } else {
                                     debug!("Resolved service is not valid: {}", dns_ptr.alias());
                                 }
@@ -3465,12 +3463,12 @@ pub enum ServiceEvent {
 
     /// Resolved a service instance with detailed info.
     ///
-    /// Will be deprecated in the future by [ServiceEvent::ServiceDetailed].
+    /// Will be deprecated in the future by [ServiceEvent::ServiceData].
     ServiceResolved(ServiceInfo),
 
     /// Resolved a service instance in a ResolvedService struct.
-    /// Must call [ServiceDaemon::use_service_detailed] to receive this event.
-    ServiceDetailed(Box<ResolvedService>),
+    /// Must call [ServiceDaemon::use_service_data] to receive this event.
+    ServiceData(Box<ResolvedService>),
 
     /// A service instance (service_type, fullname) was removed.
     ServiceRemoved(String, String),
@@ -3635,7 +3633,7 @@ enum DaemonOption {
     DisableInterface(Vec<IfKind>),
     MulticastLoopV4(bool),
     MulticastLoopV6(bool),
-    UseServiceDetailed(bool),
+    UseServiceData(bool),
     #[cfg(test)]
     TestDownInterface(String),
     #[cfg(test)]
@@ -4804,25 +4802,25 @@ mod tests {
 
         // start a client
         let client = ServiceDaemon::new().expect("failed to start client");
-        client.use_service_detailed(true).unwrap();
+        client.use_service_data(true).unwrap();
 
         let receiver = client.browse(ty_domain).unwrap();
 
         let timeout = Duration::from_secs(3);
-        let mut got_detailed = false;
+        let mut got_data = false;
 
         while let Ok(event) = receiver.recv_timeout(timeout) {
             match event {
-                ServiceEvent::ServiceDetailed(_) => {
-                    println!("Received ServiceDetailed event");
-                    got_detailed = true;
+                ServiceEvent::ServiceData(_) => {
+                    println!("Received ServiceData event");
+                    got_data = true;
                     break;
                 }
                 _ => {}
             }
         }
 
-        assert!(got_detailed, "Should receive ServiceDetailed event");
+        assert!(got_data, "Should receive ServiceData event");
 
         // Set a short IP check interval to detect interface changes quickly.
         client.set_ip_check_interval(1).unwrap();
@@ -4847,20 +4845,20 @@ mod tests {
 
         println!("Bringing up interface {}", &intf_name);
         client.test_up_interface(&intf_name).unwrap();
-        let mut got_detailed = false;
+        let mut got_data = false;
         while let Ok(event) = receiver.recv_timeout(timeout) {
             match event {
-                ServiceEvent::ServiceDetailed(resolved) => {
-                    got_detailed = true;
-                    println!("Received ServiceDetailed: {:?}", resolved);
+                ServiceEvent::ServiceData(resolved) => {
+                    got_data = true;
+                    println!("Received ServiceData: {:?}", resolved);
                     break;
                 }
                 _ => {}
             }
         }
         assert!(
-            got_detailed,
-            "Should receive ServiceDetailed event after interface is back up"
+            got_data,
+            "Should receive ServiceData event after interface is back up"
         );
 
         server1.shutdown().unwrap();
