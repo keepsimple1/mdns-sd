@@ -1,6 +1,6 @@
 use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
-    DaemonEvent, DaemonStatus, HostIp, HostnameResolutionEvent, IfKind, IntoTxtProperties,
+    DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, IntoTxtProperties, ScopedIp,
     ServiceDaemon, ServiceEvent, ServiceInfo, TxtProperty, UnregisterStatus,
 };
 use std::collections::{HashMap, HashSet};
@@ -1331,7 +1331,7 @@ fn test_shutdown() {
 fn test_hostname_resolution() {
     let d = ServiceDaemon::new().expect("Failed to create daemon");
     let hostname = "my_host._tcp.local.";
-    let service_ip_addr: HostIp = my_ip_interfaces()
+    let service_ip_addr: ScopedIp = my_ip_interfaces()
         .iter()
         .find(|iface| iface.ip().is_ipv4())
         .map(|iface| iface.into())
@@ -1370,7 +1370,7 @@ fn test_hostname_resolution() {
 fn test_hostname_resolution_case_insensitive() {
     let d = ServiceDaemon::new().expect("Failed to create daemon");
     let hostname = "My_casE_HOST.local.";
-    let service_ip_addr: HostIp = my_ip_interfaces()
+    let service_ip_addr: ScopedIp = my_ip_interfaces()
         .iter()
         .find(|iface| iface.ip().is_ipv4())
         .map(|iface| iface.into())
@@ -2531,7 +2531,7 @@ fn test_use_service_data() {
                 got_data = true;
                 println!("address: {:?}", resolved.addresses);
                 let first_addr = resolved.addresses.iter().next().unwrap();
-                let HostIp::V4(ip_v4) = first_addr else {
+                let ScopedIp::V4(ip_v4) = first_addr else {
                     assert!(false, "Address should be IPv4");
                     return;
                 };
@@ -2635,7 +2635,7 @@ fn test_use_service_data_v6() {
                 let first_addr = resolved.addresses.into_iter().next().unwrap();
                 assert!(first_addr.is_ipv6(), "Address should be IPv6");
                 println!("Resolved address: {}", first_addr);
-                let HostIp::V6(ip_v6) = first_addr else {
+                let ScopedIp::V6(ip_v6) = first_addr else {
                     assert!(false, "Address should be IPv6");
                     return;
                 };
