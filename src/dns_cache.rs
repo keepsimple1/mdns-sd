@@ -7,7 +7,7 @@ use crate::log::{debug, trace};
 use crate::{
     dns_parser::{DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, InterfaceId, RRType},
     service_info::{split_sub_domain, MyIntf},
-    HostIp,
+    ScopedIp,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -125,7 +125,7 @@ impl DnsCache {
     ///
     /// Note that the keys in the returned HashMap are the same hostname, with different cases
     /// of letters (e.g. "example.local.", "Example.local.", "EXAMPLE.local.").
-    pub(crate) fn get_addresses_for_host(&self, host: &str) -> HashMap<String, HashSet<HostIp>> {
+    pub(crate) fn get_addresses_for_host(&self, host: &str) -> HashMap<String, HashSet<ScopedIp>> {
         let hostname_lower = host.to_lowercase();
         let mut result = HashMap::new();
 
@@ -326,7 +326,7 @@ impl DnsCache {
 
     /// Iterates all ADDR records and remove ones that expired.
     /// Returns the expired ones in a map of names and addresses.
-    pub(crate) fn evict_expired_addr(&mut self, now: u64) -> HashMap<String, HashSet<HostIp>> {
+    pub(crate) fn evict_expired_addr(&mut self, now: u64) -> HashMap<String, HashSet<ScopedIp>> {
         let mut removed = HashMap::new();
 
         self.addr.retain(|_, records| {
@@ -609,7 +609,7 @@ impl DnsCache {
     pub(crate) fn refresh_due_hostname_resolutions(
         &mut self,
         hostname: &str,
-    ) -> HashSet<(String, HostIp)> {
+    ) -> HashSet<(String, ScopedIp)> {
         let now = current_time_millis();
 
         self.addr

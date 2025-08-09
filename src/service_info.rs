@@ -3,7 +3,7 @@
 #[cfg(feature = "logging")]
 use crate::log::debug;
 use crate::{
-    dns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, HostIp, RRType},
+    dns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, RRType, ScopedIp},
     Error, InterfaceId, Result,
 };
 use if_addrs::IfAddr;
@@ -411,7 +411,7 @@ impl ServiceInfo {
 
     /// Consumes self and returns a resolved service, i.e. a lite version of `ServiceInfo`.
     pub fn as_resolved_service(self) -> ResolvedService {
-        let addresses: HashSet<HostIp> = self.addresses.into_iter().map(|a| a.into()).collect();
+        let addresses: HashSet<ScopedIp> = self.addresses.into_iter().map(|a| a.into()).collect();
         ResolvedService {
             ty_domain: self.ty_domain,
             sub_ty_domain: self.sub_domain,
@@ -1191,7 +1191,7 @@ pub struct ResolvedService {
     pub port: u16,
 
     /// Addresses of the service. IPv4 or IPv6 addresses.
-    pub addresses: HashSet<HostIp>,
+    pub addresses: HashSet<ScopedIp>,
 
     /// Properties of the service, decoded from TXT record.
     pub txt_properties: TxtProperties,

@@ -34,8 +34,8 @@ use crate::{
     dns_cache::{current_time_millis, DnsCache},
     dns_parser::{
         ip_address_rr_type, DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer,
-        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, HostIp, InterfaceId, RRType, CLASS_CACHE_FLUSH,
-        CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
+        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, InterfaceId, RRType, ScopedIp,
+        CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
     },
     error::{e_fmt, Error, Result},
     service_info::{split_sub_domain, DnsRegistry, MyIntf, Probe, ServiceInfo, ServiceStatus},
@@ -3485,9 +3485,9 @@ pub enum HostnameResolutionEvent {
     /// Started searching for the ip address of a hostname.
     SearchStarted(String),
     /// One or more addresses for a hostname has been found.
-    AddressesFound(String, HashSet<HostIp>),
+    AddressesFound(String, HashSet<ScopedIp>),
     /// One or more addresses for a hostname has been removed.
-    AddressesRemoved(String, HashSet<HostIp>),
+    AddressesRemoved(String, HashSet<ScopedIp>),
     /// The search for the ip address of a hostname has timed out.
     SearchTimeout(String),
     /// Stopped searching for the ip address of a hostname.
@@ -4310,8 +4310,8 @@ mod tests {
     };
     use crate::{
         dns_parser::{
-            DnsIncoming, DnsOutgoing, DnsPointer, HostIp, InterfaceId, RRType, CLASS_IN, FLAGS_AA,
-            FLAGS_QR_RESPONSE,
+            DnsIncoming, DnsOutgoing, DnsPointer, InterfaceId, RRType, ScopedIp, CLASS_IN,
+            FLAGS_AA, FLAGS_QR_RESPONSE,
         },
         service_daemon::{add_answer_of_service, check_hostname},
     };
@@ -4552,7 +4552,7 @@ mod tests {
         // Create a mDNS server
         let server = ServiceDaemon::new().expect("Failed to create server");
         let hostname = "addr_remove_host._tcp.local.";
-        let service_ip_addr: HostIp = my_ip_interfaces(false)
+        let service_ip_addr: ScopedIp = my_ip_interfaces(false)
             .iter()
             .find(|iface| iface.ip().is_ipv4())
             .map(|iface| iface.ip().into())
