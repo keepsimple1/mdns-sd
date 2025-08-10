@@ -50,8 +50,8 @@
 //! std::thread::spawn(move || {
 //!     while let Ok(event) = receiver.recv() {
 //!         match event {
-//!             ServiceEvent::ServiceResolved(info) => {
-//!                 println!("Resolved a new service: {}", info.get_fullname());
+//!             ServiceEvent::ServiceData(resolved) => {
+//!                 println!("Resolved a new service: {}", resolved.fullname);
 //!             }
 //!             other_event => {
 //!                 println!("Received other event: {:?}", &other_event);

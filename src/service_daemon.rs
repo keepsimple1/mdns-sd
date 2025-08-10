@@ -3468,6 +3468,7 @@ pub enum ServiceEvent {
 
     /// Resolved a service instance in a ResolvedService struct.
     /// Must call [ServiceDaemon::use_service_data] to receive this event.
+    /// Since v0.14.0, this is preferred over [ServiceEvent::ServiceResolved].
     ServiceData(Box<ResolvedService>),
 
     /// A service instance (service_type, fullname) was removed.
