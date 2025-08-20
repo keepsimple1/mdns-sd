@@ -1,3 +1,9 @@
+# Version 0.14.1 (2025-8-19)
+
+This is a bugfix release with only a doc comments change.
+
+* `ec4fb9a 2025-08-18` doc: add a missing line in doc code example (#384) (keepsimple1)
+
 # Version 0.14.0 (2025-8-10)
 
 ## Breaking changes
