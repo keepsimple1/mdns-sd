@@ -731,6 +731,7 @@ fn test_disable_interface_cache() {
     sleep(Duration::from_secs(1));
 
     // Disable the interface for the client.
+    println!("Disabling interface with IP: {service_ip_addr}");
     client.disable_interface(service_ip_addr).unwrap();
 
     // Browse for the service.
