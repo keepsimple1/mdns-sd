@@ -1207,22 +1207,27 @@ impl ResolvedService {
         !some_missing
     }
 
-    pub fn get_subtype(&self) -> &Option<String> {
+    #[inline]
+    pub const fn get_subtype(&self) -> &Option<String> {
         &self.sub_ty_domain
     }
 
+    #[inline]
     pub fn get_fullname(&self) -> &str {
         &self.fullname
     }
 
+    #[inline]
     pub fn get_hostname(&self) -> &str {
         &self.host
     }
 
+    #[inline]
     pub fn get_port(&self) -> u16 {
         self.port
     }
 
+    #[inline]
     pub fn get_addresses(&self) -> &HashSet<ScopedIp> {
         &self.addresses
     }
@@ -1237,10 +1242,12 @@ impl ResolvedService {
             .collect()
     }
 
+    #[inline]
     pub fn get_properties(&self) -> &TxtProperties {
         &self.txt_properties
     }
 
+    #[inline]
     pub fn get_property(&self, key: &str) -> Option<&TxtProperty> {
         self.txt_properties.get(key)
     }
