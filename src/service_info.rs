@@ -336,7 +336,7 @@ impl ServiceInfo {
     }
 
     /// Returns whether the service info is ready to be resolved.
-    pub(crate) fn is_ready(&self) -> bool {
+    pub(crate) fn _is_ready(&self) -> bool {
         let some_missing = self.ty_domain.is_empty()
             || self.fullname.is_empty()
             || self.server.is_empty()
@@ -357,16 +357,16 @@ impl ServiceInfo {
         encode_txt(self.get_properties().iter())
     }
 
-    pub(crate) fn set_port(&mut self, port: u16) {
+    pub(crate) fn _set_port(&mut self, port: u16) {
         self.port = port;
     }
 
-    pub(crate) fn set_hostname(&mut self, hostname: String) {
+    pub(crate) fn _set_hostname(&mut self, hostname: String) {
         self.server = normalize_hostname(hostname);
     }
 
     /// Returns true if properties are updated.
-    pub(crate) fn set_properties_from_txt(&mut self, txt: &[u8]) -> bool {
+    pub(crate) fn _set_properties_from_txt(&mut self, txt: &[u8]) -> bool {
         let properties = decode_txt_unique(txt);
         if self.txt_properties.properties != properties {
             self.txt_properties = TxtProperties { properties };
@@ -376,7 +376,7 @@ impl ServiceInfo {
         }
     }
 
-    pub(crate) fn set_subtype(&mut self, subtype: String) {
+    pub(crate) fn _set_subtype(&mut self, subtype: String) {
         self.sub_domain = Some(subtype);
     }
 
@@ -1206,6 +1206,52 @@ impl ResolvedService {
             || self.addresses.is_empty();
         !some_missing
     }
+
+    pub fn get_subtype(&self) -> &Option<String> {
+        &self.sub_ty_domain
+    }
+
+    pub fn get_fullname(&self) -> &str {
+        &self.fullname
+    }
+
+    pub fn get_hostname(&self) -> &str {
+        &self.host
+    }
+
+    pub fn get_port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn get_addresses(&self) -> &HashSet<ScopedIp> {
+        &self.addresses
+    }
+
+    pub fn get_addresses_v4(&self) -> HashSet<Ipv4Addr> {
+        self.addresses
+            .iter()
+            .filter_map(|ip| match ip {
+                ScopedIp::V4(ipv4) => Some(*ipv4.addr()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn get_properties(&self) -> &TxtProperties {
+        &self.txt_properties
+    }
+
+    pub fn get_property(&self, key: &str) -> Option<&TxtProperty> {
+        self.txt_properties.get(key)
+    }
+
+    pub fn get_property_val(&self, key: &str) -> Option<Option<&[u8]>> {
+        self.txt_properties.get_property_val(key)
+    }
+
+    pub fn get_property_val_str(&self, key: &str) -> Option<&str> {
+        self.txt_properties.get_property_val_str(key)
+    }
 }
 
 #[cfg(test)]
@@ -1305,7 +1351,7 @@ mod tests {
         // ServiceInfo removes duplicated keys and keeps only the first one.
         let mut service_info =
             ServiceInfo::new("_test._tcp", "prop_test", "localhost", "", 1234, None).unwrap();
-        service_info.set_properties_from_txt(&encoded);
+        service_info._set_properties_from_txt(&encoded);
         assert_eq!(service_info.get_properties().len(), 1);
 
         // Verify the only one property.
