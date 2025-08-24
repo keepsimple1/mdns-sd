@@ -38,7 +38,7 @@ use crate::{
         CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
     },
     error::{e_fmt, Error, Result},
-    service_info::{split_sub_domain, DnsRegistry, MyIntf, Probe, ServiceInfo, ServiceStatus},
+    service_info::{DnsRegistry, MyIntf, Probe, ServiceInfo, ServiceStatus},
     Receiver, ResolvedService, TxtProperties,
 };
 use flume::{bounded, Sender, TrySendError};
@@ -545,13 +545,6 @@ impl ServiceDaemon {
         self.send_cmd(Command::SetOption(DaemonOption::MulticastLoopV6(on)))
     }
 
-    /// Enable or disable the use of [ServiceEvent::ServiceData] instead of [ServiceEvent::ServiceResolved].
-    ///
-    /// This is recommended for clients using IPv6 as it will include scope_id in the address.
-    pub fn use_service_data(&self, on: bool) -> Result<()> {
-        self.send_cmd(Command::SetOption(DaemonOption::UseServiceData(on)))
-    }
-
     /// Proactively confirms whether a service instance still valid.
     ///
     /// This call will issue queries for a service instance's SRV record and Address records.
@@ -860,9 +853,6 @@ struct Zeroconf {
 
     multicast_loop_v6: bool,
 
-    /// Whether to use [ServiceEvent::ServiceData] instead of [ServiceEvent::ServiceResolved].
-    use_service_data: bool,
-
     #[cfg(test)]
     test_down_interfaces: HashSet<String>,
 }
@@ -1011,7 +1001,6 @@ impl Zeroconf {
             resolved: HashSet::new(),
             multicast_loop_v4: true,
             multicast_loop_v6: true,
-            use_service_data: false,
 
             #[cfg(test)]
             test_down_interfaces: HashSet::new(),
@@ -1196,7 +1185,6 @@ impl Zeroconf {
             DaemonOption::DisableInterface(if_kind) => self.disable_interface(if_kind),
             DaemonOption::MulticastLoopV4(on) => self.set_multicast_loop_v4(on),
             DaemonOption::MulticastLoopV6(on) => self.set_multicast_loop_v6(on),
-            DaemonOption::UseServiceData(on) => self.use_service_data = on,
             #[cfg(test)]
             DaemonOption::TestDownInterface(ifname) => {
                 self.test_down_interfaces.insert(ifname);
@@ -2032,36 +2020,19 @@ impl Zeroconf {
             for record in records.iter().filter(|r| !r.record.expires_soon(now)) {
                 if let Some(ptr) = record.record.any().downcast_ref::<DnsPointer>() {
                     let mut new_event = None;
-                    if self.use_service_data {
-                        match self.resolve_service_from_cache(ty_domain, ptr.alias()) {
-                            Ok(resolved_service) => {
-                                if resolved_service.is_valid() {
-                                    debug!("Resolved service from cache: {}", ptr.alias());
-                                    new_event =
-                                        Some(ServiceEvent::ServiceData(Box::new(resolved_service)));
-                                } else {
-                                    debug!("Resolved service is not valid: {}", ptr.alias());
-                                }
-                            }
-                            Err(err) => {
-                                debug!("Error while resolving service from cache: {}", err);
-                                continue;
+                    match self.resolve_service_from_cache(ty_domain, ptr.alias()) {
+                        Ok(resolved_service) => {
+                            if resolved_service.is_valid() {
+                                debug!("Resolved service from cache: {}", ptr.alias());
+                                new_event =
+                                    Some(ServiceEvent::ServiceResolved(Box::new(resolved_service)));
+                            } else {
+                                debug!("Resolved service is not valid: {}", ptr.alias());
                             }
                         }
-                    } else {
-                        // Support legacy behavior.
-                        match self.create_service_info_from_cache(ty_domain, ptr.alias()) {
-                            Ok(info) => {
-                                if info.is_ready() {
-                                    new_event = Some(ServiceEvent::ServiceResolved(info));
-                                } else {
-                                    debug!("Service info is not ready: {}", ptr.alias());
-                                }
-                            }
-                            Err(err) => {
-                                debug!("Error while creating service info from cache: {}", err);
-                                continue;
-                            }
+                        Err(err) => {
+                            debug!("Error while resolving service from cache: {}", err);
+                            continue;
                         }
                     }
 
@@ -2121,70 +2092,6 @@ impl Zeroconf {
             self.add_retransmission(next_time, Command::Resolve(instance.clone(), 1));
             self.pending_resolves.insert(instance);
         }
-    }
-
-    fn create_service_info_from_cache(
-        &self,
-        ty_domain: &str,
-        fullname: &str,
-    ) -> Result<ServiceInfo> {
-        let my_name = {
-            let name = fullname.trim_end_matches(split_sub_domain(ty_domain).0);
-            name.strip_suffix('.').unwrap_or(name).to_string()
-        };
-
-        let now = current_time_millis();
-        let mut info = ServiceInfo::new(ty_domain, &my_name, "", (), 0, None)?;
-
-        // Be sure setting `subtype` if available even when querying for the parent domain.
-        if let Some(subtype) = self.cache.get_subtype(fullname) {
-            trace!(
-                "ty_domain: {} found subtype {} for instance: {}",
-                ty_domain,
-                subtype,
-                fullname
-            );
-            if info.get_subtype().is_none() {
-                info.set_subtype(subtype.clone());
-            }
-        }
-
-        // resolve SRV record
-        if let Some(records) = self.cache.get_srv(fullname) {
-            if let Some(answer) = records.iter().find(|r| !r.record.expires_soon(now)) {
-                if let Some(dns_srv) = answer.record.any().downcast_ref::<DnsSrv>() {
-                    info.set_hostname(dns_srv.host().to_string());
-                    info.set_port(dns_srv.port());
-                }
-            }
-        }
-
-        // resolve TXT record
-        if let Some(records) = self.cache.get_txt(fullname) {
-            if let Some(record) = records.iter().find(|r| !r.record.expires_soon(now)) {
-                if let Some(dns_txt) = record.record.any().downcast_ref::<DnsTxt>() {
-                    info.set_properties_from_txt(dns_txt.text());
-                }
-            }
-        }
-
-        // resolve A and AAAA records
-        if let Some(records) = self.cache.get_addr(info.get_hostname()) {
-            for answer in records.iter() {
-                if let Some(dns_a) = answer.record.any().downcast_ref::<DnsAddress>() {
-                    if dns_a.expires_soon(now) {
-                        trace!(
-                            "Addr expired or expires soon: {}",
-                            dns_a.address().to_ip_addr()
-                        );
-                    } else {
-                        info.insert_ipaddr(dns_a.address().to_ip_addr());
-                    }
-                }
-            }
-        }
-
-        Ok(info)
     }
 
     /// Creates a `ResolvedService` from the cache.
@@ -2604,29 +2511,15 @@ impl Zeroconf {
                         let mut instance_found = false;
                         let mut new_event = None;
 
-                        if self.use_service_data {
-                            if let Ok(resolved) =
-                                self.resolve_service_from_cache(ty_domain, dns_ptr.alias())
-                            {
-                                debug!(
-                                    "resolve_updated_instances: from cache: {}",
-                                    dns_ptr.alias()
-                                );
-                                instance_found = true;
-                                if resolved.is_valid() {
-                                    new_event = Some(ServiceEvent::ServiceData(Box::new(resolved)));
-                                } else {
-                                    debug!("Resolved service is not valid: {}", dns_ptr.alias());
-                                }
-                            }
-                        } else if let Ok(info) =
-                            self.create_service_info_from_cache(ty_domain, dns_ptr.alias())
+                        if let Ok(resolved) =
+                            self.resolve_service_from_cache(ty_domain, dns_ptr.alias())
                         {
+                            debug!("resolve_updated_instances: from cache: {}", dns_ptr.alias());
                             instance_found = true;
-                            if info.is_ready() {
-                                new_event = Some(ServiceEvent::ServiceResolved(info));
+                            if resolved.is_valid() {
+                                new_event = Some(ServiceEvent::ServiceResolved(Box::new(resolved)));
                             } else {
-                                debug!("Service info is not ready: {}", dns_ptr.alias());
+                                debug!("Resolved service is not valid: {}", dns_ptr.alias());
                             }
                         }
 
@@ -3461,15 +3354,8 @@ pub enum ServiceEvent {
     /// Found a specific (service_type, fullname).
     ServiceFound(String, String),
 
-    /// Resolved a service instance with detailed info.
-    ///
-    /// Will be deprecated in the future by [ServiceEvent::ServiceData].
-    ServiceResolved(ServiceInfo),
-
     /// Resolved a service instance in a ResolvedService struct.
-    /// Must call [ServiceDaemon::use_service_data] to receive this event.
-    /// Since v0.14.0, this is preferred over [ServiceEvent::ServiceResolved].
-    ServiceData(Box<ResolvedService>),
+    ServiceResolved(Box<ResolvedService>),
 
     /// A service instance (service_type, fullname) was removed.
     ServiceRemoved(String, String),
@@ -3634,7 +3520,6 @@ enum DaemonOption {
     DisableInterface(Vec<IfKind>),
     MulticastLoopV4(bool),
     MulticastLoopV6(bool),
-    UseServiceData(bool),
     #[cfg(test)]
     TestDownInterface(String),
     #[cfg(test)]
@@ -4406,7 +4291,7 @@ mod tests {
             match event {
                 ServiceEvent::ServiceResolved(info) => {
                     resolved = true;
-                    println!("Resolved a service of {}", &info.get_fullname());
+                    println!("Resolved a service of {}", &info.fullname);
                     break;
                 }
                 e => {
@@ -4481,7 +4366,7 @@ mod tests {
             match event {
                 ServiceEvent::ServiceResolved(info) => {
                     resolved = true;
-                    println!("Resolved a service of {}", &info.get_fullname());
+                    println!("Resolved a service of {}", &info.fullname);
                     break;
                 }
                 e => {
@@ -4523,7 +4408,7 @@ mod tests {
             match event {
                 ServiceEvent::ServiceResolved(info) => {
                     resolved = true;
-                    println!("Resolved a service of {}", &info.get_fullname());
+                    println!("Resolved a service of {}", &info.fullname);
                     break;
                 }
                 _ => {}
@@ -4663,7 +4548,7 @@ mod tests {
             match event {
                 ServiceEvent::ServiceResolved(info) => {
                     resolved = true;
-                    println!("Resolved a service of {}", &info.get_fullname());
+                    println!("Resolved a service of {}", &info.fullname);
                     break;
                 }
                 _ => {}
@@ -4803,7 +4688,6 @@ mod tests {
 
         // start a client
         let client = ServiceDaemon::new().expect("failed to start client");
-        client.use_service_data(true).unwrap();
 
         let receiver = client.browse(ty_domain).unwrap();
 
@@ -4812,7 +4696,7 @@ mod tests {
 
         while let Ok(event) = receiver.recv_timeout(timeout) {
             match event {
-                ServiceEvent::ServiceData(_) => {
+                ServiceEvent::ServiceResolved(_) => {
                     println!("Received ServiceData event");
                     got_data = true;
                     break;
@@ -4849,7 +4733,7 @@ mod tests {
         let mut got_data = false;
         while let Ok(event) = receiver.recv_timeout(timeout) {
             match event {
-                ServiceEvent::ServiceData(resolved) => {
+                ServiceEvent::ServiceResolved(resolved) => {
                     got_data = true;
                     println!("Received ServiceData: {:?}", resolved);
                     break;

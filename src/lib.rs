@@ -40,9 +40,6 @@
 //! // Create a daemon
 //! let mdns = ServiceDaemon::new().expect("Failed to create daemon");
 //!
-//! // Use recently added `ServiceEvent::ServiceData`.
-//! mdns.use_service_data(true).expect("Failed to use ServiceData");
-//!
 //! // Browse for a service type.
 //! let service_type = "_mdns-sd-my-test._udp.local.";
 //! let receiver = mdns.browse(service_type).expect("Failed to browse");
@@ -53,7 +50,7 @@
 //! std::thread::spawn(move || {
 //!     while let Ok(event) = receiver.recv() {
 //!         match event {
-//!             ServiceEvent::ServiceData(resolved) => {
+//!             ServiceEvent::ServiceResolved(resolved) => {
 //!                 println!("Resolved a new service: {}", resolved.fullname);
 //!             }
 //!             other_event => {
