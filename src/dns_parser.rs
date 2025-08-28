@@ -105,6 +105,13 @@ impl ScopedIp {
     pub const fn is_ipv6(&self) -> bool {
         matches!(self, ScopedIp::V6(_))
     }
+
+    pub const fn is_loopback(&self) -> bool {
+        match self {
+            ScopedIp::V4(v4) => v4.addr.is_loopback(),
+            ScopedIp::V6(v6) => v6.addr.is_loopback(),
+        }
+    }
 }
 
 impl From<IpAddr> for ScopedIp {
