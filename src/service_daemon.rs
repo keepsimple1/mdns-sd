@@ -303,11 +303,11 @@ impl ServiceDaemon {
     ///
     /// When a new instance is found, the daemon automatically tries to resolve, i.e.
     /// finding more details, i.e. SRV records and TXT records.
-    pub fn browse(&self, service_type: &str) -> Result<Receiver<ServiceEvent>> {
+    pub fn browse(&self, service_type: &str, cache_only: bool) -> Result<Receiver<ServiceEvent>> {
         check_domain_suffix(service_type)?;
 
         let (resp_s, resp_r) = bounded(10);
-        self.send_cmd(Command::Browse(service_type.to_string(), 1, resp_s))?;
+        self.send_cmd(Command::Browse(service_type.to_string(), 1, cache_only, resp_s))?;
         Ok(resp_r)
     }
 
@@ -491,6 +491,17 @@ impl ServiceDaemon {
         self.send_cmd(Command::SetOption(DaemonOption::DisableInterface(
             if_kind_vec.kinds,
         )))
+    }
+
+    /// If `accept` is true, accept and cache all responses. If `accept` is false, accept only responses
+    /// matching queries that we have initiated.
+    ///
+    /// For example:
+    /// ```ignore
+    ///     daemon.accept_unsolicited(true)?;
+    /// ```
+    pub fn accept_unsolicited(&self, accept: bool) -> Result<()> {
+        self.send_cmd(Command::SetOption(DaemonOption::AcceptUnsolicited(accept)))
     }
 
     #[cfg(test)]
@@ -853,6 +864,8 @@ struct Zeroconf {
 
     multicast_loop_v6: bool,
 
+    accept_unsolicited: bool,
+
     #[cfg(test)]
     test_down_interfaces: HashSet<String>,
 }
@@ -1001,6 +1014,7 @@ impl Zeroconf {
             resolved: HashSet::new(),
             multicast_loop_v4: true,
             multicast_loop_v6: true,
+            accept_unsolicited: false,
 
             #[cfg(test)]
             test_down_interfaces: HashSet::new(),
@@ -1185,6 +1199,7 @@ impl Zeroconf {
             DaemonOption::DisableInterface(if_kind) => self.disable_interface(if_kind),
             DaemonOption::MulticastLoopV4(on) => self.set_multicast_loop_v4(on),
             DaemonOption::MulticastLoopV6(on) => self.set_multicast_loop_v6(on),
+            DaemonOption::AcceptUnsolicited(accept) => self.set_accept_unsolicited(accept),
             #[cfg(test)]
             DaemonOption::TestDownInterface(ifname) => {
                 self.test_down_interfaces.insert(ifname);
@@ -1236,6 +1251,10 @@ impl Zeroconf {
             .set_multicast_loop_v6(on)
             .map_err(|e| e_fmt!("failed to set multicast loop v6: {}", e))
             .unwrap();
+    }
+
+    fn set_accept_unsolicited(&mut self, accept: bool) {
+        self.accept_unsolicited = accept;
     }
 
     fn notify_monitors(&mut self, event: DaemonEvent) {
@@ -2263,6 +2282,11 @@ impl Zeroconf {
             }
         }
 
+        // if we explicitily want to accept unsolicited responses, we should consider all messages as for us.
+        if self.accept_unsolicited {
+            is_for_us = true;
+        }
+
         /// Represents a DNS record change that involves one service instance.
         struct InstanceChange {
             ty: RRType,   // The type of DNS record for the instance.
@@ -2812,8 +2836,8 @@ impl Zeroconf {
     fn exec_command(&mut self, command: Command, repeating: bool) {
         trace!("exec_command: {:?} repeating: {}", &command, repeating);
         match command {
-            Command::Browse(ty, next_delay, listener) => {
-                self.exec_command_browse(repeating, ty, next_delay, listener);
+            Command::Browse(ty, next_delay, cache_only, listener) => {
+                self.exec_command_browse(repeating, ty, next_delay, cache_only, listener);
             }
 
             Command::ResolveHostname(hostname, next_delay, listener, timeout) => {
@@ -2935,6 +2959,7 @@ impl Zeroconf {
         repeating: bool,
         ty: String,
         next_delay: u32,
+        cache_only: bool,
         listener: Sender<ServiceEvent>,
     ) {
         let pretty_addrs: Vec<String> = self
@@ -2966,13 +2991,22 @@ impl Zeroconf {
             self.query_cache_for_service(&ty, &listener, now);
         }
 
+        if cache_only {
+            // If cache_only is true, we do not send a query.
+            match listener.send(ServiceEvent::SearchStopped(ty.clone())) {
+                Ok(()) => debug!("SearchStopped sent for {}", &ty),
+                Err(e) => debug!("Failed to send SearchStopped: {}", e),
+            }
+            return;
+        }
+
         self.send_query(&ty, RRType::PTR);
         self.increase_counter(Counter::Browse, 1);
 
         let next_time = now + (next_delay * 1000) as u64;
         let max_delay = 60 * 60;
         let delay = cmp::min(next_delay * 2, max_delay);
-        self.add_retransmission(next_time, Command::Browse(ty, delay, listener));
+        self.add_retransmission(next_time, Command::Browse(ty, delay, cache_only, listener));
     }
 
     fn exec_command_resolve_hostname(
@@ -3122,7 +3156,7 @@ impl Zeroconf {
                 trace!("StopBrowse: removed queryer for {}", &ty);
                 let mut i = 0;
                 while i < self.retransmissions.len() {
-                    if let Command::Browse(t, _, _) = &self.retransmissions[i].command {
+                    if let Command::Browse(t, _, _, _) = &self.retransmissions[i].command {
                         if t == &ty {
                             self.retransmissions.remove(i);
                             trace!("StopBrowse: removed retransmission for {}", &ty);
@@ -3435,7 +3469,7 @@ pub struct DnsNameChange {
 #[derive(Debug)]
 enum Command {
     /// Browsing for a service type (ty_domain, next_time_delay_in_seconds, channel::sender)
-    Browse(String, u32, Sender<ServiceEvent>),
+    Browse(String, u32, bool, Sender<ServiceEvent>),
 
     /// Resolve a hostname to IP addresses.
     ResolveHostname(String, u32, Sender<HostnameResolutionEvent>, Option<u64>), // (hostname, next_time_delay_in_seconds, sender, timeout_in_milliseconds)
@@ -3487,7 +3521,7 @@ enum Command {
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Browse(_, _, _) => write!(f, "Command Browse"),
+            Self::Browse(_, _, _, _) => write!(f, "Command Browse"),
             Self::ResolveHostname(_, _, _, _) => write!(f, "Command ResolveHostname"),
             Self::Exit(_) => write!(f, "Command Exit"),
             Self::GetStatus(_) => write!(f, "Command GetStatus"),
@@ -3520,6 +3554,7 @@ enum DaemonOption {
     DisableInterface(Vec<IfKind>),
     MulticastLoopV4(bool),
     MulticastLoopV6(bool),
+    AcceptUnsolicited(bool),
     #[cfg(test)]
     TestDownInterface(String),
     #[cfg(test)]
@@ -4283,7 +4318,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Browse for a service
-        let browse_chan = d.browse(service).unwrap();
+        let browse_chan = d.browse(service, false).unwrap();
         let timeout = Duration::from_secs(2);
         let mut resolved = false;
 
@@ -4359,7 +4394,7 @@ mod tests {
         );
 
         // Restart the browse to force the sender to re-send the announcements.
-        let browse_chan = d.browse(service).unwrap();
+        let browse_chan = d.browse(service, false).unwrap();
 
         resolved = false;
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
@@ -4400,7 +4435,7 @@ mod tests {
         assert!(result.is_ok());
 
         let mdns_client = ServiceDaemon::new().expect("Failed to create mdns client");
-        let browse_chan = mdns_client.browse(service_type).unwrap();
+        let browse_chan = mdns_client.browse(service_type, false).unwrap();
         let timeout = Duration::from_secs(2);
         let mut resolved = false;
 
@@ -4539,7 +4574,7 @@ mod tests {
         assert!(result.is_ok());
 
         let mdns_client = ServiceDaemon::new().expect("Failed to create mdns client");
-        let browse_chan = mdns_client.browse(service_type).unwrap();
+        let browse_chan = mdns_client.browse(service_type, false).unwrap();
         let timeout = Duration::from_millis(1500); // Give at least 1 second for the service probing.
         let mut resolved = false;
 
@@ -4689,7 +4724,7 @@ mod tests {
         // start a client
         let client = ServiceDaemon::new().expect("failed to start client");
 
-        let receiver = client.browse(ty_domain).unwrap();
+        let receiver = client.browse(ty_domain, false).unwrap();
 
         let timeout = Duration::from_secs(3);
         let mut got_data = false;
@@ -4748,5 +4783,59 @@ mod tests {
 
         server1.shutdown().unwrap();
         client.shutdown().unwrap();
+    }
+
+     #[test]
+    fn test_cache_only() {
+        // construct service info
+        let service_type = "_cache_only._udp.local.";
+        let instance = "test_instance";
+        let host_name = "cache_only_host.local.";
+        let service_ip_addr = my_ip_interfaces(false)
+            .iter()
+            .find(|iface| iface.ip().is_ipv4())
+            .map(|iface| iface.ip())
+            .unwrap();
+
+        let mut my_service = ServiceInfo::new(
+            service_type,
+            instance,
+            host_name,
+            &service_ip_addr,
+            5023,
+            None,
+        )
+        .unwrap();
+
+        let new_ttl = 3; // for testing only.
+        my_service._set_other_ttl(new_ttl);
+
+        // register my service
+        let mdns_server = ServiceDaemon::new().expect("Failed to create mdns server");
+        let result = mdns_server.register(my_service);
+        assert!(result.is_ok());
+
+        let mdns_client = ServiceDaemon::new().expect("Failed to create mdns client");
+        let browse_chan = mdns_client.browse(service_type, true).unwrap();
+        let timeout = Duration::from_millis(1500); // Give at least 1 second for the service probing.
+        let mut resolved = false;
+
+        // resolve the service.
+        while let Ok(event) = browse_chan.recv_timeout(timeout) {
+            match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    resolved = true;
+                    println!("Resolved a service of {}", &info.get_fullname());
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(resolved);
+
+        // Exit the server so that no more responses.
+        mdns_server.shutdown().unwrap();
+        mdns_client.shutdown().unwrap();
     }
 }
