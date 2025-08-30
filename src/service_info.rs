@@ -500,6 +500,12 @@ impl AsIpAddrs for std::net::IpAddr {
     }
 }
 
+impl AsIpAddrs for Box<dyn AsIpAddrs> {
+    fn as_ip_addrs(&self) -> Result<HashSet<IpAddr>> {
+        self.as_ref().as_ip_addrs()
+    }
+}
+
 /// Represents properties in a TXT record.
 ///
 /// The key string of a property is case insensitive, and only
