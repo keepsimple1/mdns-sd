@@ -50,8 +50,8 @@
 //! std::thread::spawn(move || {
 //!     while let Ok(event) = receiver.recv() {
 //!         match event {
-//!             ServiceEvent::ServiceResolved(info) => {
-//!                 println!("Resolved a new service: {}", info.get_fullname());
+//!             ServiceEvent::ServiceResolved(resolved) => {
+//!                 println!("Resolved a new service: {}", resolved.fullname);
 //!             }
 //!             other_event => {
 //!                 println!("Received other event: {:?}", &other_event);
@@ -162,7 +162,7 @@ mod error;
 mod service_daemon;
 mod service_info;
 
-pub use dns_parser::{HostIp, HostIpV4, HostIpV6, InterfaceId, RRType};
+pub use dns_parser::{InterfaceId, RRType, ScopedIp, ScopedIpV4, ScopedIpV6};
 pub use error::{Error, Result};
 pub use service_daemon::{
     DaemonEvent, DaemonStatus, DnsNameChange, HostnameResolutionEvent, IfKind, Metrics,

@@ -1,3 +1,37 @@
+# Version 0.14.1 (2025-8-19)
+
+This is a bugfix release with only a doc comments change.
+
+* `ec4fb9a 2025-08-18` doc: add a missing line in doc code example (#384) (keepsimple1)
+
+# Version 0.14.0 (2025-8-10)
+
+## Breaking changes
+
+- `ServiceEvent::ServiceData` to support IPv6 with scope_id. It will deprecate `ServiceEvent::ServiceResolved`.
+
+Users must call `ServiceDaemon.use_service_data` to use `ServiceData` instead of `ServiceResolved` event.
+
+- `HostnameResolutionEvent::AddressesFound` uses the new `ScopedIp` instead of `IpAddr`.
+- `ServiceEvent` is `non_exhaustive` now.
+
+## Other hightlights
+
+- Internal: define `MyUdpSocket` that uses PKTINFO. It also prepares for supporting unicast.
+- Internal: define `MyIntf` to better handle multiple addresses on an interface.
+- A few bugfixes.
+
+* `123ecba 2025-08-08` rename HostIp to ScopedIp (#382) (keepsimple1)
+* `0c9395f 2025-08-07` rename ServiceDetailed to ServiceData (#381) (keepsimple1)
+* `52cc67c 2025-08-06` refactoring: define our own interface struct to allow multiple addresses (#380) (keepsimple1)
+* `1b194de 2025-08-01` feat: Remove unneeded multicast send tracking (#377) (hrzlgnm)
+* `8cb1a59 2025-07-30` refactoring only: move run into ZeroConf (#376) (keepsimple1)
+* `2eddad3 2025-07-30` ServiceEvent: add non_exhaustive and fix clippy (#375) (keepsimple1)
+* `0d6ba35 2025-07-28` bugfix: remove duplicated address record for IPv6 on a wrong interface (#373) (keepsimple1)
+* `45b3cdd 2025-07-16` fix repetitive ServiceRemoved and Resolve again after interface up (#371) (keepsimple1)
+* `eb90591 2025-07-13` Exclude interfaces that are operational down (#369) (keepsimple1)
+* `1103ab2 2025-07-08` feat: new API to use ResolvedService instead of ServiceInfo for resolved service event (#362) (keepsimple1)
+
 # Version 0.13.11 (2025-7-7)
 
 This is a small bugfix release before we add potential breaking changes.

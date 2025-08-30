@@ -29,8 +29,6 @@ fn main() {
 
     // Create a daemon
     let mdns = ServiceDaemon::new().expect("Failed to create daemon");
-    mdns.use_service_detailed(true)
-        .expect("Failed to use service detailed");
 
     // Browse for the service type
     let receiver = mdns.browse(&service_type, false).expect("Failed to browse");
@@ -38,7 +36,7 @@ fn main() {
     let now = std::time::Instant::now();
     while let Ok(event) = receiver.recv() {
         match event {
-            ServiceEvent::ServiceDetailed(info) => {
+            ServiceEvent::ServiceResolved(info) => {
                 println!(
                     "At {:?}: Resolved a new service: {}\n host: {}\n port: {}",
                     now.elapsed(),

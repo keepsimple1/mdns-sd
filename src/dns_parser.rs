@@ -47,13 +47,16 @@ impl From<&Interface> for InterfaceId {
     }
 }
 
-/// An IPv4 address used in `HostIp`.
+/// An IPv4 address used in `ScopedIp`.
+///
+/// Note: IPv4 addresses don't have scope IDs, but this type is named for consistency
+/// with the rest of the addressing system.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct HostIpV4 {
+pub struct ScopedIpV4 {
     addr: Ipv4Addr,
 }
 
-impl HostIpV4 {
+impl ScopedIpV4 {
     /// Returns the IPv4 address.
     pub const fn addr(&self) -> &Ipv4Addr {
         &self.addr
@@ -62,12 +65,12 @@ impl HostIpV4 {
 
 /// An IPv6 address with scope_id (interface identifier).
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct HostIpV6 {
+pub struct ScopedIpV6 {
     addr: Ipv6Addr,
     scope_id: InterfaceId,
 }
 
-impl HostIpV6 {
+impl ScopedIpV6 {
     /// Returns the IPv6 address.
     pub const fn addr(&self) -> &Ipv6Addr {
         &self.addr
@@ -79,36 +82,43 @@ impl HostIpV6 {
     }
 }
 
-/// A host IP address, either IPv4 or IPv6, that supports scope_id for IPv6.
+/// An IP address, either IPv4 or IPv6, that supports scope_id for IPv6.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 #[non_exhaustive]
-pub enum HostIp {
-    V4(HostIpV4),
-    V6(HostIpV6),
+pub enum ScopedIp {
+    V4(ScopedIpV4),
+    V6(ScopedIpV6),
 }
 
-impl HostIp {
+impl ScopedIp {
     pub const fn to_ip_addr(&self) -> IpAddr {
         match self {
-            HostIp::V4(v4) => IpAddr::V4(v4.addr),
-            HostIp::V6(v6) => IpAddr::V6(v6.addr),
+            ScopedIp::V4(v4) => IpAddr::V4(v4.addr),
+            ScopedIp::V6(v6) => IpAddr::V6(v6.addr),
         }
     }
 
     pub const fn is_ipv4(&self) -> bool {
-        matches!(self, HostIp::V4(_))
+        matches!(self, ScopedIp::V4(_))
     }
 
     pub const fn is_ipv6(&self) -> bool {
-        matches!(self, HostIp::V6(_))
+        matches!(self, ScopedIp::V6(_))
+    }
+
+    pub const fn is_loopback(&self) -> bool {
+        match self {
+            ScopedIp::V4(v4) => v4.addr.is_loopback(),
+            ScopedIp::V6(v6) => v6.addr.is_loopback(),
+        }
     }
 }
 
-impl From<IpAddr> for HostIp {
+impl From<IpAddr> for ScopedIp {
     fn from(ip: IpAddr) -> Self {
         match ip {
-            IpAddr::V4(v4) => HostIp::V4(HostIpV4 { addr: v4 }),
-            IpAddr::V6(v6) => HostIp::V6(HostIpV6 {
+            IpAddr::V4(v4) => ScopedIp::V4(ScopedIpV4 { addr: v4 }),
+            IpAddr::V6(v6) => ScopedIp::V6(ScopedIpV6 {
                 addr: v6,
                 scope_id: InterfaceId::default(),
             }),
@@ -116,11 +126,11 @@ impl From<IpAddr> for HostIp {
     }
 }
 
-impl From<&Interface> for HostIp {
+impl From<&Interface> for ScopedIp {
     fn from(interface: &Interface) -> Self {
         match interface.ip() {
-            IpAddr::V4(v4) => HostIp::V4(HostIpV4 { addr: v4 }),
-            IpAddr::V6(v6) => HostIp::V6(HostIpV6 {
+            IpAddr::V4(v4) => ScopedIp::V4(ScopedIpV4 { addr: v4 }),
+            IpAddr::V6(v6) => ScopedIp::V6(ScopedIpV6 {
                 addr: v6,
                 scope_id: InterfaceId::from(interface),
             }),
@@ -128,13 +138,20 @@ impl From<&Interface> for HostIp {
     }
 }
 
-impl fmt::Display for HostIp {
+impl fmt::Display for ScopedIp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HostIp::V4(v4) => write!(f, "{}", v4.addr),
-            HostIp::V6(v6) => {
+            ScopedIp::V4(v4) => write!(f, "{}", v4.addr),
+            ScopedIp::V6(v6) => {
                 if v6.scope_id.index != 0 {
-                    write!(f, "{}%{}", v6.addr, v6.scope_id.index)
+                    #[cfg(windows)]
+                    {
+                        write!(f, "{}%{}", v6.addr, v6.scope_id.index)
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        write!(f, "{}%{}", v6.addr, v6.scope_id.name)
+                    }
                 } else {
                     write!(f, "{}", v6.addr)
                 }
@@ -623,10 +640,10 @@ pub trait DnsRecordExt: fmt::Debug {
 
 /// Resource Record for IPv4 address or IPv6 address.
 #[derive(Debug, Clone)]
-pub struct DnsAddress {
+pub(crate) struct DnsAddress {
     pub(crate) record: DnsRecord,
     address: IpAddr,
-    interface_id: InterfaceId,
+    pub(crate) interface_id: InterfaceId,
 }
 
 impl DnsAddress {
@@ -646,10 +663,10 @@ impl DnsAddress {
         }
     }
 
-    pub fn address(&self) -> HostIp {
+    pub fn address(&self) -> ScopedIp {
         match self.address {
-            IpAddr::V4(v4) => HostIp::V4(HostIpV4 { addr: v4 }),
-            IpAddr::V6(v6) => HostIp::V6(HostIpV6 {
+            IpAddr::V4(v4) => ScopedIp::V4(ScopedIpV4 { addr: v4 }),
+            IpAddr::V6(v6) => ScopedIp::V6(ScopedIpV6 {
                 addr: v6,
                 scope_id: self.interface_id.clone(),
             }),

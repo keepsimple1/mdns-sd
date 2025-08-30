@@ -1,6 +1,6 @@
 use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
-    DaemonEvent, DaemonStatus, HostIp, HostnameResolutionEvent, IfKind, IntoTxtProperties,
+    DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, IntoTxtProperties, ScopedIp,
     ServiceDaemon, ServiceEvent, ServiceInfo, TxtProperty, UnregisterStatus,
 };
 use std::collections::{HashMap, HashSet};
@@ -89,7 +89,13 @@ fn integration_success() {
                 println!("Found a new service: {}", &fullname);
             }
             ServiceEvent::ServiceResolved(info) => {
-                let addrs = info.get_addresses();
+                let addrs: HashSet<_> = info
+                    .get_addresses()
+                    .iter()
+                    .map(|a| a.to_ip_addr())
+                    .collect();
+                addr_count = addrs.len();
+
                 println!(
                     "Resolved a new service: {} with {} addr(s)",
                     info.get_fullname(),
@@ -103,9 +109,6 @@ fn integration_success() {
                 }
                 let hostname = info.get_hostname();
                 assert_eq!(hostname, host_name);
-
-                let addr_set = info.get_addresses();
-                addr_count = addr_set.len();
 
                 let service_port = info.get_port();
                 assert_eq!(service_port, port);
@@ -122,12 +125,6 @@ fn integration_success() {
                     info.get_property_val("property_1").unwrap(),
                     Some("test".as_bytes())
                 );
-
-                let host_ttl = info.get_host_ttl();
-                assert_eq!(host_ttl, 120); // default value.
-
-                let other_ttl = info.get_other_ttl();
-                assert_eq!(other_ttl, 4500); // default value.
             }
             _ => {}
         }
@@ -731,6 +728,7 @@ fn test_disable_interface_cache() {
     sleep(Duration::from_secs(1));
 
     // Disable the interface for the client.
+    println!("Disabling interface with IP: {service_ip_addr}");
     client.disable_interface(service_ip_addr).unwrap();
 
     // Browse for the service.
@@ -1331,7 +1329,7 @@ fn test_shutdown() {
 fn test_hostname_resolution() {
     let d = ServiceDaemon::new().expect("Failed to create daemon");
     let hostname = "my_host._tcp.local.";
-    let service_ip_addr: HostIp = my_ip_interfaces()
+    let service_ip_addr: ScopedIp = my_ip_interfaces()
         .iter()
         .find(|iface| iface.ip().is_ipv4())
         .map(|iface| iface.into())
@@ -1370,7 +1368,7 @@ fn test_hostname_resolution() {
 fn test_hostname_resolution_case_insensitive() {
     let d = ServiceDaemon::new().expect("Failed to create daemon");
     let hostname = "My_casE_HOST.local.";
-    let service_ip_addr: HostIp = my_ip_interfaces()
+    let service_ip_addr: ScopedIp = my_ip_interfaces()
         .iter()
         .find(|iface| iface.ip().is_ipv4())
         .map(|iface| iface.into())
@@ -1555,7 +1553,7 @@ fn test_cache_flush_record() {
                 timed_println(format!("new address resolved: {:?}", new_addrs));
                 if new_addrs.len() == 1 {
                     let first_addr = new_addrs.iter().next().unwrap();
-                    assert_eq!(first_addr, &service_ip_addr);
+                    assert_eq!(&first_addr.to_ip_addr(), &service_ip_addr);
                     resolved = true;
                     break;
                 }
@@ -1655,7 +1653,7 @@ fn test_cache_flush_remove_one_addr() {
                 let new_addrs = info.get_addresses();
                 if new_addrs.len() == 1 {
                     let first_addr = new_addrs.iter().next().unwrap();
-                    assert_eq!(first_addr, &ip_addr1);
+                    assert_eq!(&first_addr.to_ip_addr(), &ip_addr1);
                     resolved = true;
                     break;
                 }
@@ -2052,7 +2050,7 @@ fn test_name_tiebreaking() {
     for resolved_service in resolved_services {
         if resolved_service.get_hostname() == host_name {
             let service_addr = resolved_service.get_addresses().iter().next().unwrap();
-            assert_eq!(service_addr, &ip_addr2);
+            assert_eq!(&service_addr.to_ip_addr(), &ip_addr2);
             println!("server2 won the tiebreaking");
         }
     }
@@ -2461,217 +2459,4 @@ fn timed_println(msg: String) {
     let now = SystemTime::now();
     let formatted_time = humantime::format_rfc3339(now);
     println!("[{}] {}", formatted_time, msg);
-}
-
-#[test]
-fn test_use_service_detailed() {
-    // start a server
-    let ty_domain = "_svc-detailed._udp.local.";
-    let host_name = "service_detailed.local.";
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap();
-    let instance_name = now.as_micros().to_string(); // Create a unique name.
-    let port = 5200;
-
-    // Get a single IPv4 address
-    let ip_addr1 = my_ip_interfaces()
-        .iter()
-        .find(|iface| iface.ip().is_ipv4())
-        .map(|iface| iface.ip())
-        .unwrap();
-
-    // Register the service.
-    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
-        .expect("valid service info");
-    let server1 = ServiceDaemon::new().expect("failed to start server");
-    server1
-        .register(service1)
-        .expect("Failed to register service1");
-
-    // wait for the service announced.
-    sleep(Duration::from_secs(1));
-
-    // start a client
-    let client = ServiceDaemon::new().expect("failed to start client");
-    let receiver = client.browse(ty_domain, false).unwrap();
-    let timeout = Duration::from_secs(2);
-    let mut got_resolved = false;
-    let mut got_detailed = false;
-
-    while let Ok(event) = receiver.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceResolved(_) => {
-                got_resolved = true;
-                break;
-            }
-            ServiceEvent::ServiceDetailed(_) => {
-                got_detailed = true;
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    assert!(
-        got_resolved,
-        "Should receive ServiceResolved event by default"
-    );
-    assert!(
-        !got_detailed,
-        "Should not receive ServiceDetailed event by default"
-    );
-
-    // Now enable use_resolved_service and test for ServiceDetailed
-    client.use_service_detailed(true).unwrap();
-    let browse_chan = client.browse(ty_domain, false).unwrap();
-    let mut got_detailed = false;
-    let mut got_resolved = false;
-
-    while let Ok(event) = browse_chan.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceDetailed(resolved) => {
-                got_detailed = true;
-                println!("address: {:?}", resolved.addresses);
-                let first_addr = resolved.addresses.iter().next().unwrap();
-                let HostIp::V4(ip_v4) = first_addr else {
-                    assert!(false, "Address should be IPv4");
-                    return;
-                };
-                println!("Resolved address: {}", ip_v4.addr());
-                break;
-            }
-            ServiceEvent::ServiceResolved(_) => {
-                got_resolved = true;
-                break;
-            }
-            _ => {}
-        }
-    }
-    assert!(
-        got_detailed,
-        "Should receive ServiceDetailed event when enabled"
-    );
-    assert!(
-        !got_resolved,
-        "Should not receive ServiceResolved event when detailed is enabled"
-    );
-
-    server1.shutdown().unwrap();
-    client.shutdown().unwrap();
-}
-
-#[test]
-fn test_use_service_detailed_v6() {
-    // start a server
-    let ty_domain = "_detailed-v6._udp.local.";
-    let host_name = "service_detailed_v6.local.";
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap();
-    let instance_name = now.as_micros().to_string(); // Create a unique name.
-    let port = 5200;
-
-    // Get a single IPv4 address
-    let ipv6_addrs: Vec<_> = my_ip_interfaces()
-        .iter()
-        .filter(|iface| iface.ip().is_ipv6() && iface.is_link_local())
-        .map(|iface| iface.ip())
-        .collect();
-
-    // Register the service.
-    let service1 = ServiceInfo::new(
-        ty_domain,
-        &instance_name,
-        host_name,
-        &ipv6_addrs[..],
-        port,
-        None,
-    )
-    .expect("valid service info");
-    let server1 = ServiceDaemon::new().expect("failed to start server");
-    server1
-        .register(service1)
-        .expect("Failed to register service1");
-
-    // wait for the service announced.
-    sleep(Duration::from_secs(1));
-
-    // start a client
-    let client = ServiceDaemon::new().expect("failed to start client");
-    let receiver = client.browse(ty_domain, false).unwrap();
-    let timeout = Duration::from_secs(2);
-    let mut got_resolved = false;
-    let mut got_detailed = false;
-
-    while let Ok(event) = receiver.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceResolved(_) => {
-                got_resolved = true;
-                break;
-            }
-            ServiceEvent::ServiceDetailed(_) => {
-                got_detailed = true;
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    assert!(
-        got_resolved,
-        "Should receive ServiceResolved event by default"
-    );
-    assert!(
-        !got_detailed,
-        "Should not receive ServiceDetailed event by default"
-    );
-
-    // Now enable use_resolved_service and test for ServiceDetailed
-    client.use_service_detailed(true).unwrap();
-    let browse_chan = client.browse(ty_domain, false).unwrap();
-    let mut got_detailed = false;
-    let mut got_resolved = false;
-
-    while let Ok(event) = browse_chan.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceDetailed(resolved) => {
-                got_detailed = true;
-                assert!(
-                    resolved.addresses.len() > 0,
-                    "Should have at least one address"
-                );
-                let first_addr = resolved.addresses.into_iter().next().unwrap();
-                assert!(first_addr.is_ipv6(), "Address should be IPv6");
-                println!("Resolved address: {}", first_addr);
-                let HostIp::V6(ip_v6) = first_addr else {
-                    assert!(false, "Address should be IPv6");
-                    return;
-                };
-                let scope_id = ip_v6.scope_id();
-                assert!(
-                    scope_id.index != 0,
-                    "Link-local address should have a scope ID"
-                );
-                println!("Scope ID: {}", scope_id);
-                break;
-            }
-            ServiceEvent::ServiceResolved(_) => {
-                got_resolved = true;
-                break;
-            }
-            _ => {}
-        }
-    }
-    assert!(
-        got_detailed,
-        "Should receive ServiceDetailed event when enabled"
-    );
-    assert!(
-        !got_resolved,
-        "Should not receive ServiceResolved event when detailed is enabled"
-    );
-
-    server1.shutdown().unwrap();
-    client.shutdown().unwrap();
 }

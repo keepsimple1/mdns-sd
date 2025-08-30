@@ -6,10 +6,9 @@
 use crate::log::{debug, trace};
 use crate::{
     dns_parser::{DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, InterfaceId, RRType},
-    service_info::{split_sub_domain, valid_ip_on_intf, valid_two_addrs_on_intf},
-    HostIp,
+    service_info::{split_sub_domain, MyIntf},
+    ScopedIp,
 };
-use if_addrs::Interface;
 use std::{
     collections::{HashMap, HashSet},
     time::SystemTime,
@@ -126,7 +125,7 @@ impl DnsCache {
     ///
     /// Note that the keys in the returned HashMap are the same hostname, with different cases
     /// of letters (e.g. "example.local.", "Example.local.", "EXAMPLE.local.").
-    pub(crate) fn get_addresses_for_host(&self, host: &str) -> HashMap<String, HashSet<HostIp>> {
+    pub(crate) fn get_addresses_for_host(&self, host: &str) -> HashMap<String, HashSet<ScopedIp>> {
         let hostname_lower = host.to_lowercase();
         let mut result = HashMap::new();
 
@@ -196,7 +195,7 @@ impl DnsCache {
     /// If you need to add new timers for related records, push into `timers`.
     pub(crate) fn add_or_update(
         &mut self,
-        intf: &Interface,
+        intf: &MyIntf,
         incoming: DnsRecordBox,
         timers: &mut Vec<u64>,
         is_for_us: bool,
@@ -260,11 +259,7 @@ impl DnsCache {
                     if rtype == RRType::A || rtype == RRType::AAAA {
                         if let Some(addr) = r.record.any().downcast_ref::<DnsAddress>() {
                             if let Some(addr_b) = incoming.any().downcast_ref::<DnsAddress>() {
-                                should_flush = valid_two_addrs_on_intf(
-                                    &addr.address().to_ip_addr(),
-                                    &addr_b.address().to_ip_addr(),
-                                    intf,
-                                );
+                                should_flush = addr.interface_id.index == addr_b.interface_id.index;
                             }
                         }
                     }
@@ -331,7 +326,7 @@ impl DnsCache {
 
     /// Iterates all ADDR records and remove ones that expired.
     /// Returns the expired ones in a map of names and addresses.
-    pub(crate) fn evict_expired_addr(&mut self, now: u64) -> HashMap<String, HashSet<HostIp>> {
+    pub(crate) fn evict_expired_addr(&mut self, now: u64) -> HashMap<String, HashSet<ScopedIp>> {
         let mut removed = HashMap::new();
 
         self.addr.retain(|_, records| {
@@ -614,7 +609,7 @@ impl DnsCache {
     pub(crate) fn refresh_due_hostname_resolutions(
         &mut self,
         hostname: &str,
-    ) -> HashSet<(String, HostIp)> {
+    ) -> HashSet<(String, ScopedIp)> {
         let now = current_time_millis();
 
         self.addr
@@ -678,7 +673,7 @@ impl DnsCache {
             .collect()
     }
 
-    pub(crate) fn remove_addrs_on_disabled_intf(&mut self, disabled_intf: &Interface) {
+    pub(crate) fn remove_addrs_on_disabled_intf(&mut self, disabled_if_index: u32) {
         for (host, records) in self.addr.iter_mut() {
             records.retain(|record| {
                 let Some(dns_addr) = record.record.any().downcast_ref::<DnsAddress>() else {
@@ -686,10 +681,10 @@ impl DnsCache {
                 };
 
                 // Remove the record if it is on this interface.
-                if valid_ip_on_intf(&dns_addr.address().to_ip_addr(), disabled_intf) {
+                if dns_addr.interface_id.index == disabled_if_index {
                     debug!(
                         "removing ADDR on disabled intf: {:?} host {host}",
-                        dns_addr.address()
+                        dns_addr.interface_id.name
                     );
                     false
                 } else {
