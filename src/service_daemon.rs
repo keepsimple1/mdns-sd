@@ -3792,7 +3792,7 @@ fn prepare_announce(
 
     if intf_addrs.is_empty() {
         debug!(
-            "prepare_announce: no valid addrs on interface {}",
+            "prepare_announce (ipv4: {is_ipv4}): no valid addrs on interface {}",
             &intf.name
         );
         return None;
