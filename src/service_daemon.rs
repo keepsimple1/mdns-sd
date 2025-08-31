@@ -4697,7 +4697,7 @@ mod tests {
         while let Ok(event) = receiver.recv_timeout(timeout) {
             match event {
                 ServiceEvent::ServiceResolved(_) => {
-                    println!("Received ServiceData event");
+                    println!("Received ServiceResolved event");
                     got_data = true;
                     break;
                 }
@@ -4705,7 +4705,7 @@ mod tests {
             }
         }
 
-        assert!(got_data, "Should receive ServiceData event");
+        assert!(got_data, "Should receive ServiceResolved event");
 
         // Set a short IP check interval to detect interface changes quickly.
         client.set_ip_check_interval(1).unwrap();
@@ -4735,7 +4735,7 @@ mod tests {
             match event {
                 ServiceEvent::ServiceResolved(resolved) => {
                     got_data = true;
-                    println!("Received ServiceData: {:?}", resolved);
+                    println!("Received ServiceResolved: {:?}", resolved);
                     break;
                 }
                 _ => {}
@@ -4743,7 +4743,7 @@ mod tests {
         }
         assert!(
             got_data,
-            "Should receive ServiceData event after interface is back up"
+            "Should receive ServiceResolved event after interface is back up"
         );
 
         server1.shutdown().unwrap();

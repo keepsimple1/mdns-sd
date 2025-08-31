@@ -10,10 +10,12 @@ And `user_service_data()` is no longer needed and removed.
 
 Sorry about the confusions but I think this helps for the long term. I think / hope the required code changes are minimal for most users.
 
-- All commits
+## All changes
 
 * `221e0be 2025-08-29` feat: impl AsIpAddrs for Box<dyn AsIpAddrs> (#387) (Jean-Gab)
 * `f88fae1 2025-08-27` merge ServiceData with ServiceResolved (#386) (keepsimple1)
+
+Thanks our new contributor @Jean-Gab, welcome!
 
 # Version 0.14.1 (2025-8-19)
 
