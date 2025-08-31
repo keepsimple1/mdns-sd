@@ -3640,7 +3640,8 @@ fn call_hostname_resolution_listener(
 }
 
 /// Returns valid network interfaces in the host system.
-/// Loopback interfaces are excluded. Operational down interfaces are excluded as well.
+/// Operational down interfaces are excluded.
+/// Loopback interfaces are excluded if `with_loopback` is false.
 fn my_ip_interfaces(with_loopback: bool) -> Vec<Interface> {
     if_addrs::get_if_addrs()
         .unwrap_or_default()
