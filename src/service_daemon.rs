@@ -2040,7 +2040,7 @@ impl Zeroconf {
                         ty_domain.to_string(),
                         ptr.alias().to_string(),
                     )) {
-                        Ok(()) => debug!("send service found {}", ptr.alias()),
+                        Ok(()) => debug!("sent service found {}", ptr.alias()),
                         Err(e) => {
                             debug!("failed to send service found: {}", e);
                             continue;
@@ -2302,6 +2302,7 @@ impl Zeroconf {
                         // send ServiceFound
                         if let Some(dns_ptr) = dns_record.record.any().downcast_ref::<DnsPointer>()
                         {
+                            debug!("calling listener with service found: {name}");
                             call_service_listener(
                                 &self.service_queriers,
                                 name,
