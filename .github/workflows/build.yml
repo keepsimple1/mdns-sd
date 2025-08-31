@@ -13,6 +13,7 @@ env:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -36,6 +37,7 @@ jobs:
         run: cargo clippy -- -D warnings
       - name: Run tests with debugs
         if: matrix.os == 'ubuntu-20.04' || matrix.os == 'macos-latest'
+        timeout-minutes: 2
         run: RUST_LOG=debug cargo test --verbose
       - name: Run tests on Windows
         if: matrix.os == 'windows-latest'
