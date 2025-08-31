@@ -38,7 +38,7 @@ jobs:
       - name: Run tests with debugs
         if: matrix.os == 'ubuntu-20.04' || matrix.os == 'macos-latest'
         timeout-minutes: 2
-        run: RUST_LOG=debug cargo test --verbose
+        run: RUST_LOG=debug cargo test -- --nocapture
       - name: Run tests on Windows
         if: matrix.os == 'windows-latest'
         run: cargo test
