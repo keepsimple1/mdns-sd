@@ -2040,7 +2040,7 @@ impl Zeroconf {
                         ty_domain.to_string(),
                         ptr.alias().to_string(),
                     )) {
-                        Ok(()) => debug!("send service found {}", ptr.alias()),
+                        Ok(()) => debug!("sent service found {}", ptr.alias()),
                         Err(e) => {
                             debug!("failed to send service found: {}", e);
                             continue;
@@ -2302,6 +2302,7 @@ impl Zeroconf {
                         // send ServiceFound
                         if let Some(dns_ptr) = dns_record.record.any().downcast_ref::<DnsPointer>()
                         {
+                            debug!("calling listener with service found: {name}");
                             call_service_listener(
                                 &self.service_queriers,
                                 name,
@@ -3639,7 +3640,8 @@ fn call_hostname_resolution_listener(
 }
 
 /// Returns valid network interfaces in the host system.
-/// Loopback interfaces are excluded. Operational down interfaces are excluded as well.
+/// Operational down interfaces are excluded.
+/// Loopback interfaces are excluded if `with_loopback` is false.
 fn my_ip_interfaces(with_loopback: bool) -> Vec<Interface> {
     if_addrs::get_if_addrs()
         .unwrap_or_default()
@@ -3790,7 +3792,7 @@ fn prepare_announce(
 
     if intf_addrs.is_empty() {
         debug!(
-            "prepare_announce: no valid addrs on interface {}",
+            "prepare_announce (ipv4: {is_ipv4}): no valid addrs on interface {}",
             &intf.name
         );
         return None;
@@ -4697,7 +4699,7 @@ mod tests {
         while let Ok(event) = receiver.recv_timeout(timeout) {
             match event {
                 ServiceEvent::ServiceResolved(_) => {
-                    println!("Received ServiceData event");
+                    println!("Received ServiceResolved event");
                     got_data = true;
                     break;
                 }
@@ -4705,7 +4707,7 @@ mod tests {
             }
         }
 
-        assert!(got_data, "Should receive ServiceData event");
+        assert!(got_data, "Should receive ServiceResolved event");
 
         // Set a short IP check interval to detect interface changes quickly.
         client.set_ip_check_interval(1).unwrap();
@@ -4735,7 +4737,7 @@ mod tests {
             match event {
                 ServiceEvent::ServiceResolved(resolved) => {
                     got_data = true;
-                    println!("Received ServiceData: {:?}", resolved);
+                    println!("Received ServiceResolved: {:?}", resolved);
                     break;
                 }
                 _ => {}
@@ -4743,7 +4745,7 @@ mod tests {
         }
         assert!(
             got_data,
-            "Should receive ServiceData event after interface is back up"
+            "Should receive ServiceResolved event after interface is back up"
         );
 
         server1.shutdown().unwrap();

@@ -1,3 +1,22 @@
+# Version 0.15.0 (2025-08-31)
+
+## Breaking changes
+
+- `ServiceEvent::ServiceData` is merged back with `ServiceResolved` (i.e. replacing it). The end result is: we have a single `ServiceEvent::ServiceResolved(ResolvedService)` going forward.
+
+Hence, a service is respresented by `ResolvedService` on the client side, and by `ServiceInfo` on the server side.
+
+And `user_service_data()` is no longer needed and removed.
+
+Sorry about the confusions but I think this helps for the long term. I think / hope the required code changes are minimal for most users.
+
+## All changes
+
+* `221e0be 2025-08-29` feat: impl AsIpAddrs for Box<dyn AsIpAddrs> (#387) (Jean-Gab)
+* `f88fae1 2025-08-27` merge ServiceData with ServiceResolved (#386) (keepsimple1)
+
+Thanks our new contributor @Jean-Gab, welcome!
+
 # Version 0.14.1 (2025-8-19)
 
 This is a bugfix release with only a doc comments change.
