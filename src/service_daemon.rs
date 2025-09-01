@@ -2945,7 +2945,7 @@ impl Zeroconf {
             .collect();
 
         debug!(
-            "will browse: {service_type} on [{}]",
+            "will browse (repeat: {repeating}): {service_type} on [{}]",
             pretty_addrs.join(", ")
         );
 
@@ -4404,6 +4404,7 @@ mod tests {
 
         // register my service
         let mdns_server = ServiceDaemon::new().expect("Failed to create mdns server");
+        mdns_server.set_multicast_loop_v4(true).unwrap();
         let result = mdns_server.register(my_service);
         assert!(result.is_ok());
 
