@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-latest, macos-latest]
+        os: [ubuntu-22.04, windows-latest, macos-14]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.70.0
@@ -36,7 +36,7 @@ jobs:
       - name: Run clippy and fail if any warnings
         run: cargo clippy -- -D warnings
       - name: Run tests with debugs
-        if: matrix.os == 'ubuntu-20.04' || matrix.os == 'macos-latest'
+        if: matrix.os == 'ubuntu-20.04' || matrix.os == 'macos-14'
         timeout-minutes: 2
         run: RUST_LOG=debug cargo test -- --nocapture
       - name: Run tests on Windows
