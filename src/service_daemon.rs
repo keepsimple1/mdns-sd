@@ -2934,7 +2934,7 @@ impl Zeroconf {
     fn exec_command_browse(
         &mut self,
         repeating: bool,
-        service_type: String,
+        ty: String,
         next_delay: u32,
         listener: Sender<ServiceEvent>,
     ) {
@@ -2944,19 +2944,14 @@ impl Zeroconf {
             .map(|(if_index, itf)| format!("{} ({if_index})", itf.name))
             .collect();
 
-        debug!(
-            "will browse (repeat: {repeating}): {service_type} on [{}]",
-            pretty_addrs.join(", ")
-        );
-
         if let Err(e) = listener.send(ServiceEvent::SearchStarted(format!(
-            "{service_type} on {} interfaces [{}]",
+            "{ty} on {} interfaces [{}]",
             pretty_addrs.len(),
             pretty_addrs.join(", ")
         ))) {
             debug!(
                 "Failed to send SearchStarted({})(repeating:{}): {}",
-                &service_type, repeating, e
+                &ty, repeating, e
             );
             return;
         }
@@ -2966,20 +2961,19 @@ impl Zeroconf {
             // Binds a `listener` to querying mDNS domain type `ty`.
             //
             // If there is already a `listener`, it will be updated, i.e. overwritten.
-            self.service_queriers
-                .insert(service_type.clone(), listener.clone());
+            self.service_queriers.insert(ty.clone(), listener.clone());
 
             // if we already have the records in our cache, just send them
-            self.query_cache_for_service(&service_type, &listener, now);
+            self.query_cache_for_service(&ty, &listener, now);
         }
 
-        self.send_query(&service_type, RRType::PTR);
+        self.send_query(&ty, RRType::PTR);
         self.increase_counter(Counter::Browse, 1);
 
         let next_time = now + (next_delay * 1000) as u64;
         let max_delay = 60 * 60;
         let delay = cmp::min(next_delay * 2, max_delay);
-        self.add_retransmission(next_time, Command::Browse(service_type, delay, listener));
+        self.add_retransmission(next_time, Command::Browse(ty, delay, listener));
     }
 
     fn exec_command_resolve_hostname(
@@ -4404,7 +4398,6 @@ mod tests {
 
         // register my service
         let mdns_server = ServiceDaemon::new().expect("Failed to create mdns server");
-        mdns_server.set_multicast_loop_v4(true).unwrap();
         let result = mdns_server.register(my_service);
         assert!(result.is_ok());
 
