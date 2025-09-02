@@ -78,7 +78,7 @@ fn integration_success() {
     let mut resolved_ips: HashSet<IpAddr> = HashSet::new();
     let mut addr_count = 0;
 
-    let browse_chan = d.browse(ty_domain, false).unwrap();
+    let browse_chan = d.browse(ty_domain).unwrap();
     let timeout = Duration::from_secs(2);
     while let Ok(event) = browse_chan.recv_timeout(timeout) {
         match event {
@@ -226,7 +226,7 @@ fn integration_success() {
 
     // Browse using the special meta-query.
     let meta_query = "_services._dns-sd._udp.local.";
-    let browse_chan = d.browse(meta_query, false).unwrap();
+    let browse_chan = d.browse(meta_query).unwrap();
     let timeout = Duration::from_secs(2);
 
     loop {
@@ -289,7 +289,7 @@ fn service_without_properties_with_alter_net_v4() {
     println!("Registered service with host_ip: {:?}", &host_ip);
 
     // Browse for a service
-    let browse_chan = d.browse(ty_domain, false).unwrap();
+    let browse_chan = d.browse(ty_domain).unwrap();
     let timeout = Duration::from_secs(2);
     let timer = std::time::Instant::now() + timeout;
     let mut found = false;
@@ -362,7 +362,7 @@ fn service_without_properties_with_alter_net_v6() {
     println!("Registered service with host_ip: {:?}", &host_ip);
 
     // Browse for a service
-    let browse_chan = d.browse(ty_domain, false).unwrap();
+    let browse_chan = d.browse(ty_domain).unwrap();
     let timeout = Duration::from_secs(2);
     let timer = std::time::Instant::now() + timeout;
     let mut found = false;
@@ -567,7 +567,7 @@ fn service_with_named_interface_only() {
     d.register(my_service).unwrap();
 
     // Browse for a service and verify all addresses are IPv4.
-    let browse_chan = d.browse(my_ty_domain, false).unwrap();
+    let browse_chan = d.browse(my_ty_domain).unwrap();
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
 
@@ -603,7 +603,7 @@ fn service_with_named_interface_only() {
     d.enable_interface(&if_name).unwrap();
 
     // Browse again.
-    let browse_chan = d.browse(my_ty_domain, false).unwrap();
+    let browse_chan = d.browse(my_ty_domain).unwrap();
     let timeout = Duration::from_secs(3);
     let mut resolved = false;
 
@@ -657,7 +657,7 @@ fn service_with_ipv4_only() {
     assert!(result.is_ok());
 
     // Browse for a service and verify all addresses are IPv4.
-    let browse_chan = d.browse(service_ipv4_only, false).unwrap();
+    let browse_chan = d.browse(service_ipv4_only).unwrap();
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
 
@@ -732,7 +732,7 @@ fn test_disable_interface_cache() {
     client.disable_interface(service_ip_addr).unwrap();
 
     // Browse for the service.
-    let handle = client.browse(&ty_domain, false).unwrap();
+    let handle = client.browse(&ty_domain).unwrap();
     let timeout = Duration::from_secs(1);
     let mut resolved = false;
 
@@ -789,7 +789,7 @@ fn service_with_invalid_addr_v4() {
         .expect("Failed to register our service");
 
     // Browse for a service
-    let browse_chan = d.browse(ty_domain, false).unwrap();
+    let browse_chan = d.browse(ty_domain).unwrap();
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
     loop {
@@ -846,7 +846,7 @@ fn service_with_invalid_addr_v6() {
         .expect("Failed to register our service");
 
     // Browse for a service
-    let browse_chan = d.browse(ty_domain, false).unwrap();
+    let browse_chan = d.browse(ty_domain).unwrap();
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
     loop {
@@ -911,7 +911,7 @@ fn service_with_loopback_addr() {
         .expect("Failed to register our service");
 
     // Browse for the service.
-    let browse_chan = d.browse(ty_domain, false).unwrap();
+    let browse_chan = d.browse(ty_domain).unwrap();
     let timeout = Duration::from_secs(2);
     let mut found_loopback = false;
     loop {
@@ -979,7 +979,7 @@ fn subtype() {
 
     // Browse for the service via ty_domain and subtype_domain
     for domain in [ty_domain, subtype_domain].iter() {
-        let browse_chan = d.browse(domain, false).unwrap();
+        let browse_chan = d.browse(domain).unwrap();
         let timeout = Duration::from_secs(2);
         loop {
             match browse_chan.recv_timeout(timeout) {
@@ -1076,7 +1076,7 @@ fn service_new_publish_after_browser() {
     let daemon = ServiceDaemon::new().expect("Failed to create a new daemon");
 
     // First, starts the browser.
-    let receiver = daemon.browse(service_type, false).unwrap();
+    let receiver = daemon.browse(service_type).unwrap();
 
     sleep(Duration::from_millis(1000));
 
@@ -1171,7 +1171,7 @@ fn instance_name_two_dots() {
     assert!(published);
 
     // Browse the service.
-    let receiver = server_daemon.browse(service_type, false).unwrap();
+    let receiver = server_daemon.browse(service_type).unwrap();
     let mut resolved = false;
     let timeout = Duration::from_secs(2);
     loop {
@@ -1489,7 +1489,7 @@ fn test_cache_flush_record() {
 
     // Browse for a service
     let client = ServiceDaemon::new().expect("Failed to create client");
-    let browse_chan = client.browse(service, false).unwrap();
+    let browse_chan = client.browse(service).unwrap();
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
 
@@ -1543,7 +1543,7 @@ fn test_cache_flush_record() {
     sleep(Duration::from_secs(2));
 
     // Browse for the updated IPv4 address.
-    let browse_chan = client.browse(service, false).unwrap();
+    let browse_chan = client.browse(service).unwrap();
     resolved = false;
     while let Ok(event) = browse_chan.recv_timeout(timeout) {
         match event {
@@ -1609,7 +1609,7 @@ fn test_cache_flush_remove_one_addr() {
 
     // Browse for a service
     let client = ServiceDaemon::new().expect("Failed to create client");
-    let browse_chan = client.browse(service, false).unwrap();
+    let browse_chan = client.browse(service).unwrap();
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
 
@@ -1644,7 +1644,7 @@ fn test_cache_flush_remove_one_addr() {
     sleep(Duration::from_secs(2));
 
     // Browse for the updated IPv4 address.
-    let browse_chan = client.browse(service, false).unwrap();
+    let browse_chan = client.browse(service).unwrap();
     resolved = false;
     while let Ok(event) = browse_chan.recv_timeout(timeout) {
         match event {
@@ -1702,7 +1702,7 @@ fn test_cache_flush_srv() {
 
     // Browse for the service
     let client = ServiceDaemon::new().expect("Failed to create client");
-    let browse_chan = client.browse(service, false).unwrap();
+    let browse_chan = client.browse(service).unwrap();
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
 
@@ -1799,7 +1799,7 @@ fn test_known_answer_suppression() {
 
     // Browse the service
     let client = ServiceDaemon::new().expect("Failed to create mdns client");
-    let browse_chan = client.browse(ty_domain, false).unwrap();
+    let browse_chan = client.browse(ty_domain).unwrap();
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
 
@@ -1818,7 +1818,7 @@ fn test_known_answer_suppression() {
     assert!(resolved);
 
     // Browse again to trigger Known Answer Suppression for sure.
-    let browse_chan = client.browse(ty_domain, false).unwrap();
+    let browse_chan = client.browse(ty_domain).unwrap();
     resolved = false;
 
     while let Ok(event) = browse_chan.recv_timeout(timeout) {
@@ -1846,8 +1846,8 @@ fn test_known_answer_suppression() {
 #[test]
 fn test_domain_suffix_in_browse() {
     let mdns_client = ServiceDaemon::new().expect("failed to create mDNS client");
-    assert!(mdns_client.browse("_service-name._tcp.local", false).is_err());
-    assert!(mdns_client.browse("_service-name._tcp.local.", false).is_ok());
+    assert!(mdns_client.browse("_service-name._tcp.local").is_err());
+    assert!(mdns_client.browse("_service-name._tcp.local.").is_ok());
     mdns_client.shutdown().unwrap();
 }
 
@@ -1917,7 +1917,7 @@ fn test_name_conflict_resolution() {
 
     // Verify both services are resolved.
     let client = ServiceDaemon::new().expect("failed to create mdns client");
-    let receiver = client.browse(ty_domain, false).unwrap();
+    let receiver = client.browse(ty_domain).unwrap();
 
     let timeout = Duration::from_secs(3);
     let mut service_names = HashSet::new();
@@ -2019,7 +2019,7 @@ fn test_name_tiebreaking() {
 
     // Verify both services are resolved.
     let client = ServiceDaemon::new().expect("failed to create mdns client");
-    let receiver = client.browse(ty_domain, false).unwrap();
+    let receiver = client.browse(ty_domain).unwrap();
 
     let timeout = Duration::from_secs(3);
     let mut resolved_services = vec![];
@@ -2149,7 +2149,7 @@ fn test_name_conflict_3() {
 
     // Verify all services are resolved.
     let client = ServiceDaemon::new().expect("failed to create mdns client");
-    let receiver = client.browse(ty_domain, false).unwrap();
+    let receiver = client.browse(ty_domain).unwrap();
 
     let timeout = Duration::from_secs(3);
     let mut service_names = HashSet::new();
@@ -2210,7 +2210,7 @@ fn test_verify_srv() {
 
     // start a client
     let client = ServiceDaemon::new().expect("failed to start client");
-    let receiver = client.browse(ty_domain, false).unwrap();
+    let receiver = client.browse(ty_domain).unwrap();
     let timeout = Duration::from_secs(2);
 
     while let Ok(event) = receiver.recv_timeout(timeout) {
@@ -2284,7 +2284,7 @@ fn test_multicast_loop_v4() {
     // For Windows, IP_MULTICAST_LOOP option works only on the receive path.
     client.set_multicast_loop_v4(false).unwrap();
 
-    let receiver = client.browse(ty_domain, false).unwrap();
+    let receiver = client.browse(ty_domain).unwrap();
 
     let timeout = Duration::from_secs(2);
     while let Ok(event) = receiver.recv_timeout(timeout) {
@@ -2308,7 +2308,7 @@ fn test_multicast_loop_v4() {
     // enable loopback and try again.
     server.set_multicast_loop_v4(true).unwrap();
     client.set_multicast_loop_v4(true).unwrap();
-    let receiver = client.browse(ty_domain, false).unwrap();
+    let receiver = client.browse(ty_domain).unwrap();
 
     while let Ok(event) = receiver.recv_timeout(timeout) {
         match event {
@@ -2367,7 +2367,7 @@ fn test_multicast_loop_v6() {
     // For Windows, IP_MULTICAST_LOOP option works only on the receive path.
     client.set_multicast_loop_v6(false).unwrap();
 
-    let receiver = client.browse(ty_domain, false).unwrap();
+    let receiver = client.browse(ty_domain).unwrap();
 
     let timeout = Duration::from_secs(2);
     while let Ok(event) = receiver.recv_timeout(timeout) {
@@ -2392,7 +2392,7 @@ fn test_multicast_loop_v6() {
     server.set_multicast_loop_v6(true).unwrap();
     client.set_multicast_loop_v6(true).unwrap();
 
-    let receiver = client.browse(ty_domain, false).unwrap();
+    let receiver = client.browse(ty_domain).unwrap();
 
     while let Ok(event) = receiver.recv_timeout(timeout) {
         match event {

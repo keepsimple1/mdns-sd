@@ -31,7 +31,7 @@ fn main() {
     let mdns = ServiceDaemon::new().expect("Failed to create daemon");
 
     // Browse for the service type
-    let receiver = mdns.browse(&service_type, false).expect("Failed to browse");
+    let receiver = mdns.browse(&service_type).expect("Failed to browse");
 
     let now = std::time::Instant::now();
     while let Ok(event) = receiver.recv() {

@@ -303,11 +303,26 @@ impl ServiceDaemon {
     ///
     /// When a new instance is found, the daemon automatically tries to resolve, i.e.
     /// finding more details, i.e. SRV records and TXT records.
-    pub fn browse(&self, service_type: &str, cache_only: bool) -> Result<Receiver<ServiceEvent>> {
+    pub fn browse(&self, service_type: &str) -> Result<Receiver<ServiceEvent>> {
         check_domain_suffix(service_type)?;
 
         let (resp_s, resp_r) = bounded(10);
-        self.send_cmd(Command::Browse(service_type.to_string(), 1, cache_only, resp_s))?;
+        self.send_cmd(Command::Browse(service_type.to_string(), 1, false, resp_s))?;
+        Ok(resp_r)
+    }
+
+    /// Preforms a "cache-only" browse.
+    ///
+    ///
+    /// `service_type` must end with a valid mDNS domain: '._tcp.local.' or '._udp.local.'
+    ///
+    /// The functionality is identical to 'browse', but the service events are based solely on the contents
+    /// of the daemon's cache. No actual mDNS query is published to the network.
+    pub fn browse_cache(&self, service_type: &str) -> Result<Receiver<ServiceEvent>> {
+        check_domain_suffix(service_type)?;
+
+        let (resp_s, resp_r) = bounded(10);
+        self.send_cmd(Command::Browse(service_type.to_string(), 1, true, resp_s))?;
         Ok(resp_r)
     }
 
@@ -493,7 +508,7 @@ impl ServiceDaemon {
         )))
     }
 
-    /// If `accept` is true, accept and cache all responses. If `accept` is false, accept only responses
+    /// If `accept` is true, accept and cache all responses. If `accept` is false (default), accept only responses
     /// matching queries that we have initiated.
     ///
     /// For example:
@@ -4318,7 +4333,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Browse for a service
-        let browse_chan = d.browse(service, false).unwrap();
+        let browse_chan = d.browse(service).unwrap();
         let timeout = Duration::from_secs(2);
         let mut resolved = false;
 
@@ -4394,7 +4409,7 @@ mod tests {
         );
 
         // Restart the browse to force the sender to re-send the announcements.
-        let browse_chan = d.browse(service, false).unwrap();
+        let browse_chan = d.browse(service).unwrap();
 
         resolved = false;
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
@@ -4435,7 +4450,7 @@ mod tests {
         assert!(result.is_ok());
 
         let mdns_client = ServiceDaemon::new().expect("Failed to create mdns client");
-        let browse_chan = mdns_client.browse(service_type, false).unwrap();
+        let browse_chan = mdns_client.browse(service_type).unwrap();
         let timeout = Duration::from_secs(2);
         let mut resolved = false;
 
@@ -4574,7 +4589,7 @@ mod tests {
         assert!(result.is_ok());
 
         let mdns_client = ServiceDaemon::new().expect("Failed to create mdns client");
-        let browse_chan = mdns_client.browse(service_type, false).unwrap();
+        let browse_chan = mdns_client.browse(service_type).unwrap();
         let timeout = Duration::from_millis(1500); // Give at least 1 second for the service probing.
         let mut resolved = false;
 
@@ -4724,7 +4739,7 @@ mod tests {
         // start a client
         let client = ServiceDaemon::new().expect("failed to start client");
 
-        let receiver = client.browse(ty_domain, false).unwrap();
+        let receiver = client.browse(ty_domain).unwrap();
 
         let timeout = Duration::from_secs(3);
         let mut got_data = false;
@@ -4785,7 +4800,7 @@ mod tests {
         client.shutdown().unwrap();
     }
 
-     #[test]
+    #[test]
     fn test_cache_only() {
         // construct service info
         let service_type = "_cache_only._udp.local.";
@@ -4816,7 +4831,7 @@ mod tests {
         assert!(result.is_ok());
 
         let mdns_client = ServiceDaemon::new().expect("Failed to create mdns client");
-        let browse_chan = mdns_client.browse(service_type, true).unwrap();
+        let browse_chan = mdns_client.browse_cache(service_type).unwrap();
         let timeout = Duration::from_millis(1500); // Give at least 1 second for the service probing.
         let mut resolved = false;
 
