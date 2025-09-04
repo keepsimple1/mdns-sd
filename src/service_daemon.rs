@@ -4825,12 +4825,76 @@ mod tests {
         let new_ttl = 3; // for testing only.
         my_service._set_other_ttl(new_ttl);
 
+        let mdns_client = ServiceDaemon::new().expect("Failed to create mdns client");
+
+        // make a single browse request to record that we are interested in the service.  This ensures that
+        // subsequent announcements are cached.
+        let browse_chan = mdns_client.browse_cache(service_type).unwrap();
+        std::thread::sleep(Duration::from_secs(2));
+
+        // register my service
+        let mdns_server = ServiceDaemon::new().expect("Failed to create mdns server");
+        let result = mdns_server.register(my_service);
+        assert!(result.is_ok());
+
+        let timeout = Duration::from_millis(1500); // Give at least 1 second for the service probing.
+        let mut resolved = false;
+
+        // resolve the service.
+        while let Ok(event) = browse_chan.recv_timeout(timeout) {
+            match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    resolved = true;
+                    println!("Resolved a service of {}", &info.get_fullname());
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(resolved);
+
+        // Exit the server so that no more responses.
+        mdns_server.shutdown().unwrap();
+        mdns_client.shutdown().unwrap();
+    }
+
+    #[test]
+    fn test_cache_only_unsolicited() {
+        // construct service info
+        let service_type = "_cache_only._udp.local.";
+        let instance = "test_instance";
+        let host_name = "cache_only_host.local.";
+        let service_ip_addr = my_ip_interfaces(false)
+            .iter()
+            .find(|iface| iface.ip().is_ipv4())
+            .map(|iface| iface.ip())
+            .unwrap();
+
+        let mut my_service = ServiceInfo::new(
+            service_type,
+            instance,
+            host_name,
+            &service_ip_addr,
+            5023,
+            None,
+        )
+        .unwrap();
+
+        let new_ttl = 3; // for testing only.
+        my_service._set_other_ttl(new_ttl);
+
         // register my service
         let mdns_server = ServiceDaemon::new().expect("Failed to create mdns server");
         let result = mdns_server.register(my_service);
         assert!(result.is_ok());
 
         let mdns_client = ServiceDaemon::new().expect("Failed to create mdns client");
+        mdns_client.accept_unsolicited(true).unwrap();
+
+        // Wait a bit for the service announcements to go out, before calling browse_cache.  This ensures
+        // that the announcements are treated as unsolicited
+        std::thread::sleep(Duration::from_secs(2));
         let browse_chan = mdns_client.browse_cache(service_type).unwrap();
         let timeout = Duration::from_millis(1500); // Give at least 1 second for the service probing.
         let mut resolved = false;
