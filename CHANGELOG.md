@@ -2,6 +2,8 @@
 
 New feature: cache only browsing. Check out the new methods `browse_cache` and `accept_unsolicited`.
 
+## All chagnes
+
 * `3f6d6e9 2025-09-04` feat: support cache only browsing (#388) (twizansk)
 
 Thanks and welcome our new contributor @twizansk !
