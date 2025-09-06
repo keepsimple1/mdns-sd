@@ -1,3 +1,13 @@
+# Version 0.15.1 (2025-09-06)
+
+New feature: cache only browsing. Check out the new methods `browse_cache` and `accept_unsolicited`.
+
+## All chagnes
+
+* `3f6d6e9 2025-09-04` feat: support cache only browsing (#388) (twizansk)
+
+Thanks and welcome our new contributor @twizansk !
+
 # Version 0.15.0 (2025-08-31)
 
 ## Breaking changes
