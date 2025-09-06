@@ -313,11 +313,12 @@ impl ServiceDaemon {
 
     /// Preforms a "cache-only" browse.
     ///
-    ///
     /// `service_type` must end with a valid mDNS domain: '._tcp.local.' or '._udp.local.'
     ///
     /// The functionality is identical to 'browse', but the service events are based solely on the contents
-    /// of the daemon's cache. No actual mDNS query is published to the network.
+    /// of the daemon's cache. No actual mDNS query is sent to the network.
+    ///
+    /// See [accept_unsolicited](Self::accept_unsolicited) if you want to do cache-only browsing.
     pub fn browse_cache(&self, service_type: &str) -> Result<Receiver<ServiceEvent>> {
         check_domain_suffix(service_type)?;
 
@@ -508,8 +509,11 @@ impl ServiceDaemon {
         )))
     }
 
-    /// If `accept` is true, accept and cache all responses. If `accept` is false (default), accept only responses
-    /// matching queries that we have initiated.
+    /// If `accept` is true, accept and cache all responses, even if there is no active querier
+    /// for a given service type. This is useful / necessary when doing cache-only browsing. See
+    /// [browse_cache](Self::browse_cache).
+    ///
+    /// If `accept` is false (default), accept only responses matching queries that we have initiated.
     ///
     /// For example:
     /// ```ignore
