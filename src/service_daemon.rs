@@ -2549,40 +2549,36 @@ impl Zeroconf {
                 continue;
             }
 
-            for record in records.iter().filter(|r| !r.record.expires_soon(now)) {
-                if let Some(dns_ptr) = record.record.any().downcast_ref::<DnsPointer>() {
-                    if updated_instances.contains(dns_ptr.alias()) {
-                        let mut instance_found = false;
-                        let mut new_event = None;
+            for ptr in records.iter().filter(|r| !r.record.expires_soon(now)) {
+                let Some(dns_ptr) = ptr.record.any().downcast_ref::<DnsPointer>() else {
+                    continue;
+                };
 
-                        if let Ok(resolved) =
-                            self.resolve_service_from_cache(ty_domain, dns_ptr.alias())
-                        {
-                            debug!("resolve_updated_instances: from cache: {}", dns_ptr.alias());
-                            instance_found = true;
-                            if resolved.is_valid() {
-                                new_event = Some(ServiceEvent::ServiceResolved(Box::new(resolved)));
-                            } else {
-                                debug!("Resolved service is not valid: {}", dns_ptr.alias());
-                            }
-                        }
+                let instance = dns_ptr.alias();
+                if !updated_instances.contains(instance) {
+                    continue;
+                }
 
-                        if instance_found {
-                            if let Some(event) = new_event {
-                                debug!("call queriers to resolve {}", dns_ptr.alias());
-                                resolved.insert(dns_ptr.alias().to_string());
-                                call_service_listener(&self.service_queriers, ty_domain, event);
-                            } else {
-                                if self.resolved.remove(dns_ptr.alias()) {
-                                    removed_instances
-                                        .entry(ty_domain.to_string())
-                                        .or_insert_with(HashSet::new)
-                                        .insert(dns_ptr.alias().to_string());
-                                }
-                                unresolved.insert(dns_ptr.alias().to_string());
-                            }
-                        }
+                let Ok(resolved_service) = self.resolve_service_from_cache(ty_domain, instance)
+                else {
+                    continue;
+                };
+
+                debug!("resolve_updated_instances: from cache: {instance}");
+                if resolved_service.is_valid() {
+                    debug!("call queriers to resolve {instance}");
+                    resolved.insert(instance.to_string());
+                    let event = ServiceEvent::ServiceResolved(Box::new(resolved_service));
+                    call_service_listener(&self.service_queriers, ty_domain, event);
+                } else {
+                    debug!("Resolved service is not valid: {instance}");
+                    if self.resolved.remove(dns_ptr.alias()) {
+                        removed_instances
+                            .entry(ty_domain.to_string())
+                            .or_insert_with(HashSet::new)
+                            .insert(instance.to_string());
                     }
+                    unresolved.insert(instance.to_string());
                 }
             }
         }
