@@ -895,7 +895,7 @@ fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<
     match intf_ip {
         IpAddr::V4(ip) => {
             // Join mDNS group to receive packets.
-            debug!("join multicast group V4 on addr {}", ip);
+            debug!("join multicast group V4 on {} addr {ip}", intf.name);
             my_sock
                 .join_multicast_v4(&GROUP_ADDR_V4, ip)
                 .map_err(|e| e_fmt!("PKT join multicast group on addr {}: {}", intf_ip, e))?;
@@ -904,8 +904,8 @@ fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<
             let if_index = intf.index.unwrap_or(0);
             // Join mDNS group to receive packets.
             debug!(
-                "join multicast group V6 on addr {} with index {}",
-                ip, if_index
+                "join multicast group V6 on {} addr {ip} with index {if_index}",
+                intf.name
             );
             my_sock
                 .join_multicast_v6(&GROUP_ADDR_V6, if_index)
