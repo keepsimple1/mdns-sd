@@ -941,11 +941,13 @@ impl Zeroconf {
                     .ok();
 
                 // This clones a socket.
-                ipv4_sock = MyUdpSocket::new(sock)
-                    .map_err(|e| {
-                        e_fmt!("failed to create IPv4 MyUdpSocket: {e}");
-                    })
-                    .ok();
+                ipv4_sock = match MyUdpSocket::new(sock) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        debug!("failed to create IPv4 MyUdpSocket: {e}");
+                        None
+                    }
+                };
             }
             // Per RFC 6762 section 11:}
             Err(e) => debug!("failed to create IPv4 socket: {e}"),
@@ -963,11 +965,13 @@ impl Zeroconf {
                     .ok();
 
                 // This clones the ipv6 socket.
-                ipv6_sock = MyUdpSocket::new(sock)
-                    .map_err(|e| {
-                        e_fmt!("failed to create IPv6 MyUdpSocket: {e}");
-                    })
-                    .ok();
+                ipv6_sock = match MyUdpSocket::new(sock) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        debug!("failed to create IPv6 MyUdpSocket: {e}");
+                        None
+                    }
+                };
             }
             Err(e) => debug!("failed to create IPv6 socket: {e}"),
         }
