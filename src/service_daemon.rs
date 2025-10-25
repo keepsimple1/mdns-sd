@@ -731,13 +731,12 @@ pub enum IfKind {
     /// By an IPv4 or IPv6 address.
     Addr(IpAddr),
 
-    /// 127.0.0.1 (or anything in 127.0.0.0/8), disabled by default.
+    /// 127.0.0.1 (or anything in 127.0.0.0/8), enabled by default.
     ///
-    /// Use [ServiceDaemon::enable_interface] to support registering services on loopback interfaces,
-    /// which is required by some use cases (e.g., OSCQuery) that publish via mDNS.
+    /// Loopback interfaces are required by some use cases (e.g., OSCQuery) for publishing.
     LoopbackV4,
 
-    /// ::1/128, disabled by default.
+    /// ::1/128, enabled by default.
     LoopbackV6,
 }
 
@@ -918,7 +917,7 @@ fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<
 impl Zeroconf {
     fn new(signal_sock: MioUdpSocket, poller: Poll) -> Self {
         // Get interfaces.
-        let my_ifaddrs = my_ip_interfaces(false);
+        let my_ifaddrs = my_ip_interfaces(true);
 
         // Create a socket for every IP addr.
         // Note: it is possible that `my_ifaddrs` contains the same IP addr with different interface names,
@@ -993,10 +992,7 @@ impl Zeroconf {
             };
 
             if let Err(e) = join_multicast_group(&sock.pktinfo, &intf) {
-                debug!(
-                    "config socket to join multicast: {}: {e}. Skipped.",
-                    &intf.ip()
-                );
+                debug!("failed to join multicast: {}: {e}. Skipped.", &intf.ip());
             }
 
             let if_index = intf.index.unwrap_or(0);
@@ -1024,17 +1020,8 @@ impl Zeroconf {
 
         let timers = BinaryHeap::new();
 
-        // Disable loopback by default.
-        let if_selections = vec![
-            IfSelection {
-                if_kind: IfKind::LoopbackV4,
-                selected: false,
-            },
-            IfSelection {
-                if_kind: IfKind::LoopbackV6,
-                selected: false,
-            },
-        ];
+        // Enable everything, including loopback interfaces.
+        let if_selections = vec![];
 
         let status = DaemonStatus::Running;
 
@@ -1042,7 +1029,6 @@ impl Zeroconf {
             my_intfs,
             ipv4_sock,
             ipv6_sock,
-            // poll_ids: HashMap::new(),
             my_services: HashMap::new(),
             cache: DnsCache::new(),
             dns_registry_map,
@@ -1989,7 +1975,6 @@ impl Zeroconf {
 
     /// Sends out a list of `questions` (i.e. DNS questions) via multicast.
     fn send_query_vec(&self, questions: &[(&str, RRType)]) {
-        trace!("Sending query questions: {:?}", questions);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         let now = current_time_millis();
 
@@ -2693,6 +2678,7 @@ impl Zeroconf {
         };
 
         let Some(intf) = self.my_intfs.get(&if_index) else {
+            debug!("handle_query: no intf found for index {if_index}");
             return;
         };
 
@@ -2853,7 +2839,8 @@ impl Zeroconf {
             }
         }
 
-        if !out.answers_count() > 0 {
+        if out.answers_count() > 0 {
+            debug!("sending response on intf {}", &intf.name);
             out.set_id(msg.id());
             send_dns_outgoing(&out, intf, &sock.pktinfo);
 
