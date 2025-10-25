@@ -930,43 +930,46 @@ impl Zeroconf {
         // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
         let mut ipv4_sock = None;
         let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), MDNS_PORT);
-        if let Ok(sock) = new_socket(addr.into(), true).map_err(|e| {
-            e_fmt!("failed to create IPv4 socket: {e}");
-        }) {
-            // Per RFC 6762 section 11:
-            // "All Multicast DNS responses (including responses sent via unicast) SHOULD
-            // be sent with IP TTL set to 255."
-            // Here we set the TTL to 255 for multicast as we don't support unicast yet.
-            sock.set_multicast_ttl_v4(255)
-                .map_err(|e| e_fmt!("set set_multicast_ttl_v4 on addr: {}", e))
-                .ok();
+        match new_socket(addr.into(), true) {
+            Ok(sock) => {
+                // Per RFC 6762 section 11:
+                // "All Multicast DNS responses (including responses sent via unicast) SHOULD
+                // be sent with IP TTL set to 255."
+                // Here we set the TTL to 255 for multicast as we don't support unicast yet.
+                sock.set_multicast_ttl_v4(255)
+                    .map_err(|e| e_fmt!("set set_multicast_ttl_v4 on addr: {}", e))
+                    .ok();
 
-            // This clones a socket.
-            ipv4_sock = MyUdpSocket::new(sock)
-                .map_err(|e| {
-                    e_fmt!("failed to create IPv4 MyUdpSocket: {e}");
-                })
-                .ok();
+                // This clones a socket.
+                ipv4_sock = MyUdpSocket::new(sock)
+                    .map_err(|e| {
+                        e_fmt!("failed to create IPv4 MyUdpSocket: {e}");
+                    })
+                    .ok();
+            }
+            // Per RFC 6762 section 11:}
+            Err(e) => debug!("failed to create IPv4 socket: {e}"),
         }
 
         let mut ipv6_sock = None;
         let addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), MDNS_PORT, 0, 0);
-        if let Ok(sock) = new_socket(addr.into(), true).map_err(|e| {
-            e_fmt!("failed to create IPv6 socket: {e}");
-        }) {
-            // Per RFC 6762 section 11:
-            // "All Multicast DNS responses (including responses sent via unicast) SHOULD
-            // be sent with IP TTL set to 255."
-            sock.set_multicast_hops_v6(255)
-                .map_err(|e| e_fmt!("set set_multicast_hops_v6: {}", e))
-                .ok();
+        match new_socket(addr.into(), true) {
+            Ok(sock) => {
+                // Per RFC 6762 section 11:
+                // "All Multicast DNS responses (including responses sent via unicast) SHOULD
+                // be sent with IP TTL set to 255."
+                sock.set_multicast_hops_v6(255)
+                    .map_err(|e| e_fmt!("set set_multicast_hops_v6: {}", e))
+                    .ok();
 
-            // This clones the ipv6 socket.
-            ipv6_sock = MyUdpSocket::new(sock)
-                .map_err(|e| {
-                    e_fmt!("failed to create IPv6 MyUdpSocket: {e}");
-                })
-                .ok();
+                // This clones the ipv6 socket.
+                ipv6_sock = MyUdpSocket::new(sock)
+                    .map_err(|e| {
+                        e_fmt!("failed to create IPv6 MyUdpSocket: {e}");
+                    })
+                    .ok();
+            }
+            Err(e) => debug!("failed to create IPv6 socket: {e}"),
         }
 
         // Configure sockets to join multicast groups.
