@@ -817,11 +817,11 @@ struct Zeroconf {
     /// Local interfaces keyed by interface index.
     my_intfs: HashMap<u32, MyIntf>,
 
-    /// A common socket for IPv4 interfaces.
-    ipv4_sock: MyUdpSocket,
+    /// A common socket for IPv4 interfaces. It's None if IPv4 is disabled in OS kernel.
+    ipv4_sock: Option<MyUdpSocket>,
 
-    /// A common socket for IPv6 interfaces.
-    ipv6_sock: MyUdpSocket,
+    /// A common socket for IPv6 interfaces. It's None if IPv6 is disabled in OS kernel.
+    ipv6_sock: Option<MyUdpSocket>,
 
     /// Local registered services， keyed by service full names.
     my_services: HashMap<String, ServiceInfo>,
@@ -928,39 +928,61 @@ impl Zeroconf {
 
         // Use the same socket for receiving and sending multicast packets.
         // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
+        let mut ipv4_sock = None;
         let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), MDNS_PORT);
-        let sock = new_socket(addr.into(), true).unwrap();
+        if let Ok(sock) = new_socket(addr.into(), true).map_err(|e| {
+            e_fmt!("failed to create IPv4 socket: {e}");
+        }) {
+            // Per RFC 6762 section 11:
+            // "All Multicast DNS responses (including responses sent via unicast) SHOULD
+            // be sent with IP TTL set to 255."
+            // Here we set the TTL to 255 for multicast as we don't support unicast yet.
+            sock.set_multicast_ttl_v4(255)
+                .map_err(|e| e_fmt!("set set_multicast_ttl_v4 on addr: {}", e))
+                .ok();
 
-        // Per RFC 6762 section 11:
-        // "All Multicast DNS responses (including responses sent via unicast) SHOULD
-        // be sent with IP TTL set to 255."
-        // Here we set the TTL to 255 for multicast as we don't support unicast yet.
-        sock.set_multicast_ttl_v4(255)
-            .map_err(|e| e_fmt!("set set_multicast_ttl_v4 on addr: {}", e))
-            .unwrap();
+            // This clones a socket.
+            ipv4_sock = MyUdpSocket::new(sock)
+                .map_err(|e| {
+                    e_fmt!("failed to create IPv4 MyUdpSocket: {e}");
+                })
+                .ok();
+        }
 
-        // This clones a socket.
-        let ipv4_sock = MyUdpSocket::new(sock).unwrap();
-
+        let mut ipv6_sock = None;
         let addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), MDNS_PORT, 0, 0);
-        let sock = new_socket(addr.into(), true).unwrap();
+        if let Ok(sock) = new_socket(addr.into(), true).map_err(|e| {
+            e_fmt!("failed to create IPv6 socket: {e}");
+        }) {
+            // Per RFC 6762 section 11:
+            // "All Multicast DNS responses (including responses sent via unicast) SHOULD
+            // be sent with IP TTL set to 255."
+            sock.set_multicast_hops_v6(255)
+                .map_err(|e| e_fmt!("set set_multicast_hops_v6: {}", e))
+                .ok();
 
-        // Per RFC 6762 section 11:
-        // "All Multicast DNS responses (including responses sent via unicast) SHOULD
-        // be sent with IP TTL set to 255."
-        sock.set_multicast_hops_v6(255)
-            .map_err(|e| e_fmt!("set set_multicast_hops_v6: {}", e))
-            .unwrap();
-
-        // This clones the ipv6 socket.
-        let ipv6_sock = MyUdpSocket::new(sock).unwrap();
+            // This clones the ipv6 socket.
+            ipv6_sock = MyUdpSocket::new(sock)
+                .map_err(|e| {
+                    e_fmt!("failed to create IPv6 MyUdpSocket: {e}");
+                })
+                .ok();
+        }
 
         // Configure sockets to join multicast groups.
         for intf in my_ifaddrs {
-            let sock = if intf.ip().is_ipv4() {
+            let sock_opt = if intf.ip().is_ipv4() {
                 &ipv4_sock
             } else {
                 &ipv6_sock
+            };
+            let Some(sock) = sock_opt else {
+                debug!(
+                    "no socket available for interface {} with addr {}. Skipped.",
+                    intf.name,
+                    intf.ip()
+                );
+                continue;
             };
 
             if let Err(e) = join_multicast_group(&sock.pktinfo, &intf) {
@@ -1059,22 +1081,26 @@ impl Zeroconf {
             return None;
         }
 
-        if let Err(e) = self.poller.registry().register(
-            &mut self.ipv4_sock,
-            mio::Token(IPV4_SOCK_EVENT_KEY),
-            mio::Interest::READABLE,
-        ) {
-            debug!("failed to register ipv4 socket: {}", e);
-            return None;
+        if let Some(sock) = self.ipv4_sock.as_mut() {
+            if let Err(e) = self.poller.registry().register(
+                sock,
+                mio::Token(IPV4_SOCK_EVENT_KEY),
+                mio::Interest::READABLE,
+            ) {
+                debug!("failed to register ipv4 socket: {}", e);
+                return None;
+            }
         }
 
-        if let Err(e) = self.poller.registry().register(
-            &mut self.ipv6_sock,
-            mio::Token(IPV6_SOCK_EVENT_KEY),
-            mio::Interest::READABLE,
-        ) {
-            debug!("failed to register ipv6 socket: {}", e);
-            return None;
+        if let Some(sock) = self.ipv6_sock.as_mut() {
+            if let Err(e) = self.poller.registry().register(
+                sock,
+                mio::Token(IPV6_SOCK_EVENT_KEY),
+                mio::Interest::READABLE,
+            ) {
+                debug!("failed to register ipv6 socket: {}", e);
+                return None;
+            }
         }
 
         // Setup timer for IP checks.
@@ -1255,18 +1281,22 @@ impl Zeroconf {
     }
 
     fn set_multicast_loop_v4(&mut self, on: bool) {
+        let Some(sock) = self.ipv4_sock.as_mut() else {
+            return;
+        };
         self.multicast_loop_v4 = on;
-        self.ipv4_sock
-            .pktinfo
+        sock.pktinfo
             .set_multicast_loop_v4(on)
             .map_err(|e| e_fmt!("failed to set multicast loop v4: {}", e))
             .unwrap();
     }
 
     fn set_multicast_loop_v6(&mut self, on: bool) {
+        let Some(sock) = self.ipv6_sock.as_mut() else {
+            return;
+        };
         self.multicast_loop_v6 = on;
-        self.ipv6_sock
-            .pktinfo
+        sock.pktinfo
             .set_multicast_loop_v6(on)
             .map_err(|e| e_fmt!("failed to set multicast loop v6: {}", e))
             .unwrap();
@@ -1458,23 +1488,22 @@ impl Zeroconf {
 
             if let Some(ipv4) = last_ipv4 {
                 debug!("leave multicast for {ipv4}");
-                if let Err(e) = self
-                    .ipv4_sock
-                    .pktinfo
-                    .leave_multicast_v4(&GROUP_ADDR_V4, &ipv4)
-                {
-                    debug!("leave multicast group for addr {ipv4}: {e}");
+                if let Some(sock) = self.ipv4_sock.as_mut() {
+                    if let Err(e) = sock.pktinfo.leave_multicast_v4(&GROUP_ADDR_V4, &ipv4) {
+                        debug!("leave multicast group for addr {ipv4}: {e}");
+                    }
                 }
             }
 
             if let Some(ipv6) = last_ipv6 {
                 debug!("leave multicast for {ipv6}");
-                if let Err(e) = self
-                    .ipv6_sock
-                    .pktinfo
-                    .leave_multicast_v6(&GROUP_ADDR_V6, my_intf.index)
-                {
-                    debug!("leave multicast group for IPv6: {ipv6}: {e}");
+                if let Some(sock) = self.ipv6_sock.as_mut() {
+                    if let Err(e) = sock
+                        .pktinfo
+                        .leave_multicast_v6(&GROUP_ADDR_V6, my_intf.index)
+                    {
+                        debug!("leave multicast group for IPv6: {ipv6}: {e}");
+                    }
                 }
             }
 
@@ -1512,24 +1541,22 @@ impl Zeroconf {
             match intf.addr.ip() {
                 IpAddr::V4(ipv4) => {
                     if my_intf.next_ifaddr_v4().is_none() {
-                        if let Err(e) = self
-                            .ipv4_sock
-                            .pktinfo
-                            .leave_multicast_v4(&GROUP_ADDR_V4, &ipv4)
-                        {
-                            debug!("leave multicast group for addr {ipv4}: {e}");
+                        if let Some(sock) = self.ipv4_sock.as_mut() {
+                            if let Err(e) = sock.pktinfo.leave_multicast_v4(&GROUP_ADDR_V4, &ipv4) {
+                                debug!("leave multicast group for addr {ipv4}: {e}");
+                            }
                         }
                     }
                 }
 
                 IpAddr::V6(ipv6) => {
                     if my_intf.next_ifaddr_v6().is_none() {
-                        if let Err(e) = self
-                            .ipv6_sock
-                            .pktinfo
-                            .leave_multicast_v6(&GROUP_ADDR_V6, if_index)
-                        {
-                            debug!("leave multicast group for addr {ipv6}: {e}");
+                        if let Some(sock) = self.ipv6_sock.as_mut() {
+                            if let Err(e) =
+                                sock.pktinfo.leave_multicast_v6(&GROUP_ADDR_V6, if_index)
+                            {
+                                debug!("leave multicast group for addr {ipv6}: {e}");
+                            }
                         }
                     }
                 }
@@ -1553,10 +1580,19 @@ impl Zeroconf {
     }
 
     fn add_interface(&mut self, intf: Interface) {
-        let sock = if intf.ip().is_ipv4() {
+        let sock_opt = if intf.ip().is_ipv4() {
             &self.ipv4_sock
         } else {
             &self.ipv6_sock
+        };
+
+        let Some(sock) = sock_opt else {
+            debug!(
+                "add_interface: no socket available for interface {} with addr {}. Skipped.",
+                intf.name,
+                intf.ip()
+            );
+            return;
         };
 
         let if_index = intf.index.unwrap_or(0);
@@ -1707,32 +1743,36 @@ impl Zeroconf {
             let mut announced = false;
 
             // IPv4
-            if announce_service_on_intf(dns_registry, info, intf, &self.ipv4_sock.pktinfo) {
-                for addr in intf.addrs.iter().filter(|a| a.ip().is_ipv4()) {
-                    outgoing_addrs.push(addr.ip());
-                }
-                outgoing_intfs.insert(intf.index);
+            if let Some(sock) = self.ipv4_sock.as_mut() {
+                if announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo) {
+                    for addr in intf.addrs.iter().filter(|a| a.ip().is_ipv4()) {
+                        outgoing_addrs.push(addr.ip());
+                    }
+                    outgoing_intfs.insert(intf.index);
 
-                debug!(
-                    "Announce service IPv4 {} on {}",
-                    info.get_fullname(),
-                    intf.name
-                );
-                announced = true;
+                    debug!(
+                        "Announce service IPv4 {} on {}",
+                        info.get_fullname(),
+                        intf.name
+                    );
+                    announced = true;
+                }
             }
 
-            if announce_service_on_intf(dns_registry, info, intf, &self.ipv6_sock.pktinfo) {
-                for addr in intf.addrs.iter().filter(|a| a.ip().is_ipv6()) {
-                    outgoing_addrs.push(addr.ip());
-                }
-                outgoing_intfs.insert(intf.index);
+            if let Some(sock) = self.ipv6_sock.as_mut() {
+                if announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo) {
+                    for addr in intf.addrs.iter().filter(|a| a.ip().is_ipv6()) {
+                        outgoing_addrs.push(addr.ip());
+                    }
+                    outgoing_intfs.insert(intf.index);
 
-                debug!(
-                    "Announce service IPv6 {} on {}",
-                    info.get_fullname(),
-                    intf.name
-                );
-                announced = true;
+                    debug!(
+                        "Announce service IPv6 {} on {}",
+                        info.get_fullname(),
+                        intf.name
+                    );
+                    announced = true;
+                }
             }
 
             if announced {
@@ -1773,8 +1813,12 @@ impl Zeroconf {
             // send probing.
             if !out.questions().is_empty() {
                 trace!("sending out probing of questions: {:?}", out.questions());
-                send_dns_outgoing(&out, intf, &self.ipv4_sock.pktinfo);
-                send_dns_outgoing(&out, intf, &self.ipv6_sock.pktinfo);
+                if let Some(sock) = self.ipv4_sock.as_mut() {
+                    send_dns_outgoing(&out, intf, &sock.pktinfo);
+                }
+                if let Some(sock) = self.ipv6_sock.as_mut() {
+                    send_dns_outgoing(&out, intf, &sock.pktinfo);
+                }
             }
 
             // For finished probes, wake up services that are waiting for the probes.
@@ -1789,10 +1833,16 @@ impl Zeroconf {
                         continue;
                     }
 
-                    let announced_v4 =
-                        announce_service_on_intf(dns_registry, info, intf, &self.ipv4_sock.pktinfo);
-                    let announced_v6 =
-                        announce_service_on_intf(dns_registry, info, intf, &self.ipv6_sock.pktinfo);
+                    let announced_v4 = if let Some(sock) = self.ipv4_sock.as_mut() {
+                        announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo)
+                    } else {
+                        false
+                    };
+                    let announced_v6 = if let Some(sock) = self.ipv6_sock.as_mut() {
+                        announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo)
+                    } else {
+                        false
+                    };
 
                     if announced_v4 || announced_v6 {
                         let next_time = now + 1000;
@@ -1955,8 +2005,12 @@ impl Zeroconf {
         }
 
         for (_, intf) in self.my_intfs.iter() {
-            send_dns_outgoing(&out, intf, &self.ipv4_sock.pktinfo);
-            send_dns_outgoing(&out, intf, &self.ipv6_sock.pktinfo);
+            if let Some(sock) = self.ipv4_sock.as_ref() {
+                send_dns_outgoing(&out, intf, &sock.pktinfo);
+            }
+            if let Some(sock) = self.ipv6_sock.as_ref() {
+                send_dns_outgoing(&out, intf, &sock.pktinfo);
+            }
         }
     }
 
@@ -1965,13 +2019,17 @@ impl Zeroconf {
     /// Returns false if failed to receive a packet,
     /// otherwise returns true.
     fn handle_read(&mut self, event_key: usize) -> bool {
-        let sock = match event_key {
+        let sock_opt = match event_key {
             IPV4_SOCK_EVENT_KEY => &mut self.ipv4_sock,
             IPV6_SOCK_EVENT_KEY => &mut self.ipv6_sock,
             _ => {
                 debug!("handle_read: unknown token {}", event_key);
                 return false;
             }
+        };
+        let Some(sock) = sock_opt.as_mut() else {
+            debug!("handle_read: socket not available for token {}", event_key);
+            return false;
         };
         let mut buf = vec![0u8; MAX_MSG_ABSOLUTE];
 
@@ -2223,21 +2281,25 @@ impl Zeroconf {
             // we continue to monitor this socket.
             if ev.token().0 == IPV4_SOCK_EVENT_KEY {
                 // Re-register the IPv4 socket for reading.
-                if let Err(e) = self.poller.registry().reregister(
-                    &mut self.ipv4_sock,
-                    ev.token(),
-                    mio::Interest::READABLE,
-                ) {
-                    debug!("modify poller for IPv4 socket: {}", e);
+                if let Some(sock) = self.ipv4_sock.as_mut() {
+                    if let Err(e) =
+                        self.poller
+                            .registry()
+                            .reregister(sock, ev.token(), mio::Interest::READABLE)
+                    {
+                        debug!("modify poller for IPv4 socket: {}", e);
+                    }
                 }
             } else if ev.token().0 == IPV6_SOCK_EVENT_KEY {
                 // Re-register the IPv6 socket for reading.
-                if let Err(e) = self.poller.registry().reregister(
-                    &mut self.ipv6_sock,
-                    ev.token(),
-                    mio::Interest::READABLE,
-                ) {
-                    debug!("modify poller for IPv6 socket: {}", e);
+                if let Some(sock) = self.ipv6_sock.as_mut() {
+                    if let Err(e) =
+                        self.poller
+                            .registry()
+                            .reregister(sock, ev.token(), mio::Interest::READABLE)
+                    {
+                        debug!("modify poller for IPv6 socket: {}", e);
+                    }
                 }
             }
         }
@@ -2603,10 +2665,14 @@ impl Zeroconf {
 
     /// Handle incoming query packets, figure out whether and what to respond.
     fn handle_query(&mut self, msg: DnsIncoming, if_index: u32, is_ipv4: bool) {
-        let sock = if is_ipv4 {
+        let sock_opt = if is_ipv4 {
             &self.ipv4_sock
         } else {
             &self.ipv6_sock
+        };
+        let Some(sock) = sock_opt.as_ref() else {
+            debug!("handle_query: socket not available for intf {}", if_index);
+            return;
         };
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
 
@@ -3099,27 +3165,30 @@ impl Zeroconf {
                 let mut timers = Vec::new();
 
                 for (if_index, intf) in self.my_intfs.iter() {
-                    let packet = self.unregister_service(&info, intf, &self.ipv4_sock.pktinfo);
-                    // repeat for one time just in case some peers miss the message
-                    if !repeating && !packet.is_empty() {
-                        let next_time = current_time_millis() + 120;
-                        self.retransmissions.push(ReRun {
-                            next_time,
-                            command: Command::UnregisterResend(packet, *if_index, true),
-                        });
-                        timers.push(next_time);
+                    if let Some(sock) = self.ipv4_sock.as_ref() {
+                        let packet = self.unregister_service(&info, intf, &sock.pktinfo);
+                        // repeat for one time just in case some peers miss the message
+                        if !repeating && !packet.is_empty() {
+                            let next_time = current_time_millis() + 120;
+                            self.retransmissions.push(ReRun {
+                                next_time,
+                                command: Command::UnregisterResend(packet, *if_index, true),
+                            });
+                            timers.push(next_time);
+                        }
                     }
 
                     // ipv6
-
-                    let packet = self.unregister_service(&info, intf, &self.ipv6_sock.pktinfo);
-                    if !repeating && !packet.is_empty() {
-                        let next_time = current_time_millis() + 120;
-                        self.retransmissions.push(ReRun {
-                            next_time,
-                            command: Command::UnregisterResend(packet, *if_index, false),
-                        });
-                        timers.push(next_time);
+                    if let Some(sock) = self.ipv6_sock.as_ref() {
+                        let packet = self.unregister_service(&info, intf, &sock.pktinfo);
+                        if !repeating && !packet.is_empty() {
+                            let next_time = current_time_millis() + 120;
+                            self.retransmissions.push(ReRun {
+                                next_time,
+                                command: Command::UnregisterResend(packet, *if_index, false),
+                            });
+                            timers.push(next_time);
+                        }
                     }
                 }
 
@@ -3140,10 +3209,13 @@ impl Zeroconf {
         let Some(intf) = self.my_intfs.get(&if_index) else {
             return;
         };
-        let sock = if is_ipv4 {
-            &self.ipv4_sock.pktinfo
+        let sock_opt = if is_ipv4 {
+            &self.ipv4_sock
         } else {
-            &self.ipv6_sock.pktinfo
+            &self.ipv6_sock
+        };
+        let Some(sock) = sock_opt else {
+            return;
         };
 
         let if_addr = if is_ipv4 {
@@ -3159,7 +3231,7 @@ impl Zeroconf {
         };
 
         debug!("UnregisterResend from {:?}", if_addr);
-        multicast_on_intf(&packet[..], &intf.name, intf.index, if_addr, sock);
+        multicast_on_intf(&packet[..], &intf.name, intf.index, if_addr, &sock.pktinfo);
 
         self.increase_counter(Counter::UnregisterResend, 1);
     }
@@ -3232,10 +3304,16 @@ impl Zeroconf {
             return;
         };
 
-        let announced_v4 =
-            announce_service_on_intf(dns_registry, info, intf, &self.ipv4_sock.pktinfo);
-        let announced_v6 =
-            announce_service_on_intf(dns_registry, info, intf, &self.ipv6_sock.pktinfo);
+        let announced_v4 = if let Some(sock) = self.ipv4_sock.as_ref() {
+            announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo)
+        } else {
+            false
+        };
+        let announced_v6 = if let Some(sock) = self.ipv6_sock.as_ref() {
+            announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo)
+        } else {
+            false
+        };
 
         if announced_v4 || announced_v6 {
             let mut hostname = info.get_hostname();
