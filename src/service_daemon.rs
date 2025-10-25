@@ -2627,6 +2627,11 @@ impl Zeroconf {
             let qtype = question.entry_type();
 
             if qtype == RRType::PTR {
+                debug!(
+                    "handling PTR question: {:?} on {}",
+                    &question.entry_name(),
+                    intf.name
+                );
                 for service in self.my_services.values() {
                     if service.get_status(if_index) != ServiceStatus::Announced {
                         continue;
@@ -2780,7 +2785,8 @@ impl Zeroconf {
             }
         }
 
-        if !out.answers_count() > 0 {
+        if out.answers_count() > 0 {
+            debug!("sending response on intf {}", &intf.name);
             out.set_id(msg.id());
             send_dns_outgoing(&out, intf, &sock.pktinfo);
 
