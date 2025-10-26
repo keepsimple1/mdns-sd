@@ -1013,7 +1013,6 @@ impl Zeroconf {
             my_intfs,
             ipv4_sock,
             ipv6_sock,
-            // poll_ids: HashMap::new(),
             my_services: HashMap::new(),
             cache: DnsCache::new(),
             dns_registry_map,
@@ -1932,7 +1931,6 @@ impl Zeroconf {
 
     /// Sends out a list of `questions` (i.e. DNS questions) via multicast.
     fn send_query_vec(&self, questions: &[(&str, RRType)]) {
-        trace!("Sending query questions: {:?}", questions);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         let now = current_time_millis();
 
@@ -1955,6 +1953,8 @@ impl Zeroconf {
         }
 
         for (_, intf) in self.my_intfs.iter() {
+            debug!("Sending query questions on {}: {:?}", intf.name, questions);
+
             send_dns_outgoing(&out, intf, &self.ipv4_sock.pktinfo);
             send_dns_outgoing(&out, intf, &self.ipv6_sock.pktinfo);
         }
@@ -2620,6 +2620,7 @@ impl Zeroconf {
         };
 
         let Some(intf) = self.my_intfs.get(&if_index) else {
+            debug!("handle_query: no intf found for index {if_index}");
             return;
         };
 
