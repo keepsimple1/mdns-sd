@@ -964,10 +964,7 @@ impl Zeroconf {
             };
 
             if let Err(e) = join_multicast_group(&sock.pktinfo, &intf) {
-                debug!(
-                    "config socket to join multicast: {}: {e}. Skipped.",
-                    &intf.ip()
-                );
+                debug!("failed to join multicast: {}: {e}. Skipped.", &intf.ip());
             }
 
             let if_index = intf.index.unwrap_or(0);
@@ -2629,7 +2626,7 @@ impl Zeroconf {
 
             if qtype == RRType::PTR {
                 debug!(
-                    "handling PTR question: {:?} on {}",
+                    "handle PTR question: {:?} on {}",
                     &question.entry_name(),
                     intf.name
                 );
