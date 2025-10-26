@@ -918,7 +918,7 @@ fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<
 impl Zeroconf {
     fn new(signal_sock: MioUdpSocket, poller: Poll) -> Self {
         // Get interfaces.
-        let my_ifaddrs = my_ip_interfaces(false);
+        let my_ifaddrs = my_ip_interfaces(true);
 
         // Create a socket for every IP addr.
         // Note: it is possible that `my_ifaddrs` contains the same IP addr with different interface names,
@@ -964,10 +964,7 @@ impl Zeroconf {
             };
 
             if let Err(e) = join_multicast_group(&sock.pktinfo, &intf) {
-                debug!(
-                    "config socket to join multicast: {}: {e}. Skipped.",
-                    &intf.ip()
-                );
+                debug!("failed to join multicast: {}: {e}. Skipped.", &intf.ip());
             }
 
             let if_index = intf.index.unwrap_or(0);
@@ -995,17 +992,8 @@ impl Zeroconf {
 
         let timers = BinaryHeap::new();
 
-        // Disable loopback by default.
-        let if_selections = vec![
-            IfSelection {
-                if_kind: IfKind::LoopbackV4,
-                selected: false,
-            },
-            IfSelection {
-                if_kind: IfKind::LoopbackV6,
-                selected: false,
-            },
-        ];
+        // Enable everything.
+        let if_selections = vec![];
 
         let status = DaemonStatus::Running;
 
@@ -1013,7 +1001,6 @@ impl Zeroconf {
             my_intfs,
             ipv4_sock,
             ipv6_sock,
-            // poll_ids: HashMap::new(),
             my_services: HashMap::new(),
             cache: DnsCache::new(),
             dns_registry_map,
@@ -1932,7 +1919,6 @@ impl Zeroconf {
 
     /// Sends out a list of `questions` (i.e. DNS questions) via multicast.
     fn send_query_vec(&self, questions: &[(&str, RRType)]) {
-        trace!("Sending query questions: {:?}", questions);
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
         let now = current_time_millis();
 
@@ -1955,6 +1941,8 @@ impl Zeroconf {
         }
 
         for (_, intf) in self.my_intfs.iter() {
+            debug!("Sending query questions on {}: {:?}", intf.name, questions);
+
             send_dns_outgoing(&out, intf, &self.ipv4_sock.pktinfo);
             send_dns_outgoing(&out, intf, &self.ipv6_sock.pktinfo);
         }
@@ -2603,6 +2591,10 @@ impl Zeroconf {
 
     /// Handle incoming query packets, figure out whether and what to respond.
     fn handle_query(&mut self, msg: DnsIncoming, if_index: u32, is_ipv4: bool) {
+        debug!(
+            "handle_query on intf index {} is_ipv4 {}",
+            if_index, is_ipv4
+        );
         let sock = if is_ipv4 {
             &self.ipv4_sock
         } else {
@@ -2620,6 +2612,7 @@ impl Zeroconf {
         };
 
         let Some(intf) = self.my_intfs.get(&if_index) else {
+            debug!("handle_query: no intf found for index {if_index}");
             return;
         };
 
@@ -2627,6 +2620,11 @@ impl Zeroconf {
             let qtype = question.entry_type();
 
             if qtype == RRType::PTR {
+                debug!(
+                    "handle PTR question: {:?} on {}",
+                    &question.entry_name(),
+                    intf.name
+                );
                 for service in self.my_services.values() {
                     if service.get_status(if_index) != ServiceStatus::Announced {
                         continue;
@@ -2780,7 +2778,8 @@ impl Zeroconf {
             }
         }
 
-        if !out.answers_count() > 0 {
+        if out.answers_count() > 0 {
+            debug!("sending response on intf {}", &intf.name);
             out.set_id(msg.id());
             send_dns_outgoing(&out, intf, &sock.pktinfo);
 
