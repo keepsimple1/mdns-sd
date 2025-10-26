@@ -918,7 +918,7 @@ fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<
 impl Zeroconf {
     fn new(signal_sock: MioUdpSocket, poller: Poll) -> Self {
         // Get interfaces.
-        let my_ifaddrs = my_ip_interfaces(false);
+        let my_ifaddrs = my_ip_interfaces(true);
 
         // Create a socket for every IP addr.
         // Note: it is possible that `my_ifaddrs` contains the same IP addr with different interface names,
@@ -992,17 +992,8 @@ impl Zeroconf {
 
         let timers = BinaryHeap::new();
 
-        // Disable loopback by default.
-        let if_selections = vec![
-            IfSelection {
-                if_kind: IfKind::LoopbackV4,
-                selected: false,
-            },
-            IfSelection {
-                if_kind: IfKind::LoopbackV6,
-                selected: false,
-            },
-        ];
+        // Enable everything.
+        let if_selections = vec![];
 
         let status = DaemonStatus::Running;
 
@@ -2600,6 +2591,7 @@ impl Zeroconf {
 
     /// Handle incoming query packets, figure out whether and what to respond.
     fn handle_query(&mut self, msg: DnsIncoming, if_index: u32, is_ipv4: bool) {
+        debug!("handle_query on intf index {} is_ipv4 {}", if_index, is_ipv4);
         let sock = if is_ipv4 {
             &self.ipv4_sock
         } else {
