@@ -2591,7 +2591,10 @@ impl Zeroconf {
 
     /// Handle incoming query packets, figure out whether and what to respond.
     fn handle_query(&mut self, msg: DnsIncoming, if_index: u32, is_ipv4: bool) {
-        debug!("handle_query on intf index {} is_ipv4 {}", if_index, is_ipv4);
+        debug!(
+            "handle_query on intf index {} is_ipv4 {}",
+            if_index, is_ipv4
+        );
         let sock = if is_ipv4 {
             &self.ipv4_sock
         } else {
