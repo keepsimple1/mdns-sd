@@ -1,12 +1,13 @@
 //! Define `ServiceInfo` to represent a service and its operations.
 
 #[cfg(feature = "logging")]
-use crate::log::debug;
+use crate::log::{debug, trace};
 use crate::{
     dns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, RRType, ScopedIp},
     Error, InterfaceId, Result,
 };
 use if_addrs::IfAddr;
+use std::net::Ipv6Addr;
 use std::{
     cmp,
     collections::{HashMap, HashSet},
@@ -52,6 +53,38 @@ impl From<&MyIntf> for InterfaceId {
     }
 }
 
+/// Represents a filter for selecting services.
+#[derive(Debug, Clone, Default)]
+pub struct ServiceAddressFilter {
+    /// If true, only link-local ips are selected.
+    pub link_local_only: bool,
+    /// If set, the service is enabled only on the specified interfaces.
+    pub intfs: Option<Vec<String>>,
+}
+
+impl ServiceAddressFilter {
+    /// returns true if the address passes the filter conditions.
+    fn matches(&self, address: &IpAddr, my_intf: &MyIntf) -> bool {
+        let is_link_local = match &address {
+            IpAddr::V4(ipv4) => ipv4.is_link_local(),
+            IpAddr::V6(ipv6) => is_unicast_link_local(ipv6),
+        };
+        let passes_link_local = !self.link_local_only || is_link_local;
+        let passes_intfs = match &self.intfs {
+            Some(intfs) => intfs.iter().any(|intf| intf == &my_intf.name),
+            None => true,
+        };
+        trace!(
+            "matching address {} on intf {}: passes_link_local={}, passes_intfs={}",
+            address,
+            my_intf.name,
+            passes_link_local,
+            passes_intfs
+        );
+        passes_link_local && passes_intfs
+    }
+}
+
 /// Complete info about a Service Instance.
 ///
 /// We can construct some PTR, one SRV and one TXT record from this info,
@@ -67,6 +100,7 @@ pub struct ServiceInfo {
     fullname: String, // <instance>.<service>.<domain>
     server: String,   // fully qualified name for service host
     addresses: HashSet<IpAddr>,
+    address_filter: Box<ServiceAddressFilter>,
     port: u16,
     host_ttl: u32,  // used for SRV and Address records
     other_ttl: u32, // used for PTR and TXT records
@@ -165,6 +199,7 @@ impl ServiceInfo {
             fullname,
             server,
             addresses,
+            address_filter: Box::<ServiceAddressFilter>::default(),
             port,
             host_ttl: DNS_HOST_TTL,
             other_ttl: DNS_OTHER_TTL,
@@ -199,6 +234,13 @@ impl ServiceInfo {
     /// set it to `false` only when you are sure there are no conflicts, or for testing purposes.
     pub fn set_requires_probe(&mut self, enable: bool) {
         self.requires_probe = enable;
+    }
+
+    /// Set an address filter for this service.
+    ///
+    /// If true, only addresses that match the filter conditions will be published.
+    pub fn set_address_filter(&mut self, address_filer: ServiceAddressFilter) {
+        self.address_filter = Box::new(address_filer);
     }
 
     /// Returns whether this service info requires name probing for potential name conflicts.
@@ -322,7 +364,11 @@ impl ServiceInfo {
     pub(crate) fn get_addrs_on_my_intf_v4(&self, my_intf: &MyIntf) -> Vec<IpAddr> {
         self.addresses
             .iter()
-            .filter(|a| a.is_ipv4() && my_intf.addrs.iter().any(|x| valid_ip_on_intf(a, x)))
+            .filter(|a| {
+                a.is_ipv4()
+                    && my_intf.addrs.iter().any(|x| valid_ip_on_intf(a, x))
+                    && self.address_filter.matches(a, my_intf)
+            })
             .copied()
             .collect()
     }
@@ -330,7 +376,11 @@ impl ServiceInfo {
     pub(crate) fn get_addrs_on_my_intf_v6(&self, my_intf: &MyIntf) -> Vec<IpAddr> {
         self.addresses
             .iter()
-            .filter(|a| a.is_ipv6() && my_intf.addrs.iter().any(|x| valid_ip_on_intf(a, x)))
+            .filter(|a| {
+                a.is_ipv6()
+                    && my_intf.addrs.iter().any(|x| valid_ip_on_intf(a, x))
+                    && self.address_filter.matches(a, my_intf)
+            })
             .copied()
             .collect()
     }
@@ -1170,6 +1220,15 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
     } else {
         (domain, None)
     }
+}
+
+/// Returns true if `addr` is a unicast link-local IPv6 address.
+/// Replicates the logic from `std::net::Ipv6Addr::is_unicast_link_local()`, which is not
+/// stable on the current mdns-sd Rust version (1.71.0).
+///
+/// https://github.com/rust-lang/rust/blob/9fc6b43126469e3858e2fe86cafb4f0fd5068869/library/core/src/net/ip_addr.rs#L1684
+fn is_unicast_link_local(addr: &Ipv6Addr) -> bool {
+    (addr.segments()[0] & 0xffc0) == 0xfe80
 }
 
 /// Represents a resolved service as a plain data struct.
