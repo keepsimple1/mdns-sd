@@ -170,8 +170,7 @@ pub use service_daemon::{
     SERVICE_NAME_LEN_MAX_DEFAULT, VERIFY_TIMEOUT_DEFAULT,
 };
 pub use service_info::{
-    AsIpAddrs, IntoTxtProperties, ResolvedService, ServiceAddressFilter, ServiceInfo,
-    TxtProperties, TxtProperty,
+    AsIpAddrs, IntoTxtProperties, ResolvedService, ServiceInfo, TxtProperties, TxtProperty,
 };
 
 /// A handler to receive messages from [ServiceDaemon]. Re-export from `flume` crate.
