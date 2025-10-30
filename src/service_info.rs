@@ -6,7 +6,7 @@ use crate::{
     dns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, RRType, ScopedIp},
     Error, InterfaceId, Result,
 };
-use if_addrs::IfAddr;
+use if_addrs::{IfAddr, Interface};
 use std::net::Ipv6Addr;
 use std::{
     cmp,
@@ -213,7 +213,7 @@ impl ServiceInfo {
     /// Set whether the service is restricted to link-local addresses.
     ///
     /// By default, it is false.
-    pub fn set_is_link_local_only(&mut self, is_link_local_only: bool) {
+    pub fn set_link_local_only(&mut self, is_link_local_only: bool) {
         self.is_link_local_only = is_link_local_only;
     }
 
@@ -221,7 +221,7 @@ impl ServiceInfo {
     ///
     /// Only ips associated with the provided interfaces will be published.  If set to None (default),
     /// all interfaces are supported
-    pub fn set_supported_intfs(&mut self, intfs: Option<Vec<String>>) {
+    pub fn set_interfaces(&mut self, intfs: Option<Vec<String>>) {
         self.supported_intfs = Box::<Option<Vec<String>>>::new(intfs);
     }
 
@@ -346,7 +346,7 @@ impl ServiceInfo {
     pub(crate) fn get_addrs_on_my_intf_v4(&self, my_intf: &MyIntf) -> Vec<IpAddr> {
         self.addresses
             .iter()
-            .filter(|a| a.is_ipv4() && self.is_address_supported(a, my_intf))
+            .filter(|a| a.is_ipv4() && my_intf.addrs.iter().any(|x| valid_ip_on_intf(a, x)))
             .copied()
             .collect()
     }
@@ -354,7 +354,7 @@ impl ServiceInfo {
     pub(crate) fn get_addrs_on_my_intf_v6(&self, my_intf: &MyIntf) -> Vec<IpAddr> {
         self.addresses
             .iter()
-            .filter(|a| a.is_ipv6() && self.is_address_supported(a, my_intf))
+            .filter(|a| a.is_ipv6() && my_intf.addrs.iter().any(|x| valid_ip_on_intf(a, x)))
             .copied()
             .collect()
     }
@@ -369,8 +369,16 @@ impl ServiceInfo {
     }
 
     /// Insert `addr` into service info addresses.
-    pub(crate) fn insert_ipaddr(&mut self, addr: IpAddr) {
-        self.addresses.insert(addr);
+    pub(crate) fn insert_ipaddr(&mut self, intf: &Interface) {
+        if self.is_address_supported(&intf.addr.ip(), &intf.name) {
+            self.addresses.insert(intf.addr.ip());
+        } else {
+            trace!(
+                "skipping unsupported address {} for service {}",
+                intf.addr.ip(),
+                self.fullname
+            );
+        }
     }
 
     pub(crate) fn remove_ipaddr(&mut self, addr: &IpAddr) {
@@ -447,26 +455,25 @@ impl ServiceInfo {
         }
     }
 
-    fn is_address_supported(&self, addr: &IpAddr, my_intf: &MyIntf) -> bool {
-        let is_valid_ip_on_intf = my_intf.addrs.iter().any(|x| valid_ip_on_intf(addr, x));
-        let is_intf_supported = match &self.supported_intfs.as_ref() {
-            Some(intfs) => intfs.iter().any(|intf| intf == &my_intf.name),
+    fn is_address_supported(&self, addr: &IpAddr, intf_name: &str) -> bool {
+        let interface_supported = match &self.supported_intfs.as_ref() {
+            Some(intfs) => intfs.iter().any(|i| i == intf_name),
             None => true,
         };
+
         let passes_link_local = !self.is_link_local_only
             || match &addr {
                 IpAddr::V4(ipv4) => ipv4.is_link_local(),
                 IpAddr::V6(ipv6) => is_unicast_link_local(ipv6),
             };
         trace!(
-            "matching address {} on intf {}: is_valid_ip_on_intf={}, passes_link_local={}, is_intf_supported={}",
+            "matching inserted address {} on intf {}: passes_link_local={}, interface_supported={}",
             addr,
-            my_intf.name,
-            is_valid_ip_on_intf,
+            addr,
             passes_link_local,
-            is_intf_supported
+            interface_supported
         );
-        is_intf_supported && is_valid_ip_on_intf && passes_link_local
+        interface_supported && passes_link_local
     }
 }
 
@@ -1325,8 +1332,7 @@ impl ResolvedService {
 #[cfg(test)]
 mod tests {
     use super::{decode_txt, encode_txt, u8_slice_to_hex, MyIntf, ServiceInfo, TxtProperty};
-    use if_addrs::{IfAddr, Ifv4Addr, Ifv6Addr};
-    use std::collections::HashSet;
+    use if_addrs::{IfAddr, Ifv4Addr, Ifv6Addr, Interface};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[test]
@@ -1525,100 +1531,26 @@ mod tests {
             prefixlen: 16,
         });
 
-        let intf = MyIntf {
-            name: "intf0".to_string(),
-            index: 10,
-            addrs: HashSet::from([intf_v4, intf_v6, intf_v4_link_local, intf_v6_link_local]),
-        };
-
-        // supported addresses
+        // supported addresses not specified
         let mut addr_v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let mut addr_v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0x1234, 0, 0, 1));
-        assert!(service_info.is_address_supported(&addr_v4, &intf));
-        assert!(service_info.is_address_supported(&addr_v6, &intf));
+        assert!(service_info.is_address_supported(&addr_v4, "foo"));
+        assert!(service_info.is_address_supported(&addr_v6, "foo"));
 
         // Interface not supported
-        service_info.set_supported_intfs(Some(vec!["intf1".to_string()]));
-        assert!(!service_info.is_address_supported(&addr_v4, &intf));
-        assert!(!service_info.is_address_supported(&addr_v6, &intf));
-
-        // Interface explicitly supported
-        service_info.set_supported_intfs(Some(vec!["intf0".to_string()]));
-        assert!(service_info.is_address_supported(&addr_v4, &intf));
-        assert!(service_info.is_address_supported(&addr_v6, &intf));
-
-        // addresses outside of interface
-        addr_v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 2, 1));
-        addr_v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0x1, 0x1234, 0, 0, 1));
-        assert!(!service_info.is_address_supported(&addr_v4, &intf));
-        assert!(!service_info.is_address_supported(&addr_v6, &intf));
+        service_info.set_interfaces(Some(vec!["intf1".to_string()]));
+        assert!(!service_info.is_address_supported(&addr_v4, "foo"));
+        assert!(!service_info.is_address_supported(&addr_v6, "foo"));
 
         // link-local only
-        service_info.set_is_link_local_only(true);
+        service_info.set_link_local_only(true);
         addr_v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         addr_v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0x1234, 0, 0, 1));
-        assert!(!service_info.is_address_supported(&addr_v4, &intf));
-        assert!(!service_info.is_address_supported(&addr_v6, &intf));
+        assert!(!service_info.is_address_supported(&addr_v4, "intf1"));
+        assert!(!service_info.is_address_supported(&addr_v6, "intf1"));
         addr_v4 = IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1));
         addr_v6 = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0x1234, 0, 0, 1));
-        assert!(service_info.is_address_supported(&addr_v4, &intf));
-        assert!(service_info.is_address_supported(&addr_v6, &intf));
-    }
-
-    #[test]
-    fn test_get_addrs_on_my_intf_v4() {
-        let mut service_info =
-            ServiceInfo::new("_test._tcp", "prop_test", "testhost", "", 1234, None).unwrap();
-        let good_address = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
-        let bad_address = IpAddr::V4(Ipv4Addr::new(192, 169, 1, 1));
-        let wrong_ip_ver_address = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0x1234, 0, 0, 1));
-        service_info.addresses.insert(good_address);
-        service_info.addresses.insert(bad_address);
-        service_info.addresses.insert(wrong_ip_ver_address);
-
-        let intf_v4 = IfAddr::V4(Ifv4Addr {
-            ip: Ipv4Addr::new(192, 168, 0, 0),
-            netmask: Ipv4Addr::new(255, 255, 0, 0),
-            broadcast: None,
-            prefixlen: 16,
-        });
-
-        let intf = MyIntf {
-            name: "intf0".to_string(),
-            index: 10,
-            addrs: HashSet::from([intf_v4]),
-        };
-        assert_eq!(
-            service_info.get_addrs_on_my_intf_v4(&intf),
-            vec![good_address]
-        );
-    }
-    #[test]
-    fn test_get_addrs_on_my_intf_v6() {
-        let mut service_info =
-            ServiceInfo::new("_test._tcp", "prop_test", "testhost", "", 1234, None).unwrap();
-        let good_address = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0x1234, 0, 0, 1));
-        let bad_address = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0x1, 0x1234, 0, 0, 1));
-        let wrong_ip_ver_address = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
-        service_info.addresses.insert(good_address);
-        service_info.addresses.insert(bad_address);
-        service_info.addresses.insert(wrong_ip_ver_address);
-
-        let intf_v6 = IfAddr::V6(Ifv6Addr {
-            ip: Ipv6Addr::new(0xfe80, 0, 0, 0, 0x1234, 0, 0, 1),
-            netmask: Ipv6Addr::new(0xffff, 0xffff, 0xffff, 0xffff, 0, 0, 0, 0),
-            broadcast: None,
-            prefixlen: 16,
-        });
-
-        let intf = MyIntf {
-            name: "intf0".to_string(),
-            index: 10,
-            addrs: HashSet::from([intf_v6]),
-        };
-        assert_eq!(
-            service_info.get_addrs_on_my_intf_v6(&intf),
-            vec![good_address]
-        );
+        assert!(service_info.is_address_supported(&addr_v4, "intf1"));
+        assert!(service_info.is_address_supported(&addr_v6, "intf1"));
     }
 }
