@@ -175,3 +175,106 @@ pub use service_info::{
 
 /// A handler to receive messages from [ServiceDaemon]. Re-export from `flume` crate.
 pub use flume::Receiver;
+
+/// Runs a [`Receiver`] asynchronously with a specified timeout.
+///
+/// If the [`Receiver`] completes before the timeout, its result is returned.
+///
+/// # Errors
+///
+/// Fails in the following cases:
+/// - When the timeout occurs before the [`Receiver`] completes.
+/// - When the [`Receiver`] completes with an error.
+#[cfg(feature = "async")]
+pub async fn with_timeout<T>(
+    receiver: &Receiver<T>,
+    timeout_duration: core::time::Duration,
+) -> core::result::Result<T, flume::RecvTimeoutError> {
+    let timeout_future = tokio::time::sleep(timeout_duration);
+    tokio::select! {
+        () = timeout_future => {
+            // This is the same error returned by the `recv_timeout` function
+            // in case of a timeout.
+            Err(flume::RecvTimeoutError::Timeout)
+        }
+        result = receiver.recv_async() => {
+            // The only variant of `RecvError` is mapped to the corresponding variant
+            // in `RecvTimeoutError`.
+            result.map_err(core::convert::Into::into)
+        }
+    }
+}
+
+#[cfg(feature = "async")]
+#[cfg(test)]
+// All tokio tests are executed concurrently
+mod tests {
+
+    use core::time::Duration;
+
+    use crate::service_daemon::my_ip_interfaces;
+    use crate::{ServiceDaemon, ServiceEvent, ServiceInfo};
+
+    use super::with_timeout;
+
+    #[tokio::test]
+    async fn test_with_timeout() {
+        let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+        let service = "_test_inval_ptr._udp.local.";
+        let host_name = "my_host_tmp_invalidated_ptr.local.";
+        let intfs: Vec<_> = my_ip_interfaces(false);
+        let intf_ips: Vec<_> = intfs.iter().map(|intf| intf.ip()).collect();
+        let port = 5201;
+        let my_service =
+            ServiceInfo::new(service, "my_instance", host_name, &intf_ips[..], port, None)
+                .expect("invalid service info")
+                .enable_addr_auto();
+        let result = d.register(my_service.clone());
+        assert!(result.is_ok());
+
+        let browse_chan = d.browse(service).unwrap();
+        let timeout = Duration::from_secs(2);
+
+        let mut resolved = false;
+        while let Ok(event) = with_timeout(&browse_chan, timeout).await {
+            match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    resolved = true;
+                    println!("Resolved a service of {}", &info.fullname);
+                    break;
+                }
+                e => {
+                    println!("Received event {:?}", e);
+                }
+            }
+        }
+
+        assert!(resolved);
+    }
+
+    #[tokio::test]
+    async fn test_timeout_for_with_timeout() {
+        let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+        let service = "_test_inval_ptr._udp.local.";
+        let browse_chan = d.browse(service).unwrap();
+        let timeout = Duration::from_secs(2);
+
+        let mut resolved = false;
+        while let Ok(event) = with_timeout(&browse_chan, timeout).await {
+            match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    println!("Resolved a service of {}", &info.fullname);
+                }
+                e => {
+                    resolved = true;
+                    println!("Received event {:?}", e);
+                    break;
+                }
+            }
+        }
+
+        assert!(resolved);
+    }
+}
