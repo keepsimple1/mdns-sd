@@ -1,8 +1,18 @@
+# Version 0.16.0 (2025-10-29)
+
+A bugfix release. But we also bumped up rustc MSRV to 1.71.0, hence bumping our own minor version.
+
+## All changes
+
+* `6c01cf6 2025-10-27` Handle IPv6 disabled in kernel (#396) (keepsimple1)
+* `b15c4c3 2025-10-23` log the interface name when joining multicast group (#394) (keepsimple1)
+* `382521c 2025-10-15` refactoring only: make resolve_updated_instances easier to understand (#393) (keepsimple1)
+
 # Version 0.15.1 (2025-09-06)
 
 New feature: cache only browsing. Check out the new methods `browse_cache` and `accept_unsolicited`.
 
-## All chagnes
+## All changes
 
 * `3f6d6e9 2025-09-04` feat: support cache only browsing (#388) (twizansk)
 
