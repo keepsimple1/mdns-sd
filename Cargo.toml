@@ -28,6 +28,7 @@ tokio = { version = "1.48.0", defalut-features = false, features = ["macros", "t
 
 [dev-dependencies]
 env_logger = { version = "= 0.10.2", default-features = false, features= ["humantime"] }
+tokio = { version = "1.48.0", defalut-features = false, features = ["macros", "rt"]}
 fastrand = "2.3"
 humantime = "2.1"
 test-log = "= 0.2.14"
