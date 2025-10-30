@@ -175,3 +175,32 @@ pub use service_info::{
 
 /// A handler to receive messages from [ServiceDaemon]. Re-export from `flume` crate.
 pub use flume::Receiver;
+
+/// Runs a [`Receiver`] asynchronously with a specified timeout.
+///
+/// If the [`Receiver`] completes before the timeout, its result is returned.
+///
+/// # Errors
+///
+/// Fails in the following cases:
+/// - When the timeout occurs before the [`Receiver`] completes.
+/// - When the [`Receiver`] completes with an error.
+#[cfg(feature = "async")]
+pub async fn with_timeout<T>(
+    receiver: &Receiver<T>,
+    timeout_duration: core::time::Duration,
+) -> core::result::Result<T, flume::RecvTimeoutError> {
+    let timeout_future = tokio::time::sleep(timeout_duration);
+    tokio::select! {
+        () = timeout_future => {
+            // This is the same error returned by the `recv_timeout` function
+            // in case of a timeout.
+            Err(flume::RecvTimeoutError::Timeout)
+        }
+        result = receiver.recv_async() => {
+            // The only variant of `RecvError` is mapped to the corresponding variant
+            // in `RecvTimeoutError`.
+            result.map_err(core::convert::Into::into)
+        }
+    }
+}

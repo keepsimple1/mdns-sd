@@ -12,7 +12,7 @@ categories = ["network-programming"]
 description = "mDNS Service Discovery library with no async runtime dependency"
 
 [features]
-async = ["flume/async"]
+async = ["flume/async", "tokio"]
 logging = ["log"]
 default = ["async", "logging"]
 
@@ -24,6 +24,7 @@ log = { version = "0.4", optional = true }             # logging
 mio = { version = "1.1", features = ["os-poll", "net"] }  # select/poll sockets
 socket2 = { version = "0.6", features = ["all"] }      # socket APIs
 socket-pktinfo = "0.3.2"
+tokio = { version = "1.48.0", defalut-features = false, features = ["macros", "time"], optional = true } # select macro and sleep function
 
 [dev-dependencies]
 env_logger = { version = "= 0.10.2", default-features = false, features= ["humantime"] }
