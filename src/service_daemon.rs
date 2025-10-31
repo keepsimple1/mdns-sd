@@ -3482,6 +3482,7 @@ pub struct DnsNameChange {
 
 /// Commands supported by the daemon
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Browsing for a service type (ty_domain, next_time_delay_in_seconds, channel::sender)
     Browse(String, u32, bool, Sender<ServiceEvent>),

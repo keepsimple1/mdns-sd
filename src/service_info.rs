@@ -4,7 +4,7 @@
 use crate::log::{debug, trace};
 use crate::{
     dns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, RRType, ScopedIp},
-    Error, InterfaceId, Result,
+    Error, IfKind, InterfaceId, Result,
 };
 use if_addrs::{IfAddr, Interface};
 use std::net::Ipv6Addr;
@@ -82,7 +82,7 @@ pub struct ServiceInfo {
     requires_probe: bool,
 
     /// If set, the service is only exposed on these interfaces
-    supported_intfs: Box<Option<Vec<String>>>,
+    supported_intfs: Vec<IfKind>,
 
     /// If true, only link-local addresses are published.
     is_link_local_only: bool,
@@ -182,7 +182,7 @@ impl ServiceInfo {
             status: HashMap::new(),
             requires_probe: true,
             is_link_local_only: false,
-            supported_intfs: Box::<Option<Vec<String>>>::default(),
+            supported_intfs: vec![IfKind::All],
         };
 
         Ok(this)
@@ -219,10 +219,10 @@ impl ServiceInfo {
 
     /// Set the supported interfaces for this service.
     ///
-    /// Only ips associated with the provided interfaces will be published.  If set to None (default),
-    /// all interfaces are supported
-    pub fn set_interfaces(&mut self, intfs: Option<Vec<String>>) {
-        self.supported_intfs = Box::<Option<Vec<String>>>::new(intfs);
+    /// The service will be advertised on the provided interfaces. When ips are auto-detected
+    /// (via 'enable_addr_auto') only addresses on these interfaces will be considered.
+    pub fn set_interfaces(&mut self, intfs: Vec<IfKind>) {
+        self.supported_intfs = intfs;
     }
 
     /// Returns whether this service info requires name probing for potential name conflicts.
@@ -370,7 +370,7 @@ impl ServiceInfo {
 
     /// Insert `addr` into service info addresses.
     pub(crate) fn insert_ipaddr(&mut self, intf: &Interface) {
-        if self.is_address_supported(&intf.addr.ip(), &intf.name) {
+        if self.is_address_supported(intf) {
             self.addresses.insert(intf.addr.ip());
         } else {
             trace!(
@@ -455,11 +455,17 @@ impl ServiceInfo {
         }
     }
 
-    fn is_address_supported(&self, addr: &IpAddr, intf_name: &str) -> bool {
-        let interface_supported = match &self.supported_intfs.as_ref() {
-            Some(intfs) => intfs.iter().any(|i| i == intf_name),
-            None => true,
-        };
+    fn is_address_supported(&self, intf: &Interface) -> bool {
+        let addr = intf.ip();
+        let interface_supported = self.supported_intfs.iter().any(|i| match i {
+            IfKind::Name(name) => *name == intf.name,
+            IfKind::IPv4 => addr.is_ipv4(),
+            IfKind::IPv6 => addr.is_ipv6(),
+            IfKind::Addr(a) => *a == addr,
+            IfKind::LoopbackV4 => matches!(addr, IpAddr::V4(ipv4) if ipv4.is_loopback()),
+            IfKind::LoopbackV6 => matches!(addr, IpAddr::V6(ipv6) if ipv6.is_loopback()),
+            IfKind::All => true,
+        });
 
         let passes_link_local = !self.is_link_local_only
             || match &addr {
@@ -1332,8 +1338,9 @@ impl ResolvedService {
 #[cfg(test)]
 mod tests {
     use super::{decode_txt, encode_txt, u8_slice_to_hex, MyIntf, ServiceInfo, TxtProperty};
-    use if_addrs::{IfAddr, Ifv4Addr, Ifv6Addr, Interface};
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use crate::IfKind;
+    use if_addrs::{IfAddr, IfOperStatus, Ifv4Addr, Ifv6Addr, Interface};
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn test_txt_encode_decode() {
@@ -1502,55 +1509,152 @@ mod tests {
         let mut service_info =
             ServiceInfo::new("_test._tcp", "prop_test", "testhost", "", 1234, None).unwrap();
 
-        let intf_v4 = IfAddr::V4(Ifv4Addr {
-            ip: Ipv4Addr::new(192, 168, 1, 10),
-            netmask: Ipv4Addr::new(255, 255, 255, 0),
-            broadcast: None,
-            prefixlen: 24,
-        });
+        let intf_v6 = Interface {
+            name: "foo".to_string(),
+            index: Some(1),
+            addr: IfAddr::V6(Ifv6Addr {
+                ip: Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0x1234, 0, 0, 1),
+                netmask: Ipv6Addr::new(0xffff, 0xffff, 0xffff, 0xffff, 0, 0, 0, 0),
+                broadcast: None,
+                prefixlen: 16,
+            }),
+            oper_status: IfOperStatus::Up,
+            #[cfg(windows)]
+            adapter_name: String::new(),
+        };
 
-        let intf_v4_link_local = IfAddr::V4(Ifv4Addr {
-            ip: Ipv4Addr::new(169, 254, 1, 10),
-            netmask: Ipv4Addr::new(255, 255, 0, 0),
-            broadcast: None,
-            prefixlen: 16,
-        });
+        let intf_v4 = Interface {
+            name: "bar".to_string(),
+            index: Some(1),
+            addr: IfAddr::V4(Ifv4Addr {
+                ip: Ipv4Addr::new(192, 1, 2, 3),
+                netmask: Ipv4Addr::new(255, 255, 0, 0),
+                broadcast: None,
+                prefixlen: 16,
+            }),
+            oper_status: IfOperStatus::Up,
+            #[cfg(windows)]
+            adapter_name: String::new(),
+        };
 
-        // IPv6 interface (fe80::1234/64)
-        let intf_v6 = IfAddr::V6(Ifv6Addr {
-            ip: Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0x1234, 0, 0, 1),
-            netmask: Ipv6Addr::new(0xffff, 0xffff, 0xffff, 0xffff, 0, 0, 0, 0),
-            broadcast: None,
-            prefixlen: 16,
-        });
+        let intf_baz = Interface {
+            name: "baz".to_string(),
+            index: Some(1),
+            addr: IfAddr::V6(Ifv6Addr {
+                ip: Ipv6Addr::new(0x2003, 0xdb8, 0, 0, 0x1234, 0, 0, 1),
+                netmask: Ipv6Addr::new(0xffff, 0xffff, 0xffff, 0xffff, 0, 0, 0, 0),
+                broadcast: None,
+                prefixlen: 16,
+            }),
+            oper_status: IfOperStatus::Up,
+            #[cfg(windows)]
+            adapter_name: String::new(),
+        };
 
-        let intf_v6_link_local = IfAddr::V6(Ifv6Addr {
-            ip: Ipv6Addr::new(0xfe80, 0, 0, 0, 0x1234, 0, 0, 1),
-            netmask: Ipv6Addr::new(0xffff, 0xffff, 0xffff, 0xffff, 0, 0, 0, 0),
-            broadcast: None,
-            prefixlen: 16,
-        });
+        let intf_loopback_v4 = Interface {
+            name: "foo".to_string(),
+            index: Some(1),
+            addr: IfAddr::V4(Ifv4Addr {
+                ip: Ipv4Addr::new(127, 0, 0, 1),
+                netmask: Ipv4Addr::new(255, 255, 255, 255),
+                broadcast: None,
+                prefixlen: 16,
+            }),
+            oper_status: IfOperStatus::Up,
+            #[cfg(windows)]
+            adapter_name: String::new(),
+        };
+
+        let intf_loopback_v6 = Interface {
+            name: "foo".to_string(),
+            index: Some(1),
+            addr: IfAddr::V6(Ifv6Addr {
+                ip: Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
+                netmask: Ipv6Addr::new(
+                    0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff,
+                ),
+                broadcast: None,
+                prefixlen: 16,
+            }),
+            oper_status: IfOperStatus::Up,
+            #[cfg(windows)]
+            adapter_name: String::new(),
+        };
+
+        let intf_link_local_v4 = Interface {
+            name: "foo".to_string(),
+            index: Some(1),
+            addr: IfAddr::V4(Ifv4Addr {
+                ip: Ipv4Addr::new(169, 254, 0, 1),
+                netmask: Ipv4Addr::new(255, 255, 0, 0),
+                broadcast: None,
+                prefixlen: 16,
+            }),
+            oper_status: IfOperStatus::Up,
+            #[cfg(windows)]
+            adapter_name: String::new(),
+        };
+
+        let intf_link_local_v6 = Interface {
+            name: "foo".to_string(),
+            index: Some(1),
+            addr: IfAddr::V6(Ifv6Addr {
+                ip: Ipv6Addr::new(0xfe80, 0, 0, 0, 0x1234, 0, 0, 1),
+                netmask: Ipv6Addr::new(0xffff, 0xffff, 0xffff, 0xffff, 0, 0, 0, 0),
+                broadcast: None,
+                prefixlen: 16,
+            }),
+            oper_status: IfOperStatus::Up,
+            #[cfg(windows)]
+            adapter_name: String::new(),
+        };
 
         // supported addresses not specified
-        let mut addr_v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
-        let mut addr_v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0x1234, 0, 0, 1));
-        assert!(service_info.is_address_supported(&addr_v4, "foo"));
-        assert!(service_info.is_address_supported(&addr_v6, "foo"));
+        assert!(service_info.is_address_supported(&intf_v6));
 
         // Interface not supported
-        service_info.set_interfaces(Some(vec!["intf1".to_string()]));
-        assert!(!service_info.is_address_supported(&addr_v4, "foo"));
-        assert!(!service_info.is_address_supported(&addr_v6, "foo"));
+        service_info.set_interfaces(vec![
+            IfKind::Name("foo".to_string()),
+            IfKind::Name("bar".to_string()),
+        ]);
+        assert!(!service_info.is_address_supported(&intf_baz));
 
         // link-local only
         service_info.set_link_local_only(true);
-        addr_v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
-        addr_v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0x1234, 0, 0, 1));
-        assert!(!service_info.is_address_supported(&addr_v4, "intf1"));
-        assert!(!service_info.is_address_supported(&addr_v6, "intf1"));
-        addr_v4 = IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1));
-        addr_v6 = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0x1234, 0, 0, 1));
-        assert!(service_info.is_address_supported(&addr_v4, "intf1"));
-        assert!(service_info.is_address_supported(&addr_v6, "intf1"));
+        assert!(!service_info.is_address_supported(&intf_v4));
+        assert!(!service_info.is_address_supported(&intf_v6));
+        assert!(service_info.is_address_supported(&intf_link_local_v4));
+        assert!(service_info.is_address_supported(&intf_link_local_v6));
+        service_info.set_link_local_only(false);
+
+        // supported interfaces: IfKing::All
+        service_info.set_interfaces(vec![IfKind::All]);
+        assert!(service_info.is_address_supported(&intf_v6));
+        assert!(service_info.is_address_supported(&intf_v4));
+
+        // supported interfaces: IfKind::IPv6
+        service_info.set_interfaces(vec![IfKind::IPv6]);
+        assert!(service_info.is_address_supported(&intf_v6));
+        assert!(!service_info.is_address_supported(&intf_v4));
+
+        // supported interfaces: IfKind::IPv4
+        service_info.set_interfaces(vec![IfKind::IPv4]);
+        assert!(service_info.is_address_supported(&intf_v4));
+        assert!(!service_info.is_address_supported(&intf_v6));
+
+        // supported interfaces: IfKind::Addr
+        service_info.set_interfaces(vec![IfKind::Addr(intf_v6.ip())]);
+        assert!(service_info.is_address_supported(&intf_v6));
+        assert!(!service_info.is_address_supported(&intf_v4));
+
+        // supported interfaces: IfKind::LoopbackV4
+        service_info.set_interfaces(vec![IfKind::LoopbackV4]);
+        assert!(service_info.is_address_supported(&intf_loopback_v4));
+        assert!(!service_info.is_address_supported(&intf_loopback_v6));
+
+        // supported interfaces: IfKind::LoopbackV6
+        service_info.set_interfaces(vec![IfKind::LoopbackV6]);
+        assert!(!service_info.is_address_supported(&intf_loopback_v4));
+        assert!(service_info.is_address_supported(&intf_loopback_v6));
     }
 }
