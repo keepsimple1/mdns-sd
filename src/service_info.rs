@@ -472,12 +472,9 @@ impl ServiceInfo {
                 IpAddr::V4(ipv4) => ipv4.is_link_local(),
                 IpAddr::V6(ipv6) => is_unicast_link_local(ipv6),
             };
-        trace!(
+        debug!(
             "matching inserted address {} on intf {}: passes_link_local={}, interface_supported={}",
-            addr,
-            addr,
-            passes_link_local,
-            interface_supported
+            addr, addr, passes_link_local, interface_supported
         );
         interface_supported && passes_link_local
     }
@@ -1337,7 +1334,7 @@ impl ResolvedService {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_txt, encode_txt, u8_slice_to_hex, MyIntf, ServiceInfo, TxtProperty};
+    use super::{decode_txt, encode_txt, u8_slice_to_hex, ServiceInfo, TxtProperty};
     use crate::IfKind;
     use if_addrs::{IfAddr, IfOperStatus, Ifv4Addr, Ifv6Addr, Interface};
     use std::net::{Ipv4Addr, Ipv6Addr};
