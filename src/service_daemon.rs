@@ -1358,7 +1358,7 @@ impl Zeroconf {
     }
 
     /// Apply all selections to `interfaces` and return the selected addresses.
-    fn selected_addrs(&self, interfaces: Vec<Interface>) -> HashSet<IpAddr> {
+    fn selected_intfs(&self, interfaces: Vec<Interface>) -> HashSet<Interface> {
         let intf_count = interfaces.len();
         let mut intf_selections = vec![true; intf_count];
 
@@ -1375,7 +1375,7 @@ impl Zeroconf {
         let mut selected_addrs = HashSet::new();
         for i in 0..intf_count {
             if intf_selections[i] {
-                selected_addrs.insert(interfaces[i].addr.ip());
+                selected_addrs.insert(interfaces[i].clone());
             }
         }
 
@@ -1655,8 +1655,7 @@ impl Zeroconf {
 
         for (_, service_info) in self.my_services.iter_mut() {
             if service_info.is_addr_auto() {
-                let new_ip = intf.ip();
-                service_info.insert_ipaddr(new_ip);
+                service_info.insert_ipaddr(&intf);
 
                 if announce_service_on_intf(dns_registry, service_info, my_intf, &sock.pktinfo) {
                     debug!(
@@ -1710,9 +1709,9 @@ impl Zeroconf {
         }
 
         if info.is_addr_auto() {
-            let selected_addrs = self.selected_addrs(my_ip_interfaces(true));
-            for addr in selected_addrs {
-                info.insert_ipaddr(addr);
+            let selected_intfs = self.selected_intfs(my_ip_interfaces(true));
+            for intf in selected_intfs {
+                info.insert_ipaddr(&intf);
             }
         }
 
@@ -3568,6 +3567,7 @@ pub struct DnsNameChange {
 
 /// Commands supported by the daemon
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Browsing for a service type (ty_domain, next_time_delay_in_seconds, channel::sender)
     Browse(String, u32, bool, Sender<ServiceEvent>),
