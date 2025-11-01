@@ -1350,7 +1350,7 @@ mod tests {
     #[test]
     fn test_set_properties_from_txt() {
         // Three duplicated keys.
-        let properties = vec![
+        let properties = [
             TxtProperty::from(&("one", "1")),
             TxtProperty::from(&("ONE", "2")),
             TxtProperty::from(&("One", "3")),

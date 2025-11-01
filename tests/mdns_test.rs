@@ -470,7 +470,7 @@ fn service_txt_properties_key_ascii() {
 #[test]
 fn test_txt_properties_into_hashmap_str() {
     // Test valid UTF-8 properties
-    let properties = vec![("key1", "val1"), ("key2", "val2")].into_txt_properties();
+    let properties = [("key1", "val1"), ("key2", "val2")].into_txt_properties();
     let property_map = properties.into_property_map_str();
     println!("property_map: {:?}", property_map);
     assert_eq!(property_map.len(), 2);
@@ -493,7 +493,7 @@ fn test_txt_properties_into_hashmap_str() {
 #[test]
 fn test_into_txt_properties() {
     // Verify (&str, String) tuple is supported.
-    let properties = vec![("key1", String::from("val1"))];
+    let properties = [("key1", String::from("val1"))];
     let txt_props = properties.into_txt_properties();
     assert_eq!(txt_props.get_property_val_str("key1").unwrap(), "val1");
     assert_eq!(
@@ -502,7 +502,7 @@ fn test_into_txt_properties() {
     );
 
     // Verify (String, String) tuple is supported.
-    let properties = vec![(String::from("key2"), String::from("val2"))];
+    let properties = [(String::from("key2"), String::from("val2"))];
     let txt_props = properties.into_txt_properties();
     assert_eq!(txt_props.get_property_val_str("key2").unwrap(), "val2");
 }
@@ -1474,7 +1474,7 @@ fn test_cache_flush_record() {
         .unwrap();
 
     let port = 5201;
-    let properties = vec![("key", "value")];
+    let properties = [("key", "value")];
     let mut my_service = ServiceInfo::new(
         service,
         "my_instance",
@@ -1687,7 +1687,7 @@ fn test_cache_flush_srv() {
         .unwrap();
 
     let port = 5201;
-    let properties = vec![("key", "value")];
+    let properties = [("key", "value")];
     let mut my_service = ServiceInfo::new(
         service,
         "my_instance",
@@ -2432,7 +2432,7 @@ fn test_set_ip_check_interval() {
         service,
         "my_instance",
         host_name,
-        &service_ip_addr,
+        service_ip_addr,
         port,
         None,
     )
