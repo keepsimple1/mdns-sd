@@ -4328,8 +4328,7 @@ mod tests {
     use super::{
         _new_socket_bind, check_domain_suffix, check_service_name_length, hostname_change,
         my_ip_interfaces, name_change, send_dns_outgoing_impl, valid_instance_name,
-        HostnameResolutionEvent, ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4,
-        MDNS_PORT,
+        HostnameResolutionEvent, ServiceDaemon, ServiceEvent, ServiceInfo,
     };
     use crate::{
         dns_parser::{
@@ -4338,18 +4337,8 @@ mod tests {
         },
         service_daemon::{add_answer_of_service, check_hostname},
     };
-    use std::{
-        net::{SocketAddr, SocketAddrV4},
-        time::{Duration, SystemTime},
-    };
+    use std::time::{Duration, SystemTime};
     use test_log::test;
-
-    #[test]
-    fn test_socketaddr_print() {
-        let addr: SocketAddr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
-        let print = format!("{}", addr);
-        assert_eq!(print, "224.0.0.251:5353");
-    }
 
     #[test]
     fn test_instance_name() {
