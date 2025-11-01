@@ -35,6 +35,8 @@ jobs:
         run: cargo build
       - name: Run clippy and fail if any warnings
         run: cargo clippy -- -D warnings
+      - name: Run clippy for tests and fail if any warnings
+        run: cargo clippy --tests -- -D warnings
       - name: Run tests with debugs
         if: matrix.os == 'ubuntu-20.04' || matrix.os == 'macos-14'
         timeout-minutes: 2
