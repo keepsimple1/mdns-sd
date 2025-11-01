@@ -7,7 +7,6 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
-use std::u32;
 use test_log::test;
 
 /// This test covers:
@@ -734,22 +733,15 @@ fn test_disable_interface_cache() {
     let mut resolved = false;
 
     // run till timeout and it should not resolve.
-    loop {
-        match handle.recv_timeout(timeout) {
-            Ok(event) => {
-                if let ServiceEvent::ServiceResolved(info) = event {
-                    println!(
-                        "Resolved a service of {} addr(s): {:?}",
-                        &info.get_fullname(),
-                        info.get_addresses()
-                    );
-                    resolved = true;
-                    break;
-                }
-            }
-            Err(_) => {
-                break;
-            }
+    while let Ok(event) = handle.recv_timeout(timeout) {
+        if let ServiceEvent::ServiceResolved(info) = event {
+            println!(
+                "Resolved a service of {} addr(s): {:?}",
+                &info.get_fullname(),
+                info.get_addresses()
+            );
+            resolved = true;
+            break;
         }
     }
 
@@ -1514,7 +1506,7 @@ fn test_cache_flush_record() {
         let bytes = ipv4.octets();
         service_ip_addr = IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 1));
     } else {
-        assert!(false);
+        panic!();
     }
 
     // Re-register the service to update the IPv4 addr.
@@ -1879,8 +1871,7 @@ fn test_name_conflict_resolution() {
 
     // Modify the IPv4 address for the service.
     let IpAddr::V4(ipv4) = ip_addr1 else {
-        assert!(false);
-        return;
+        panic!();
     };
     let bytes = ipv4.octets();
     let ip_addr2 = IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 1));
@@ -1977,8 +1968,7 @@ fn test_name_tiebreaking() {
 
     // Modify the IPv4 address for the service.
     let IpAddr::V4(ipv4_2) = ip_addr1 else {
-        assert!(false);
-        return;
+        panic!();
     };
     let bytes = ipv4_2.octets();
     let ip_addr2 = IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 1));
@@ -2078,8 +2068,7 @@ fn test_name_conflict_3() {
 
     // Modify the IPv4 address for the service.
     let IpAddr::V4(ipv4) = ip_addr1 else {
-        assert!(false);
-        return;
+        panic!();
     };
     let bytes = ipv4.octets();
     let ip_addr2 = IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 1));
