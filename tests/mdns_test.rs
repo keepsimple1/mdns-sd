@@ -137,7 +137,7 @@ fn integration_success() {
     // MDNS records, so we look at unique IP addresses to see if they match the number of the
     // network interfaces.
     assert_eq!(resolved_ips.len(), my_addrs_count);
-    assert!(resolved_ips.len() >= 1);
+    assert!(!resolved_ips.is_empty());
 
     // Unregister the service
     let receiver = d.unregister(&fullname).unwrap();
@@ -156,7 +156,7 @@ fn integration_success() {
                 break;
             }
             ServiceEvent::ServiceResolved(info) => {
-                if info.get_fullname() == &fullname {
+                if info.get_fullname() == fullname {
                     println!("Received a resolved service event after unregister");
                     resolved = true;
                 }
@@ -177,13 +177,10 @@ fn integration_success() {
     let mut stopped_count = 0;
 
     while let Ok(event) = browse_chan.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::SearchStopped(ty) => {
-                println!("Search stopped for {}", &ty);
-                stopped_count += 1;
-                break;
-            }
-            _ => {}
+        if let ServiceEvent::SearchStopped(ty) = event {
+            println!("Search stopped for {}", &ty);
+            stopped_count += 1;
+            break;
         }
     }
 
@@ -709,10 +706,10 @@ fn test_disable_interface_cache() {
     let host_name = "disabled_intf_host.local.";
     let port = 5201;
     let my_service = ServiceInfo::new(
-        &ty_domain,
+        ty_domain,
         &instance_name,
         host_name,
-        &service_ip_addr,
+        service_ip_addr,
         port,
         None,
     )
@@ -732,15 +729,15 @@ fn test_disable_interface_cache() {
     client.disable_interface(service_ip_addr).unwrap();
 
     // Browse for the service.
-    let handle = client.browse(&ty_domain).unwrap();
+    let handle = client.browse(ty_domain).unwrap();
     let timeout = Duration::from_secs(1);
     let mut resolved = false;
 
     // run till timeout and it should not resolve.
     loop {
         match handle.recv_timeout(timeout) {
-            Ok(event) => match event {
-                ServiceEvent::ServiceResolved(info) => {
+            Ok(event) => {
+                if let ServiceEvent::ServiceResolved(info) = event {
                     println!(
                         "Resolved a service of {} addr(s): {:?}",
                         &info.get_fullname(),
@@ -749,8 +746,7 @@ fn test_disable_interface_cache() {
                     resolved = true;
                     break;
                 }
-                _ => {}
-            },
+            }
             Err(_) => {
                 break;
             }
@@ -1479,7 +1475,7 @@ fn test_cache_flush_record() {
         service,
         "my_instance",
         host_name,
-        &service_ip_addr,
+        service_ip_addr,
         port,
         &properties[..],
     )
@@ -1526,7 +1522,7 @@ fn test_cache_flush_record() {
         service,
         "my_instance",
         host_name,
-        &service_ip_addr,
+        service_ip_addr,
         port,
         &properties[..],
     )
@@ -1633,8 +1629,7 @@ fn test_cache_flush_remove_one_addr() {
     sleep(Duration::from_secs(2)); // Wait 1 more second for the 2nd announcement
 
     // Re-register the service to have only 1 addr.
-    my_service =
-        ServiceInfo::new(service, "my_instance", host_name, &ip_addr1, port, None).unwrap();
+    my_service = ServiceInfo::new(service, "my_instance", host_name, ip_addr1, port, None).unwrap();
     let result = server.register(my_service.clone());
     assert!(result.is_ok());
 
@@ -1692,7 +1687,7 @@ fn test_cache_flush_srv() {
         service,
         "my_instance",
         old_host_name,
-        &service_ip_addr,
+        service_ip_addr,
         port,
         &properties[..],
     )
@@ -1728,7 +1723,7 @@ fn test_cache_flush_srv() {
         service,
         "my_instance",
         new_host_name,
-        &service_ip_addr,
+        service_ip_addr,
         port,
         &properties[..],
     )
@@ -1791,7 +1786,7 @@ fn test_known_answer_suppression() {
     let port = 5200;
 
     // Publish the service
-    let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
+    let my_service = ServiceInfo::new(ty_domain, &instance_name, host_name, ip_addr1, port, None)
         .expect("valid service info");
     mdns_server
         .register(my_service)
@@ -1822,13 +1817,10 @@ fn test_known_answer_suppression() {
     resolved = false;
 
     while let Ok(event) = browse_chan.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceResolved(info) => {
-                resolved = true;
-                println!("Resolved a service of {}", &info.get_fullname());
-                break;
-            }
-            _ => {}
+        if let ServiceEvent::ServiceResolved(info) = event {
+            resolved = true;
+            println!("Resolved a service of {}", &info.get_fullname());
+            break;
         }
     }
     assert!(resolved);
@@ -1873,7 +1865,7 @@ fn test_name_conflict_resolution() {
         .unwrap();
 
     // Publish the service on server1
-    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
+    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, ip_addr1, port, None)
         .expect("valid service info");
     server1
         .register(service1)
@@ -1893,7 +1885,7 @@ fn test_name_conflict_resolution() {
     let bytes = ipv4.octets();
     let ip_addr2 = IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 1));
 
-    let service2 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr2, port, None)
+    let service2 = ServiceInfo::new(ty_domain, &instance_name, host_name, ip_addr2, port, None)
         .expect("failed to create ServiceInfo for service2");
     server2
         .register(service2)
@@ -1923,28 +1915,25 @@ fn test_name_conflict_resolution() {
     let mut service_names = HashSet::new();
 
     while let Ok(event) = receiver.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceResolved(info) => {
-                println!(
-                    "Resolved a service: {} host {} IP {:?}",
-                    info.get_fullname(),
-                    info.get_hostname(),
-                    info.get_addresses_v4()
-                );
+        if let ServiceEvent::ServiceResolved(info) = event {
+            println!(
+                "Resolved a service: {} host {} IP {:?}",
+                info.get_fullname(),
+                info.get_hostname(),
+                info.get_addresses_v4()
+            );
 
-                service_names.insert(info.get_fullname().to_string());
+            service_names.insert(info.get_fullname().to_string());
 
-                // Find and verify name conflict resolution.
-                if info.get_fullname().contains("(2)") {
-                    assert_eq!(info.get_hostname(), "conflict_host-2.local.");
-                }
-
-                // Stop the wait if both are resolved.
-                if service_names.len() == 2 {
-                    break;
-                }
+            // Find and verify name conflict resolution.
+            if info.get_fullname().contains("(2)") {
+                assert_eq!(info.get_hostname(), "conflict_host-2.local.");
             }
-            _ => {}
+
+            // Stop the wait if both are resolved.
+            if service_names.len() == 2 {
+                break;
+            }
         }
     }
 
@@ -1977,7 +1966,7 @@ fn test_name_tiebreaking() {
         .unwrap();
 
     // Publish the service on server1
-    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
+    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, ip_addr1, port, None)
         .expect("valid service info");
     server1
         .register(service1)
@@ -1994,7 +1983,7 @@ fn test_name_tiebreaking() {
     let bytes = ipv4_2.octets();
     let ip_addr2 = IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 1));
 
-    let service2 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr2, port, None)
+    let service2 = ServiceInfo::new(ty_domain, &instance_name, host_name, ip_addr2, port, None)
         .expect("failed to create ServiceInfo for service2");
     server2
         .register(service2)
@@ -2025,21 +2014,18 @@ fn test_name_tiebreaking() {
     let mut resolved_services = vec![];
 
     while let Ok(event) = receiver.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceResolved(info) => {
-                println!(
-                    "Resolved a service: {} host {} IP {:?}",
-                    info.get_fullname(),
-                    info.get_hostname(),
-                    info.get_addresses_v4()
-                );
+        if let ServiceEvent::ServiceResolved(info) = event {
+            println!(
+                "Resolved a service: {} host {} IP {:?}",
+                info.get_fullname(),
+                info.get_hostname(),
+                info.get_addresses_v4()
+            );
 
-                resolved_services.push(info);
-                if resolved_services.len() == 2 {
-                    break;
-                }
+            resolved_services.push(info);
+            if resolved_services.len() == 2 {
+                break;
             }
-            _ => {}
         }
     }
 
@@ -2078,7 +2064,7 @@ fn test_name_conflict_3() {
         .unwrap();
 
     // Publish the service on server1
-    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
+    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, ip_addr1, port, None)
         .expect("valid service info");
     server1
         .register(service1)
@@ -2098,7 +2084,7 @@ fn test_name_conflict_3() {
     let bytes = ipv4.octets();
     let ip_addr2 = IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 1));
 
-    let info2 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr2, port, None)
+    let info2 = ServiceInfo::new(ty_domain, &instance_name, host_name, ip_addr2, port, None)
         .expect("failed to create ServiceInfo for service2");
     server2
         .register(info2)
@@ -2125,7 +2111,7 @@ fn test_name_conflict_3() {
     // Modify the IPv4 address for the service.
     let ip_addr3 = IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3] + 2));
 
-    let info3 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr3, port, None)
+    let info3 = ServiceInfo::new(ty_domain, &instance_name, host_name, ip_addr3, port, None)
         .expect("failed to create ServiceInfo for service2");
 
     server3
@@ -2155,21 +2141,18 @@ fn test_name_conflict_3() {
     let mut service_names = HashSet::new();
 
     while let Ok(event) = receiver.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceResolved(info) => {
-                println!(
-                    "Resolved a service: {} host {} IP {:?}",
-                    info.get_fullname(),
-                    info.get_hostname(),
-                    info.get_addresses_v4()
-                );
+        if let ServiceEvent::ServiceResolved(info) = event {
+            println!(
+                "Resolved a service: {} host {} IP {:?}",
+                info.get_fullname(),
+                info.get_hostname(),
+                info.get_addresses_v4()
+            );
 
-                service_names.insert(info.get_fullname().to_string());
-                if service_names.len() >= 3 {
-                    break;
-                }
+            service_names.insert(info.get_fullname().to_string());
+            if service_names.len() >= 3 {
+                break;
             }
-            _ => {}
         }
     }
 
@@ -2196,7 +2179,7 @@ fn test_verify_srv() {
         .unwrap();
 
     // Register the service.
-    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
+    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, ip_addr1, port, None)
         .expect("valid service info");
     let fullname = service1.get_fullname().to_string();
 
@@ -2214,12 +2197,9 @@ fn test_verify_srv() {
     let timeout = Duration::from_secs(2);
 
     while let Ok(event) = receiver.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceResolved(info) => {
-                println!("service resolved: {:?}", info);
-                break;
-            }
-            _ => {}
+        if let ServiceEvent::ServiceResolved(info) = event {
+            println!("service resolved: {:?}", info);
+            break;
         }
     }
 
@@ -2233,13 +2213,10 @@ fn test_verify_srv() {
     let mut service_removal = false;
 
     while let Ok(event) = receiver.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceRemoved(service_type, fullname) => {
-                service_removal = true;
-                println!("service removed: {service_type} : {fullname}");
-                break;
-            }
-            _ => {}
+        if let ServiceEvent::ServiceRemoved(service_type, fullname) = event {
+            service_removal = true;
+            println!("service removed: {service_type} : {fullname}");
+            break;
         }
     }
 
@@ -2268,7 +2245,7 @@ fn test_multicast_loop_v4() {
         .unwrap();
 
     // Publish the service on server
-    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
+    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, ip_addr1, port, None)
         .expect("valid service info");
     server
         .register(service1)
@@ -2288,22 +2265,19 @@ fn test_multicast_loop_v4() {
 
     let timeout = Duration::from_secs(2);
     while let Ok(event) = receiver.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceResolved(info) => {
-                println!(
-                    "Resolved a service: {} host {} IP {:?}",
-                    info.get_fullname(),
-                    info.get_hostname(),
-                    info.get_addresses_v4()
-                );
-                resolved = true;
-                break;
-            }
-            _ => {}
+        if let ServiceEvent::ServiceResolved(info) = event {
+            println!(
+                "Resolved a service: {} host {} IP {:?}",
+                info.get_fullname(),
+                info.get_hostname(),
+                info.get_addresses_v4()
+            );
+            resolved = true;
+            break;
         }
     }
 
-    assert_eq!(resolved, false);
+    assert!(!resolved);
 
     // enable loopback and try again.
     server.set_multicast_loop_v4(true).unwrap();
@@ -2311,18 +2285,15 @@ fn test_multicast_loop_v4() {
     let receiver = client.browse(ty_domain).unwrap();
 
     while let Ok(event) = receiver.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceResolved(info) => {
-                println!(
-                    "Resolved a service: {} host {} IP {:?}",
-                    info.get_fullname(),
-                    info.get_hostname(),
-                    info.get_addresses_v4()
-                );
-                resolved = true;
-                break;
-            }
-            _ => {}
+        if let ServiceEvent::ServiceResolved(info) = event {
+            println!(
+                "Resolved a service: {} host {} IP {:?}",
+                info.get_fullname(),
+                info.get_hostname(),
+                info.get_addresses_v4()
+            );
+            resolved = true;
+            break;
         }
     }
 
@@ -2351,7 +2322,7 @@ fn test_multicast_loop_v6() {
         .unwrap();
 
     // Publish the service on server
-    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
+    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, ip_addr1, port, None)
         .expect("valid service info");
     server
         .register(service1)
@@ -2371,22 +2342,19 @@ fn test_multicast_loop_v6() {
 
     let timeout = Duration::from_secs(2);
     while let Ok(event) = receiver.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceResolved(info) => {
-                println!(
-                    "Resolved a service: {} host {} IP {:?}",
-                    info.get_fullname(),
-                    info.get_hostname(),
-                    info.get_addresses()
-                );
-                resolved = true;
-                break;
-            }
-            _ => {}
+        if let ServiceEvent::ServiceResolved(info) = event {
+            println!(
+                "Resolved a service: {} host {} IP {:?}",
+                info.get_fullname(),
+                info.get_hostname(),
+                info.get_addresses()
+            );
+            resolved = true;
+            break;
         }
     }
 
-    assert_eq!(resolved, false);
+    assert!(!resolved);
 
     // enable loopback and try again.
     server.set_multicast_loop_v6(true).unwrap();
@@ -2395,18 +2363,15 @@ fn test_multicast_loop_v6() {
     let receiver = client.browse(ty_domain).unwrap();
 
     while let Ok(event) = receiver.recv_timeout(timeout) {
-        match event {
-            ServiceEvent::ServiceResolved(info) => {
-                println!(
-                    "Resolved a service: {} host {} IP {:?}",
-                    info.get_fullname(),
-                    info.get_hostname(),
-                    info.get_addresses()
-                );
-                resolved = true;
-                break;
-            }
-            _ => {}
+        if let ServiceEvent::ServiceResolved(info) = event {
+            println!(
+                "Resolved a service: {} host {} IP {:?}",
+                info.get_fullname(),
+                info.get_hostname(),
+                info.get_addresses()
+            );
+            resolved = true;
+            break;
         }
     }
 
