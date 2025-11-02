@@ -1273,7 +1273,7 @@ mod tests {
 
     #[test]
     fn test_txt_encode_decode() {
-        let properties = vec![
+        let properties = [
             TxtProperty::from(&("key1", "value1")),
             TxtProperty::from(&("key2", "value2")),
         ];
@@ -1332,7 +1332,7 @@ mod tests {
         assert_eq!(properties, decoded);
 
         // test very long property.
-        let properties = vec![TxtProperty::from(
+        let properties = [TxtProperty::from(
             String::from_utf8(vec![0x30; 1024]).unwrap().as_str(), // A long string of 0 char
         )];
         let property_count = properties.len();
@@ -1350,7 +1350,7 @@ mod tests {
     #[test]
     fn test_set_properties_from_txt() {
         // Three duplicated keys.
-        let properties = vec![
+        let properties = [
             TxtProperty::from(&("one", "1")),
             TxtProperty::from(&("ONE", "2")),
             TxtProperty::from(&("One", "3")),

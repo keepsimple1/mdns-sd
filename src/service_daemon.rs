@@ -4328,8 +4328,7 @@ mod tests {
     use super::{
         _new_socket_bind, check_domain_suffix, check_service_name_length, hostname_change,
         my_ip_interfaces, name_change, send_dns_outgoing_impl, valid_instance_name,
-        HostnameResolutionEvent, ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4,
-        MDNS_PORT,
+        HostnameResolutionEvent, ServiceDaemon, ServiceEvent, ServiceInfo,
     };
     use crate::{
         dns_parser::{
@@ -4338,18 +4337,8 @@ mod tests {
         },
         service_daemon::{add_answer_of_service, check_hostname},
     };
-    use std::{
-        net::{SocketAddr, SocketAddrV4},
-        time::{Duration, SystemTime},
-    };
+    use std::time::{Duration, SystemTime};
     use test_log::test;
-
-    #[test]
-    fn test_socketaddr_print() {
-        let addr: SocketAddr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
-        let print = format!("{}", addr);
-        assert_eq!(print, "224.0.0.251:5353");
-    }
 
     #[test]
     fn test_instance_name() {
@@ -4542,13 +4531,10 @@ mod tests {
         let mut resolved = false;
 
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
-            match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    resolved = true;
-                    println!("Resolved a service of {}", &info.fullname);
-                    break;
-                }
-                _ => {}
+            if let ServiceEvent::ServiceResolved(info) = event {
+                resolved = true;
+                println!("Resolved a service of {}", &info.fullname);
+                break;
             }
         }
 
@@ -4560,12 +4546,9 @@ mod tests {
         // SRV record in the client cache will expire.
         let expire_timeout = Duration::from_secs(new_ttl as u64);
         while let Ok(event) = browse_chan.recv_timeout(expire_timeout) {
-            match event {
-                ServiceEvent::ServiceRemoved(service_type, full_name) => {
-                    println!("Service removed: {}: {}", &service_type, &full_name);
-                    break;
-                }
-                _ => {}
+            if let ServiceEvent::ServiceRemoved(service_type, full_name) = event {
+                println!("Service removed: {}: {}", &service_type, &full_name);
+                break;
             }
         }
     }
@@ -4585,7 +4568,7 @@ mod tests {
             "_host_res_test._tcp.local.",
             "my_instance",
             hostname,
-            &service_ip_addr.to_ip_addr(),
+            service_ip_addr.to_ip_addr(),
             1234,
             None,
         )
@@ -4661,7 +4644,7 @@ mod tests {
             service_type,
             instance,
             host_name,
-            &service_ip_addr,
+            service_ip_addr,
             5023,
             None,
         )
@@ -4682,13 +4665,10 @@ mod tests {
 
         // resolve the service first.
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
-            match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    resolved = true;
-                    println!("Resolved a service of {}", &info.fullname);
-                    break;
-                }
-                _ => {}
+            if let ServiceEvent::ServiceResolved(info) = event {
+                resolved = true;
+                println!("Resolved a service of {}", &info.fullname);
+                break;
             }
         }
 
@@ -4752,7 +4732,7 @@ mod tests {
             service_type,
             instance,
             host_name,
-            &service_ip_addr,
+            service_ip_addr,
             5023,
             None,
         )
@@ -4812,9 +4792,8 @@ mod tests {
         println!("Using interface {} with IP {}", intf_name, ip_addr1);
 
         // Register the service.
-        let service1 =
-            ServiceInfo::new(ty_domain, &instance_name, host_name, &ip_addr1, port, None)
-                .expect("valid service info");
+        let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, ip_addr1, port, None)
+            .expect("valid service info");
         let server1 = ServiceDaemon::new().expect("failed to start server");
         server1
             .register(service1)
@@ -4832,13 +4811,10 @@ mod tests {
         let mut got_data = false;
 
         while let Ok(event) = receiver.recv_timeout(timeout) {
-            match event {
-                ServiceEvent::ServiceResolved(_) => {
-                    println!("Received ServiceResolved event");
-                    got_data = true;
-                    break;
-                }
-                _ => {}
+            if let ServiceEvent::ServiceResolved(_) = event {
+                println!("Received ServiceResolved event");
+                got_data = true;
+                break;
             }
         }
 
@@ -4854,13 +4830,10 @@ mod tests {
         let mut got_removed = false;
 
         while let Ok(event) = receiver.recv_timeout(timeout) {
-            match event {
-                ServiceEvent::ServiceRemoved(ty_domain, instance) => {
-                    got_removed = true;
-                    println!("removed: {ty_domain} : {instance}");
-                    break;
-                }
-                _ => {}
+            if let ServiceEvent::ServiceRemoved(ty_domain, instance) = event {
+                got_removed = true;
+                println!("removed: {ty_domain} : {instance}");
+                break;
             }
         }
         assert!(got_removed, "Should receive ServiceRemoved event");
@@ -4869,13 +4842,10 @@ mod tests {
         client.test_up_interface(&intf_name).unwrap();
         let mut got_data = false;
         while let Ok(event) = receiver.recv_timeout(timeout) {
-            match event {
-                ServiceEvent::ServiceResolved(resolved) => {
-                    got_data = true;
-                    println!("Received ServiceResolved: {:?}", resolved);
-                    break;
-                }
-                _ => {}
+            if let ServiceEvent::ServiceResolved(resolved) = event {
+                got_data = true;
+                println!("Received ServiceResolved: {:?}", resolved);
+                break;
             }
         }
         assert!(
@@ -4903,7 +4873,7 @@ mod tests {
             service_type,
             instance,
             host_name,
-            &service_ip_addr,
+            service_ip_addr,
             5023,
             None,
         )
@@ -4929,13 +4899,10 @@ mod tests {
 
         // resolve the service.
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
-            match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    resolved = true;
-                    println!("Resolved a service of {}", &info.get_fullname());
-                    break;
-                }
-                _ => {}
+            if let ServiceEvent::ServiceResolved(info) = event {
+                resolved = true;
+                println!("Resolved a service of {}", &info.get_fullname());
+                break;
             }
         }
 
@@ -4962,7 +4929,7 @@ mod tests {
             service_type,
             instance,
             host_name,
-            &service_ip_addr,
+            service_ip_addr,
             5023,
             None,
         )
@@ -4988,13 +4955,10 @@ mod tests {
 
         // resolve the service.
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
-            match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    resolved = true;
-                    println!("Resolved a service of {}", &info.get_fullname());
-                    break;
-                }
-                _ => {}
+            if let ServiceEvent::ServiceResolved(info) = event {
+                resolved = true;
+                println!("Resolved a service of {}", &info.get_fullname());
+                break;
             }
         }
 
