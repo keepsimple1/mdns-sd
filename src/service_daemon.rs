@@ -377,7 +377,7 @@ impl ServiceDaemon {
         check_service_name(service_info.get_fullname())?;
         check_hostname(service_info.get_hostname())?;
 
-        self.send_cmd(Command::Register(service_info))
+        self.send_cmd(Command::Register(service_info.into()))
     }
 
     /// Unregisters a service. This is a graceful shutdown of a service.
@@ -2862,7 +2862,7 @@ impl Zeroconf {
             }
 
             Command::Register(service_info) => {
-                self.register_service(service_info);
+                self.register_service(*service_info);
                 self.increase_counter(Counter::Register, 1);
             }
 
@@ -3482,7 +3482,6 @@ pub struct DnsNameChange {
 
 /// Commands supported by the daemon
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Browsing for a service type (ty_domain, next_time_delay_in_seconds, channel::sender)
     Browse(String, u32, bool, Sender<ServiceEvent>),
@@ -3491,7 +3490,7 @@ enum Command {
     ResolveHostname(String, u32, Sender<HostnameResolutionEvent>, Option<u64>), // (hostname, next_time_delay_in_seconds, sender, timeout_in_milliseconds)
 
     /// Register a service
-    Register(ServiceInfo),
+    Register(Box<ServiceInfo>),
 
     /// Unregister a service
     Unregister(String, Sender<UnregisterStatus>), // (fullname)
