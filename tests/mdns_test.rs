@@ -690,11 +690,9 @@ fn service_with_ipv4_only() {
 }
 
 #[test]
-fn service_with_ipv6_intf() {
+fn service_ipv6_link_local_only() {
     // Create a daemon
     let d = ServiceDaemon::new().expect("Failed to create daemon");
-
-    // Register a service with a name len > 15.
     let service_ipv6_intf = "_test_ipv6_intf._udp.local.";
     let host_name = "my_host_ipv6_intf.local.";
     let host_ipv4 = "";
@@ -714,7 +712,7 @@ fn service_with_ipv6_intf() {
     let result = d.register(my_service);
     assert!(result.is_ok());
 
-    // Browse for a service and verify all addresses are IPv4.
+    // Browse for a services. Verify all addresses are link-local IPv6.
     let browse_chan = d.browse(service_ipv6_intf).unwrap();
     let timeout = Duration::from_secs(2);
     let mut resolved = false;
