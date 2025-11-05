@@ -686,6 +686,65 @@ fn service_with_ipv4_only() {
 }
 
 #[test]
+fn service_ipv6_link_local_only() {
+    // Create a daemon
+    let d = ServiceDaemon::new().expect("Failed to create daemon");
+    let service_ipv6_intf = "_test_ipv6_intf._udp.local.";
+    let host_name = "my_host_ipv6_intf.local.";
+    let host_ipv4 = "";
+    let port = 5201;
+    let mut my_service = ServiceInfo::new(
+        service_ipv6_intf,
+        "my_instance",
+        host_name,
+        host_ipv4,
+        port,
+        None,
+    )
+    .expect("invalid service info")
+    .enable_addr_auto();
+    my_service.set_interfaces(vec![IfKind::IPv6]);
+    my_service.set_link_local_only(true);
+    let result = d.register(my_service);
+    assert!(result.is_ok());
+
+    // Browse for a services. Verify all addresses are link-local IPv6.
+    let browse_chan = d.browse(service_ipv6_intf).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+
+    // run till the timeout and collect the resolved addresses
+    // from all enabled interfaces.
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                let addrs = info.get_addresses();
+                resolved = true;
+                println!(
+                    "Resolved a service of {} addr(s): {:?}",
+                    &info.get_fullname(),
+                    addrs
+                );
+                assert!(!info.get_addresses().is_empty());
+                for addr in info.get_addresses().iter() {
+                    assert!(addr.is_ipv6());
+                    assert!(
+                        matches!(addr.to_ip_addr(), IpAddr::V6(ipv6) if (ipv6.segments()[0] & 0xffc0) == 0xfe80)
+                    );
+                }
+                // We don't break here, as there could be more addresses coming.
+            }
+            e => {
+                println!("Received event {:?}", e);
+            }
+        }
+    }
+
+    assert!(resolved);
+    d.shutdown().unwrap();
+}
+
+#[test]
 fn test_disable_interface_cache() {
     // Create a server
     let server = ServiceDaemon::new().expect("Failed to create the server");

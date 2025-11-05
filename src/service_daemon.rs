@@ -377,7 +377,7 @@ impl ServiceDaemon {
         check_service_name(service_info.get_fullname())?;
         check_hostname(service_info.get_hostname())?;
 
-        self.send_cmd(Command::Register(service_info))
+        self.send_cmd(Command::Register(service_info.into()))
     }
 
     /// Unregisters a service. This is a graceful shutdown of a service.
@@ -1344,7 +1344,7 @@ impl Zeroconf {
     }
 
     /// Apply all selections to `interfaces` and return the selected addresses.
-    fn selected_addrs(&self, interfaces: Vec<Interface>) -> HashSet<IpAddr> {
+    fn selected_intfs(&self, interfaces: Vec<Interface>) -> HashSet<Interface> {
         let intf_count = interfaces.len();
         let mut intf_selections = vec![true; intf_count];
 
@@ -1361,7 +1361,7 @@ impl Zeroconf {
         let mut selected_addrs = HashSet::new();
         for i in 0..intf_count {
             if intf_selections[i] {
-                selected_addrs.insert(interfaces[i].addr.ip());
+                selected_addrs.insert(interfaces[i].clone());
             }
         }
 
@@ -1641,8 +1641,7 @@ impl Zeroconf {
 
         for (_, service_info) in self.my_services.iter_mut() {
             if service_info.is_addr_auto() {
-                let new_ip = intf.ip();
-                service_info.insert_ipaddr(new_ip);
+                service_info.insert_ipaddr(&intf);
 
                 if announce_service_on_intf(dns_registry, service_info, my_intf, &sock.pktinfo) {
                     debug!(
@@ -1696,9 +1695,9 @@ impl Zeroconf {
         }
 
         if info.is_addr_auto() {
-            let selected_addrs = self.selected_addrs(my_ip_interfaces(true));
-            for addr in selected_addrs {
-                info.insert_ipaddr(addr);
+            let selected_intfs = self.selected_intfs(my_ip_interfaces(true));
+            for intf in selected_intfs {
+                info.insert_ipaddr(&intf);
             }
         }
 
@@ -2923,7 +2922,7 @@ impl Zeroconf {
             }
 
             Command::Register(service_info) => {
-                self.register_service(service_info);
+                self.register_service(*service_info);
                 self.increase_counter(Counter::Register, 1);
             }
 
@@ -3563,7 +3562,7 @@ enum Command {
     ResolveHostname(String, u32, Sender<HostnameResolutionEvent>, Option<u64>), // (hostname, next_time_delay_in_seconds, sender, timeout_in_milliseconds)
 
     /// Register a service
-    Register(ServiceInfo),
+    Register(Box<ServiceInfo>),
 
     /// Unregister a service
     Unregister(String, Sender<UnregisterStatus>), // (fullname)
