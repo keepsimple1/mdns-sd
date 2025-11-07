@@ -219,7 +219,7 @@ impl ServiceInfo {
 
     /// Set the supported interfaces for this service.
     ///
-    /// The service will be advertised on the provided interfaces. When ips are auto-detected
+    /// The service will be advertised on the provided interfaces only. When ips are auto-detected
     /// (via 'enable_addr_auto') only addresses on these interfaces will be considered.
     pub fn set_interfaces(&mut self, intfs: Vec<IfKind>) {
         self.supported_intfs = intfs;
