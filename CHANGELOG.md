@@ -1,3 +1,19 @@
+# Version 0.17.0 (2025-11-06)
+
+## Breaking changes
+
+Loopback interfaces are enabled by default now. The main reason is that some user reported a failure of publishing services locally. I think this change probably only impacts very few.
+
+## New features
+
+A couple of new APIs are added for `ServiceInfo`: `set_interfaces` and `set_link_local_only` based on some real world use cases.
+
+## All changes
+
+* `6752eaf 2025-11-04` feat: service registration with granular iface/ip conditions (#398) (twizansk)
+* `7293e7c 2025-11-02` Enable loopback interfaces by default (#397) (keepsimple1)
+* `505bd71 2025-11-02` Fix clippy for tests and remove unnecessary tests (#403) (keepsimple1)
+
 # Version 0.16.0 (2025-10-29)
 
 A bugfix release. But we also bumped up rustc MSRV to 1.71.0, hence bumping our own minor version.
