@@ -1904,8 +1904,11 @@ impl Zeroconf {
             );
         }
 
-        // `out` data is non-empty, hence we can do this.
-        send_dns_outgoing(&out, intf, sock).remove(0)
+        // Only (at most) one packet is expected to be sent out.
+        send_dns_outgoing(&out, intf, sock)
+            .into_iter()
+            .next()
+            .unwrap_or_default()
     }
 
     /// Binds a channel `listener` to querying mDNS hostnames.
@@ -3704,6 +3707,8 @@ fn my_ip_interfaces(with_loopback: bool) -> Vec<Interface> {
         .collect()
 }
 
+/// Send an outgoing mDNS query or response, and returns the packet bytes.
+/// Returns empty vec if no valid interface address is found.
 fn send_dns_outgoing(out: &DnsOutgoing, my_intf: &MyIntf, sock: &PktInfoUdpSocket) -> Vec<Vec<u8>> {
     let if_name = &my_intf.name;
 
