@@ -197,7 +197,7 @@ pub enum RRType {
 
 impl RRType {
     /// Converts `u16` into `RRType` if possible.
-    pub const fn from_u16(value: u16) -> Option<RRType> {
+    pub const fn from_u16(value: u16) -> Option<Self> {
         match value {
             1 => Some(RRType::A),
             5 => Some(RRType::CNAME),
