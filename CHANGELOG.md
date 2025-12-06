@@ -1,3 +1,17 @@
+# Version 0.17.1 (2025-12-05)
+
+## New features (non-breaking)
+
+`ServiceDaemon::new_with_port(port: u16)` allows using a custom port for mainly development / testing purposes.
+
+## All changes
+
+* `9088f8b 2025-12-04` feat: use Self on impl return of itself for RRType (#409) (CosminPerRam)
+* `91b3e66 2025-12-02` Add a custom port option (#408) (Kaido Kert)
+* `3e7a582 2025-11-30` handle empty return from send_dns_outgoing (#407) (keepsimple1)
+
+Thanks and welcome our new contributor @kaidokert !
+
 # Version 0.17.0 (2025-11-06)
 
 ## Breaking changes
