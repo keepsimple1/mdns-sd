@@ -721,7 +721,7 @@ fn new_socket(addr: SocketAddr, non_block: bool) -> Result<PktInfoUdpSocket> {
 
     fd.set_reuse_address(true)
         .map_err(|e| e_fmt!("set ReuseAddr failed: {}", e))?;
-    #[cfg(unix)] // this is currently restricted to Unix's in socket2
+    #[cfg(all(unix, feature = "reuseport"))] // this is currently restricted to Unix's in socket2
     fd.set_reuse_port(true)
         .map_err(|e| e_fmt!("set ReusePort failed: {}", e))?;
 
