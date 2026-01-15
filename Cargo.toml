@@ -12,9 +12,10 @@ categories = ["network-programming"]
 description = "mDNS Service Discovery library with no async runtime dependency"
 
 [features]
+reuseport = []
 async = ["flume/async"]
 logging = ["log"]
-default = ["async", "logging"]
+default = ["reuseport", "async", "logging"]
 
 [dependencies]
 fastrand = "2.3"
