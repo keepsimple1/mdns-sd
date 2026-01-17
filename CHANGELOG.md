@@ -1,3 +1,16 @@
+# Version 0.17.2 (2026-01-16)
+
+## New features (non-breaking)
+
+A new 'feature' literally: a default feature `reuseport` to control if SO_REUSEPORT should be used. Useful for old Linux kernels (before 3.9).
+
+## All changes
+
+* `466d373 2026-01-15` feat: add `reuseport` feature (#414) (Hanssen)
+* `1770d01 2025-12-31` exmaples: add --verify option in the query example (#412) (keepsimple1)
+
+Thanks and welcome our new contributor @Hanssen0 !
+
 # Version 0.17.1 (2025-12-05)
 
 ## New features (non-breaking)
