@@ -154,6 +154,21 @@ impl fmt::Display for Counter {
     }
 }
 
+#[derive(Debug)]
+enum MyError {
+    IntfAddrInvalid(Interface),
+}
+
+impl fmt::Display for MyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MyError::IntfAddrInvalid(iface) => write!(f, "interface addr invalid: {iface:?}"),
+        }
+    }
+}
+
+type MyResult<T> = core::result::Result<T, MyError>;
+
 /// A wrapper around UDP socket used by the mDNS daemon.
 ///
 /// We do this because `mio` does not support PKTINFO and
@@ -282,9 +297,12 @@ impl ServiceDaemon {
 
         // Spawn the daemon thread
         let mio_sock = MioUdpSocket::from_std(signal_sock);
+        let cmd_sender = sender.clone();
         thread::Builder::new()
             .name("mDNS_daemon".to_string())
-            .spawn(move || Self::daemon_thread(mio_sock, poller, receiver, port))
+            .spawn(move || {
+                Self::daemon_thread(mio_sock, poller, receiver, port, cmd_sender, signal_addr)
+            })
             .map_err(|e| e_fmt!("thread builder failed to spawn: {}", e))?;
 
         Ok(Self {
@@ -625,8 +643,10 @@ impl ServiceDaemon {
         poller: Poll,
         receiver: Receiver<Command>,
         port: u16,
+        cmd_sender: Sender<Command>,
+        signal_addr: SocketAddr,
     ) {
-        let mut zc = Zeroconf::new(signal_sock, poller, port);
+        let mut zc = Zeroconf::new(signal_sock, poller, port, cmd_sender, signal_addr);
 
         if let Some(cmd) = zc.run(receiver) {
             match cmd {
@@ -922,6 +942,10 @@ struct Zeroconf {
 
     accept_unsolicited: bool,
 
+    cmd_sender: Sender<Command>,
+
+    signal_addr: SocketAddr,
+
     #[cfg(test)]
     test_down_interfaces: HashSet<String>,
 }
@@ -953,7 +977,13 @@ fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<
 }
 
 impl Zeroconf {
-    fn new(signal_sock: MioUdpSocket, poller: Poll, port: u16) -> Self {
+    fn new(
+        signal_sock: MioUdpSocket,
+        poller: Poll,
+        port: u16,
+        cmd_sender: Sender<Command>,
+        signal_addr: SocketAddr,
+    ) -> Self {
         // Get interfaces.
         let my_ifaddrs = my_ip_interfaces(true);
 
@@ -1088,10 +1118,38 @@ impl Zeroconf {
             multicast_loop_v4: true,
             multicast_loop_v6: true,
             accept_unsolicited: false,
+            cmd_sender,
+            signal_addr,
 
             #[cfg(test)]
             test_down_interfaces: HashSet::new(),
         }
+    }
+
+    /// Send a Command into the daemon channel and poke the signal socket to wake the poll loop.
+    fn send_cmd_to_self(&self, cmd: Command) -> Result<()> {
+        let cmd_name = cmd.to_string();
+
+        self.cmd_sender.try_send(cmd).map_err(|e| match e {
+            TrySendError::Full(_) => Error::Again,
+            e => e_fmt!("flume::channel::send failed: {}", e),
+        })?;
+
+        let addr = SocketAddrV4::new(LOOPBACK_V4, 0);
+        let socket = UdpSocket::bind(addr)
+            .map_err(|e| e_fmt!("Failed to create socket to send signal: {}", e))?;
+        socket
+            .send_to(cmd_name.as_bytes(), self.signal_addr)
+            .map_err(|e| {
+                e_fmt!(
+                    "signal socket send_to {} ({}) failed: {}",
+                    self.signal_addr,
+                    cmd_name,
+                    e
+                )
+            })?;
+
+        Ok(())
     }
 
     /// The main event loop of the daemon thread
@@ -1433,7 +1491,7 @@ impl Zeroconf {
                 self.add_interface(intf);
             } else {
                 // Remove the interface
-                self.del_interface(&intf);
+                self.del_interface_addr(&intf);
             }
         }
     }
@@ -1441,6 +1499,47 @@ impl Zeroconf {
     fn del_ip(&mut self, ip: IpAddr) {
         self.del_addr_in_my_services(&ip);
         self.notify_monitors(DaemonEvent::IpDel(ip));
+    }
+
+    /// Remove an interface when it was down, disabled or removed from the system.
+    fn del_intf(
+        &mut self,
+        if_index: u32,
+        last_ipv4: Option<Ipv4Addr>,
+        last_ipv6: Option<Ipv6Addr>,
+    ) {
+        let Some(my_intf) = self.my_intfs.remove(&if_index) else {
+            return;
+        };
+
+        if let Some(ipv4) = last_ipv4 {
+            debug!("leave multicast for {ipv4}");
+            if let Some(sock) = self.ipv4_sock.as_mut() {
+                if let Err(e) = sock.pktinfo.leave_multicast_v4(&GROUP_ADDR_V4, &ipv4) {
+                    debug!("leave multicast group for addr {ipv4}: {e}");
+                }
+            }
+        }
+
+        if let Some(ipv6) = last_ipv6 {
+            debug!("leave multicast for {ipv6}");
+            if let Some(sock) = self.ipv6_sock.as_mut() {
+                if let Err(e) = sock
+                    .pktinfo
+                    .leave_multicast_v6(&GROUP_ADDR_V6, my_intf.index)
+                {
+                    debug!("leave multicast group for IPv6: {ipv6}: {e}");
+                }
+            }
+        }
+
+        // Remove cache records for this interface.
+        let intf_id = InterfaceId {
+            name: my_intf.name.to_string(),
+            index: my_intf.index,
+        };
+        let removed_instances = self.cache.remove_records_on_intf(intf_id);
+        self.notify_service_removal(removed_instances);
     }
 
     /// Check for IP changes and update [my_intfs] as needed.
@@ -1514,54 +1613,25 @@ impl Zeroconf {
         }
 
         for (if_index, last_ipv4, last_ipv6) in deleted_intfs {
-            let Some(my_intf) = self.my_intfs.remove(&if_index) else {
-                continue;
-            };
-
-            if let Some(ipv4) = last_ipv4 {
-                debug!("leave multicast for {ipv4}");
-                if let Some(sock) = self.ipv4_sock.as_mut() {
-                    if let Err(e) = sock.pktinfo.leave_multicast_v4(&GROUP_ADDR_V4, &ipv4) {
-                        debug!("leave multicast group for addr {ipv4}: {e}");
-                    }
-                }
-            }
-
-            if let Some(ipv6) = last_ipv6 {
-                debug!("leave multicast for {ipv6}");
-                if let Some(sock) = self.ipv6_sock.as_mut() {
-                    if let Err(e) = sock
-                        .pktinfo
-                        .leave_multicast_v6(&GROUP_ADDR_V6, my_intf.index)
-                    {
-                        debug!("leave multicast group for IPv6: {ipv6}: {e}");
-                    }
-                }
-            }
-
-            // Remove cache records for this interface.
-            let intf_id = InterfaceId {
-                name: my_intf.name.to_string(),
-                index: my_intf.index,
-            };
-            let removed_instances = self.cache.remove_records_on_intf(intf_id);
-            self.notify_service_removal(removed_instances);
+            self.del_intf(if_index, last_ipv4, last_ipv6);
         }
 
         // Add newly found interfaces only if in our selections.
         self.apply_intf_selections(my_ifaddrs);
     }
 
-    fn del_interface(&mut self, intf: &Interface) {
+    /// Remove an interface address when it was down, disabled or removed from the system.
+    /// If no more addresses on the interface, remove the interface as well.
+    fn del_interface_addr(&mut self, intf: &Interface) {
         let if_index = intf.index.unwrap_or(0);
         trace!(
-            "del_interface: {} ({if_index}) addr {}",
+            "del_interface_addr: {} ({if_index}) addr {}",
             intf.name,
             intf.ip()
         );
 
         let Some(my_intf) = self.my_intfs.get_mut(&if_index) else {
-            debug!("del_interface: interface {} not found", intf.name);
+            debug!("del_interface_addr: interface {} not found", intf.name);
             return;
         };
 
@@ -1596,7 +1666,7 @@ impl Zeroconf {
 
             if my_intf.addrs.is_empty() {
                 // If no more addresses, remove the interface.
-                debug!("del_interface: removing interface {}", intf.name);
+                debug!("del_interface_addr: removing interface {}", intf.name);
                 self.my_intfs.remove(&if_index);
                 self.dns_registry_map.remove(&if_index);
                 self.cache.remove_addrs_on_disabled_intf(if_index);
@@ -1682,7 +1752,7 @@ impl Zeroconf {
             if service_info.is_addr_auto() {
                 service_info.insert_ipaddr(&intf);
 
-                if announce_service_on_intf(
+                if let Ok(true) = announce_service_on_intf(
                     dns_registry,
                     service_info,
                     my_intf,
@@ -1768,6 +1838,8 @@ impl Zeroconf {
         let mut outgoing_addrs = Vec::new();
         let mut outgoing_intfs = HashSet::new();
 
+        let mut invalid_intf_addrs = Vec::new();
+
         for (if_index, intf) in self.my_intfs.iter() {
             let dns_registry = match self.dns_registry_map.get_mut(if_index) {
                 Some(registry) => registry,
@@ -1781,34 +1853,46 @@ impl Zeroconf {
 
             // IPv4
             if let Some(sock) = self.ipv4_sock.as_mut() {
-                if announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo, self.port) {
-                    for addr in intf.addrs.iter().filter(|a| a.ip().is_ipv4()) {
-                        outgoing_addrs.push(addr.ip());
-                    }
-                    outgoing_intfs.insert(intf.index);
+                match announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo, self.port) {
+                    Ok(true) => {
+                        for addr in intf.addrs.iter().filter(|a| a.ip().is_ipv4()) {
+                            outgoing_addrs.push(addr.ip());
+                        }
+                        outgoing_intfs.insert(intf.index);
 
-                    debug!(
-                        "Announce service IPv4 {} on {}",
-                        info.get_fullname(),
-                        intf.name
-                    );
-                    announced = true;
+                        debug!(
+                            "Announce service IPv4 {} on {}",
+                            info.get_fullname(),
+                            intf.name
+                        );
+                        announced = true;
+                    }
+                    Ok(false) => {}
+                    Err(MyError::IntfAddrInvalid(intf_addr)) => {
+                        invalid_intf_addrs.push(intf_addr);
+                    }
                 }
             }
 
             if let Some(sock) = self.ipv6_sock.as_mut() {
-                if announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo, self.port) {
-                    for addr in intf.addrs.iter().filter(|a| a.ip().is_ipv6()) {
-                        outgoing_addrs.push(addr.ip());
-                    }
-                    outgoing_intfs.insert(intf.index);
+                match announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo, self.port) {
+                    Ok(true) => {
+                        for addr in intf.addrs.iter().filter(|a| a.ip().is_ipv6()) {
+                            outgoing_addrs.push(addr.ip());
+                        }
+                        outgoing_intfs.insert(intf.index);
 
-                    debug!(
-                        "Announce service IPv6 {} on {}",
-                        info.get_fullname(),
-                        intf.name
-                    );
-                    announced = true;
+                        debug!(
+                            "Announce service IPv6 {} on {}",
+                            info.get_fullname(),
+                            intf.name
+                        );
+                        announced = true;
+                    }
+                    Ok(false) => {}
+                    Err(MyError::IntfAddrInvalid(intf_addr)) => {
+                        invalid_intf_addrs.push(intf_addr);
+                    }
                 }
             }
 
@@ -1821,6 +1905,8 @@ impl Zeroconf {
                 info.set_status(*if_index, ServiceStatus::Probing);
             }
         }
+
+        let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
 
         // RFC 6762 section 8.3.
         // ..The Multicast DNS responder MUST send at least two unsolicited
@@ -1836,88 +1922,161 @@ impl Zeroconf {
         outgoing_addrs
     }
 
-    /// Send probings or finish them if expired. Notify waiting services.
-    fn probing_handler(&mut self) {
-        let now = current_time_millis();
+    /// A helper function to handle probing for a given interface index.
+    fn handle_probing_for_index(
+        &mut self,
+        if_index: u32,
+        now: u64,
+        invalid_intf_addrs: &mut Vec<Interface>,
+    ) {
+        let Some(intf) = self.my_intfs.get(&if_index) else {
+            return;
+        };
 
-        for (if_index, intf) in self.my_intfs.iter() {
-            let Some(dns_registry) = self.dns_registry_map.get_mut(if_index) else {
-                continue;
-            };
+        let Some(dns_registry) = self.dns_registry_map.get_mut(&if_index) else {
+            return;
+        };
 
-            let (out, expired_probes) = check_probing(dns_registry, &mut self.timers, now);
+        let (out, expired_probes) = check_probing(dns_registry, &mut self.timers, now);
 
-            // send probing.
-            if !out.questions().is_empty() {
-                trace!("sending out probing of questions: {:?}", out.questions());
-                if let Some(sock) = self.ipv4_sock.as_mut() {
-                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port);
-                }
-                if let Some(sock) = self.ipv6_sock.as_mut() {
-                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port);
+        // send probing.
+        if !out.questions().is_empty() {
+            trace!("sending out probing of questions: {:?}", out.questions());
+            if let Some(sock) = self.ipv4_sock.as_mut() {
+                if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+                {
+                    invalid_intf_addrs.push(intf_addr.clone());
                 }
             }
-
-            // For finished probes, wake up services that are waiting for the probes.
-            let waiting_services =
-                handle_expired_probes(expired_probes, &intf.name, dns_registry, &mut self.monitors);
-
-            for service_name in waiting_services {
-                // service names are lowercase
-                if let Some(info) = self.my_services.get_mut(&service_name.to_lowercase()) {
-                    if info.get_status(*if_index) == ServiceStatus::Announced {
-                        debug!("service {} already announced", info.get_fullname());
-                        continue;
-                    }
-
-                    let announced_v4 = if let Some(sock) = self.ipv4_sock.as_mut() {
-                        announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo, self.port)
-                    } else {
-                        false
-                    };
-                    let announced_v6 = if let Some(sock) = self.ipv6_sock.as_mut() {
-                        announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo, self.port)
-                    } else {
-                        false
-                    };
-
-                    if announced_v4 || announced_v6 {
-                        let next_time = now + 1000;
-                        let command =
-                            Command::RegisterResend(info.get_fullname().to_string(), *if_index);
-                        self.retransmissions.push(ReRun { next_time, command });
-                        self.timers.push(Reverse(next_time));
-
-                        let fullname = match dns_registry.name_changes.get(&service_name) {
-                            Some(new_name) => new_name.to_string(),
-                            None => service_name.to_string(),
-                        };
-
-                        let mut hostname = info.get_hostname();
-                        if let Some(new_name) = dns_registry.name_changes.get(hostname) {
-                            hostname = new_name;
-                        }
-
-                        debug!("wake up: announce service {} on {}", fullname, intf.name);
-                        notify_monitors(
-                            &mut self.monitors,
-                            DaemonEvent::Announce(fullname, format!("{}:{}", hostname, &intf.name)),
-                        );
-
-                        info.set_status(*if_index, ServiceStatus::Announced);
-                    }
+            if let Some(sock) = self.ipv6_sock.as_mut() {
+                if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+                {
+                    invalid_intf_addrs.push(intf_addr.clone());
                 }
             }
         }
+
+        // For finished probes, wake up services that are waiting for the probes.
+        let waiting_services =
+            handle_expired_probes(expired_probes, &intf.name, dns_registry, &mut self.monitors);
+
+        for service_name in waiting_services {
+            self.announce_waiting_service(if_index, service_name, now, invalid_intf_addrs);
+        }
     }
 
-    fn unregister_service(
-        &self,
-        info: &ServiceInfo,
-        intf: &MyIntf,
-        sock: &PktInfoUdpSocket,
-    ) -> Vec<u8> {
-        let is_ipv4 = sock.domain() == Domain::IPV4;
+    /// A helper function to announce a waiting service on an interface.
+    fn announce_waiting_service(
+        &mut self,
+        if_index: u32,
+        service_name: String,
+        now: u64,
+        invalid_intf_addrs: &mut Vec<Interface>,
+    ) {
+        let Some(intf) = self.my_intfs.get(&if_index) else {
+            return;
+        };
+
+        let Some(dns_registry) = self.dns_registry_map.get_mut(&if_index) else {
+            return;
+        };
+
+        // service names are lowercase
+        let Some(info) = self.my_services.get_mut(&service_name.to_lowercase()) else {
+            return;
+        };
+
+        if info.get_status(if_index) == ServiceStatus::Announced {
+            debug!("service {} already announced", info.get_fullname());
+            return;
+        }
+
+        let mut announced = false;
+
+        if let Some(sock) = self.ipv4_sock.as_mut() {
+            match announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo, self.port) {
+                Ok(true) => {
+                    announced = true;
+                }
+                Ok(false) => {}
+                Err(MyError::IntfAddrInvalid(intf_addr)) => {
+                    invalid_intf_addrs.push(intf_addr.clone());
+                    return;
+                }
+            }
+        }
+
+        if let Some(sock) = self.ipv6_sock.as_mut() {
+            match announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo, self.port) {
+                Ok(true) => {
+                    announced = true;
+                }
+                Ok(false) => {}
+                Err(MyError::IntfAddrInvalid(intf_addr)) => {
+                    invalid_intf_addrs.push(intf_addr.clone());
+                    return;
+                }
+            }
+        }
+
+        if announced {
+            let next_time = now + 1000;
+            let command = Command::RegisterResend(info.get_fullname().to_string(), if_index);
+            self.retransmissions.push(ReRun { next_time, command });
+            self.timers.push(Reverse(next_time));
+
+            let fullname = match dns_registry.name_changes.get(&service_name) {
+                Some(new_name) => new_name.to_string(),
+                None => service_name.to_string(),
+            };
+
+            let mut hostname = info.get_hostname();
+            if let Some(new_name) = dns_registry.name_changes.get(hostname) {
+                hostname = new_name;
+            }
+
+            debug!("wake up: announce service {} on {}", fullname, intf.name);
+            notify_monitors(
+                &mut self.monitors,
+                DaemonEvent::Announce(fullname, format!("{}:{}", hostname, &intf.name)),
+            );
+
+            info.set_status(if_index, ServiceStatus::Announced);
+        }
+    }
+
+    /// Send probings or finish them if expired. Notify waiting services.
+    fn probing_handler(&mut self) {
+        let now = current_time_millis();
+        let mut invalid_intf_addrs = Vec::new();
+
+        let if_indices: Vec<u32> = self.my_intfs.keys().cloned().collect();
+        for if_index in if_indices {
+            self.handle_probing_for_index(if_index, now, &mut invalid_intf_addrs);
+        }
+
+        let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
+    }
+
+    fn unregister_service(&mut self, info: &ServiceInfo, if_index: u32, is_ipv4: bool) -> Vec<u8> {
+        let Some(intf) = self.my_intfs.get(&if_index) else {
+            debug!("unregister_service: interface index {} not found", if_index);
+            return vec![];
+        };
+
+        let sock = if is_ipv4 {
+            if let Some(ipv4_sock) = self.ipv4_sock.as_ref() {
+                &ipv4_sock.pktinfo
+            } else {
+                return vec![];
+            }
+        } else if let Some(ipv6_sock) = self.ipv6_sock.as_ref() {
+            &ipv6_sock.pktinfo
+        } else {
+            return vec![];
+        };
 
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         out.add_answer_at_time(
@@ -1992,10 +2151,15 @@ impl Zeroconf {
         }
 
         // Only (at most) one packet is expected to be sent out.
-        send_dns_outgoing(&out, intf, sock, self.port)
-            .into_iter()
-            .next()
-            .unwrap_or_default()
+        let sent_vec = match send_dns_outgoing(&out, intf, sock, self.port) {
+            Ok(sent_vec) => sent_vec,
+            Err(MyError::IntfAddrInvalid(intf_addr)) => {
+                let invalid_intf_addrs = vec![intf_addr];
+                let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
+                vec![]
+            }
+        };
+        sent_vec.into_iter().next().unwrap_or_default()
     }
 
     /// Binds a channel `listener` to querying mDNS hostnames.
@@ -2043,14 +2207,25 @@ impl Zeroconf {
             }
         }
 
+        let mut invalid_intf_addrs = Vec::new();
         for (_, intf) in self.my_intfs.iter() {
             if let Some(sock) = self.ipv4_sock.as_ref() {
-                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port);
+                if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+                {
+                    invalid_intf_addrs.push(intf_addr);
+                }
             }
             if let Some(sock) = self.ipv6_sock.as_ref() {
-                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port);
+                if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+                {
+                    invalid_intf_addrs.push(intf_addr);
+                }
             }
         }
+
+        let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
     }
 
     /// Reads one UDP datagram from the socket of `intf`.
@@ -2889,7 +3064,12 @@ impl Zeroconf {
         if out.answers_count() > 0 {
             debug!("sending response on intf {}", &intf.name);
             out.set_id(msg.id());
-            send_dns_outgoing(&out, intf, &sock.pktinfo, self.port);
+            if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+            {
+                let invalid_intf_addr = vec![intf_addr];
+                let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addr));
+            }
 
             let if_name = intf.name.clone();
 
@@ -2976,7 +3156,12 @@ impl Zeroconf {
 
             Command::RegisterResend(fullname, intf) => {
                 trace!("register-resend service: {fullname} on {}", &intf);
-                self.exec_command_register_resend(fullname, intf);
+                if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                    self.exec_command_register_resend(fullname, intf)
+                {
+                    let invalid_intf_addr = vec![intf_addr];
+                    let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addr));
+                }
             }
 
             Command::Unregister(fullname, resp_s) => {
@@ -3023,6 +3208,14 @@ impl Zeroconf {
 
             Command::Verify(instance_fullname, timeout) => {
                 self.exec_command_verify(instance_fullname, timeout, repeating);
+            }
+
+            Command::InvalidIntfAddrs(invalid_intf_addrs) => {
+                for intf_addr in invalid_intf_addrs {
+                    self.del_interface_addr(&intf_addr);
+                }
+
+                self.check_ip_changes();
             }
 
             _ => {
@@ -3205,31 +3398,29 @@ impl Zeroconf {
             Some((_k, info)) => {
                 let mut timers = Vec::new();
 
-                for (if_index, intf) in self.my_intfs.iter() {
-                    if let Some(sock) = self.ipv4_sock.as_ref() {
-                        let packet = self.unregister_service(&info, intf, &sock.pktinfo);
-                        // repeat for one time just in case some peers miss the message
-                        if !repeating && !packet.is_empty() {
-                            let next_time = current_time_millis() + 120;
-                            self.retransmissions.push(ReRun {
-                                next_time,
-                                command: Command::UnregisterResend(packet, *if_index, true),
-                            });
-                            timers.push(next_time);
-                        }
+                let if_indices: Vec<u32> = self.my_intfs.keys().cloned().collect();
+                for if_index in if_indices {
+                    // ipv4
+                    let packet = self.unregister_service(&info, if_index, true);
+                    // repeat for one time just in case some peers miss the message
+                    if !repeating && !packet.is_empty() {
+                        let next_time = current_time_millis() + 120;
+                        self.retransmissions.push(ReRun {
+                            next_time,
+                            command: Command::UnregisterResend(packet, if_index, true),
+                        });
+                        timers.push(next_time);
                     }
 
                     // ipv6
-                    if let Some(sock) = self.ipv6_sock.as_ref() {
-                        let packet = self.unregister_service(&info, intf, &sock.pktinfo);
-                        if !repeating && !packet.is_empty() {
-                            let next_time = current_time_millis() + 120;
-                            self.retransmissions.push(ReRun {
-                                next_time,
-                                command: Command::UnregisterResend(packet, *if_index, false),
-                            });
-                            timers.push(next_time);
-                        }
+                    let packet = self.unregister_service(&info, if_index, false);
+                    if !repeating && !packet.is_empty() {
+                        let next_time = current_time_millis() + 120;
+                        self.retransmissions.push(ReRun {
+                            next_time,
+                            command: Command::UnregisterResend(packet, if_index, false),
+                        });
+                        timers.push(next_time);
                     }
                 }
 
@@ -3338,27 +3529,27 @@ impl Zeroconf {
         }
     }
 
-    fn exec_command_register_resend(&mut self, fullname: String, if_index: u32) {
+    fn exec_command_register_resend(&mut self, fullname: String, if_index: u32) -> MyResult<()> {
         let Some(info) = self.my_services.get_mut(&fullname) else {
             trace!("announce: cannot find such service {}", &fullname);
-            return;
+            return Ok(());
         };
 
         let Some(dns_registry) = self.dns_registry_map.get_mut(&if_index) else {
-            return;
+            return Ok(());
         };
 
         let Some(intf) = self.my_intfs.get(&if_index) else {
-            return;
+            return Ok(());
         };
 
         let announced_v4 = if let Some(sock) = self.ipv4_sock.as_ref() {
-            announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo, self.port)
+            announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo, self.port)?
         } else {
             false
         };
         let announced_v6 = if let Some(sock) = self.ipv6_sock.as_ref() {
-            announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo, self.port)
+            announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo, self.port)?
         } else {
             false
         };
@@ -3385,6 +3576,7 @@ impl Zeroconf {
         }
 
         self.increase_counter(Counter::RegisterResend, 1);
+        Ok(())
     }
 
     fn exec_command_verify(&mut self, instance: String, timeout: Duration, repeating: bool) {
@@ -3657,6 +3849,9 @@ enum Command {
     /// before its TTL expires.
     Verify(String, Duration),
 
+    /// Invalidate some interface addresses.
+    InvalidIntfAddrs(Vec<Interface>),
+
     Exit(Sender<DaemonStatus>),
 }
 
@@ -3679,6 +3874,7 @@ impl fmt::Display for Command {
             Self::UnregisterResend(_, _, _) => write!(f, "Command UnregisterResend"),
             Self::Resolve(_, _) => write!(f, "Command Resolve"),
             Self::Verify(_, _) => write!(f, "Command VerifyResource"),
+            Self::InvalidIntfAddrs(_) => write!(f, "Command InvalidIntfAddrs"),
         }
     }
 }
@@ -3833,18 +4029,18 @@ fn send_dns_outgoing(
     my_intf: &MyIntf,
     sock: &PktInfoUdpSocket,
     port: u16,
-) -> Vec<Vec<u8>> {
+) -> MyResult<Vec<Vec<u8>>> {
     let if_name = &my_intf.name;
 
     let if_addr = if sock.domain() == Domain::IPV4 {
         match my_intf.next_ifaddr_v4() {
             Some(addr) => addr,
-            None => return vec![],
+            None => return Ok(vec![]),
         }
     } else {
         match my_intf.next_ifaddr_v6() {
             Some(addr) => addr,
-            None => return vec![],
+            None => return Ok(vec![]),
         }
     };
 
@@ -3859,12 +4055,12 @@ fn send_dns_outgoing_impl(
     if_addr: &IfAddr,
     sock: &PktInfoUdpSocket,
     port: u16,
-) -> Vec<Vec<u8>> {
+) -> MyResult<Vec<Vec<u8>>> {
     let qtype = if out.is_query() {
         "query"
     } else {
         if out.answers_count() == 0 && out.additionals().is_empty() {
-            return vec![]; // no need to send empty response
+            return Ok(vec![]); // no need to send empty response
         }
         "response"
     };
@@ -3884,7 +4080,17 @@ fn send_dns_outgoing_impl(
                     "send_dns_outgoing: failed to set multicast interface for IPv4 {}: {}",
                     ipv4, e
                 );
-                return vec![]; // cannot send without a valid interface
+                // cannot send without a valid interface
+                if e.kind() == std::io::ErrorKind::AddrNotAvailable {
+                    let intf_addr = Interface {
+                        name: if_name.to_string(),
+                        addr: if_addr.clone(),
+                        index: Some(if_index),
+                        oper_status: if_addrs::IfOperStatus::Down,
+                    };
+                    return Err(MyError::IntfAddrInvalid(intf_addr));
+                }
+                return Ok(vec![]); // non-fatal other failure
             }
         }
         IpAddr::V6(ipv6) => {
@@ -3893,7 +4099,17 @@ fn send_dns_outgoing_impl(
                     "send_dns_outgoing: failed to set multicast interface for IPv6 {}: {}",
                     ipv6, e
                 );
-                return vec![]; // cannot send without a valid interface
+                // cannot send without a valid interface
+                if e.kind() == std::io::ErrorKind::AddrNotAvailable {
+                    let intf_addr = Interface {
+                        name: if_name.to_string(),
+                        addr: if_addr.clone(),
+                        index: Some(if_index),
+                        oper_status: if_addrs::IfOperStatus::Down,
+                    };
+                    return Err(MyError::IntfAddrInvalid(intf_addr));
+                }
+                return Ok(vec![]); // non-fatal other failure
             }
         }
     }
@@ -3902,7 +4118,7 @@ fn send_dns_outgoing_impl(
     for packet in packet_list.iter() {
         multicast_on_intf(packet, if_name, if_index, if_addr, sock, port);
     }
-    packet_list
+    Ok(packet_list)
 }
 
 /// Sends a multicast packet, and returns the packet bytes.
@@ -4113,14 +4329,14 @@ fn announce_service_on_intf(
     intf: &MyIntf,
     sock: &PktInfoUdpSocket,
     port: u16,
-) -> bool {
+) -> MyResult<bool> {
     let is_ipv4 = sock.domain() == Domain::IPV4;
     if let Some(out) = prepare_announce(info, intf, dns_registry, is_ipv4) {
-        send_dns_outgoing(&out, intf, sock, port);
-        return true;
+        let _ = send_dns_outgoing(&out, intf, sock, port)?;
+        return Ok(true);
     }
 
-    false
+    Ok(false)
 }
 
 /// Returns a new name based on the `original` to avoid conflicts.
@@ -4528,7 +4744,8 @@ mod tests {
                 &intf.addr,
                 &sock.pktinfo,
                 MDNS_PORT,
-            );
+            )
+            .unwrap();
         }
 
         println!(
