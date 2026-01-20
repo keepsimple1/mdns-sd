@@ -53,6 +53,32 @@ impl From<&MyIntf> for InterfaceId {
     }
 }
 
+/// Escapes dots and backslashes in a DNS instance name according to RFC 6763 Section 4.3.
+/// - '.' becomes '\.'
+/// - '\\' becomes '\\\\'
+///
+/// This is required when concatenating the three portions of a Service Instance Name
+/// to ensure that literal dots in the instance name are not interpreted as label separators.
+fn escape_instance_name(name: &str) -> String {
+    let mut result = String::with_capacity(name.len() + 10); // Extra space for escapes
+
+    for ch in name.chars() {
+        match ch {
+            '.' => {
+                result.push('\\');
+                result.push('.');
+            }
+            '\\' => {
+                result.push('\\');
+                result.push('\\');
+            }
+            _ => result.push(ch),
+        }
+    }
+
+    result
+}
+
 /// Complete info about a Service Instance.
 ///
 /// We can construct some PTR, one SRV and one TXT record from this info,
@@ -140,7 +166,8 @@ impl ServiceInfo {
     ) -> Result<Self> {
         let (ty_domain, sub_domain) = split_sub_domain(ty_domain);
 
-        let fullname = format!("{my_name}.{ty_domain}");
+        let escaped_name = escape_instance_name(my_name);
+        let fullname = format!("{escaped_name}.{ty_domain}");
         let ty_domain = ty_domain.to_string();
         let sub_domain = sub_domain.map(str::to_string);
         let server = normalize_hostname(host_name.to_string());
