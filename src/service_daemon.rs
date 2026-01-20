@@ -1840,7 +1840,7 @@ impl Zeroconf {
         let mut outgoing_addrs = Vec::new();
         let mut outgoing_intfs = HashSet::new();
 
-        let mut invalid_intf_addrs: Vec<u32> = Vec::new();
+        let mut invalid_intf_addrs: HashSet<u32> = HashSet::new();
 
         for (if_index, intf) in self.my_intfs.iter() {
             let dns_registry = match self.dns_registry_map.get_mut(if_index) {
@@ -1871,7 +1871,7 @@ impl Zeroconf {
                     }
                     Ok(false) => {}
                     Err(MyError::IntfAddrInvalid(intf_addr)) => {
-                        invalid_intf_addrs.push(intf_addr);
+                        invalid_intf_addrs.insert(intf_addr);
                     }
                 }
             }
@@ -1893,7 +1893,7 @@ impl Zeroconf {
                     }
                     Ok(false) => {}
                     Err(MyError::IntfAddrInvalid(if_index)) => {
-                        invalid_intf_addrs.push(if_index);
+                        invalid_intf_addrs.insert(if_index);
                     }
                 }
             }
@@ -1908,7 +1908,9 @@ impl Zeroconf {
             }
         }
 
-        let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
+        let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(
+            invalid_intf_addrs.into_iter().collect(),
+        ));
 
         // RFC 6762 section 8.3.
         // ..The Multicast DNS responder MUST send at least two unsolicited
@@ -1929,7 +1931,7 @@ impl Zeroconf {
         &mut self,
         if_index: u32,
         now: u64,
-        invalid_intf_addrs: &mut Vec<u32>,
+        invalid_intf_addrs: &mut HashSet<u32>,
     ) {
         let Some(intf) = self.my_intfs.get(&if_index) else {
             return;
@@ -1948,14 +1950,14 @@ impl Zeroconf {
                 if let Err(MyError::IntfAddrInvalid(if_index)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                 {
-                    invalid_intf_addrs.push(if_index);
+                    invalid_intf_addrs.insert(if_index);
                 }
             }
             if let Some(sock) = self.ipv6_sock.as_mut() {
                 if let Err(MyError::IntfAddrInvalid(if_index)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                 {
-                    invalid_intf_addrs.push(if_index);
+                    invalid_intf_addrs.insert(if_index);
                 }
             }
         }
@@ -1975,7 +1977,7 @@ impl Zeroconf {
         if_index: u32,
         service_name: String,
         now: u64,
-        invalid_intf_addrs: &mut Vec<u32>,
+        invalid_intf_addrs: &mut HashSet<u32>,
     ) {
         let Some(intf) = self.my_intfs.get(&if_index) else {
             return;
@@ -2004,7 +2006,7 @@ impl Zeroconf {
                 }
                 Ok(false) => {}
                 Err(MyError::IntfAddrInvalid(if_index)) => {
-                    invalid_intf_addrs.push(if_index);
+                    invalid_intf_addrs.insert(if_index);
                     return;
                 }
             }
@@ -2017,7 +2019,7 @@ impl Zeroconf {
                 }
                 Ok(false) => {}
                 Err(MyError::IntfAddrInvalid(if_index)) => {
-                    invalid_intf_addrs.push(if_index);
+                    invalid_intf_addrs.insert(if_index);
                     return;
                 }
             }
@@ -2052,14 +2054,16 @@ impl Zeroconf {
     /// Send probings or finish them if expired. Notify waiting services.
     fn probing_handler(&mut self) {
         let now = current_time_millis();
-        let mut invalid_intf_addrs: Vec<u32> = Vec::new();
+        let mut invalid_intf_addrs: HashSet<u32> = HashSet::new();
 
         let if_indices: Vec<u32> = self.my_intfs.keys().cloned().collect();
         for if_index in if_indices {
             self.handle_probing_for_index(if_index, now, &mut invalid_intf_addrs);
         }
 
-        let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
+        let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(
+            invalid_intf_addrs.into_iter().collect(),
+        ));
     }
 
     fn unregister_service(&mut self, info: &ServiceInfo, if_index: u32, is_ipv4: bool) -> Vec<u8> {
@@ -2209,25 +2213,27 @@ impl Zeroconf {
             }
         }
 
-        let mut invalid_intf_addrs: Vec<u32> = Vec::new();
+        let mut invalid_intf_addrs: HashSet<u32> = HashSet::new();
         for (_, intf) in self.my_intfs.iter() {
             if let Some(sock) = self.ipv4_sock.as_ref() {
                 if let Err(MyError::IntfAddrInvalid(if_index)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                 {
-                    invalid_intf_addrs.push(if_index);
+                    invalid_intf_addrs.insert(if_index);
                 }
             }
             if let Some(sock) = self.ipv6_sock.as_ref() {
                 if let Err(MyError::IntfAddrInvalid(if_index)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                 {
-                    invalid_intf_addrs.push(if_index);
+                    invalid_intf_addrs.insert(if_index);
                 }
             }
         }
 
-        let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
+        let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(
+            invalid_intf_addrs.into_iter().collect(),
+        ));
     }
 
     /// Reads one UDP datagram from the socket of `intf`.
