@@ -156,13 +156,15 @@ impl fmt::Display for Counter {
 
 #[derive(Debug)]
 enum MyError {
-    IntfAddrInvalid(Interface),
+    IntfAddrInvalid(u32), // interface index
 }
 
 impl fmt::Display for MyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            MyError::IntfAddrInvalid(iface) => write!(f, "interface addr invalid: {iface:?}"),
+            MyError::IntfAddrInvalid(if_index) => {
+                write!(f, "interface addr invalid: index={if_index}")
+            }
         }
     }
 }
@@ -1838,7 +1840,7 @@ impl Zeroconf {
         let mut outgoing_addrs = Vec::new();
         let mut outgoing_intfs = HashSet::new();
 
-        let mut invalid_intf_addrs = Vec::new();
+        let mut invalid_intf_addrs: Vec<u32> = Vec::new();
 
         for (if_index, intf) in self.my_intfs.iter() {
             let dns_registry = match self.dns_registry_map.get_mut(if_index) {
@@ -1890,8 +1892,8 @@ impl Zeroconf {
                         announced = true;
                     }
                     Ok(false) => {}
-                    Err(MyError::IntfAddrInvalid(intf_addr)) => {
-                        invalid_intf_addrs.push(intf_addr);
+                    Err(MyError::IntfAddrInvalid(if_index)) => {
+                        invalid_intf_addrs.push(if_index);
                     }
                 }
             }
@@ -1927,7 +1929,7 @@ impl Zeroconf {
         &mut self,
         if_index: u32,
         now: u64,
-        invalid_intf_addrs: &mut Vec<Interface>,
+        invalid_intf_addrs: &mut Vec<u32>,
     ) {
         let Some(intf) = self.my_intfs.get(&if_index) else {
             return;
@@ -1943,17 +1945,17 @@ impl Zeroconf {
         if !out.questions().is_empty() {
             trace!("sending out probing of questions: {:?}", out.questions());
             if let Some(sock) = self.ipv4_sock.as_mut() {
-                if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                if let Err(MyError::IntfAddrInvalid(if_index)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                 {
-                    invalid_intf_addrs.push(intf_addr.clone());
+                    invalid_intf_addrs.push(if_index);
                 }
             }
             if let Some(sock) = self.ipv6_sock.as_mut() {
-                if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                if let Err(MyError::IntfAddrInvalid(if_index)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                 {
-                    invalid_intf_addrs.push(intf_addr.clone());
+                    invalid_intf_addrs.push(if_index);
                 }
             }
         }
@@ -1973,7 +1975,7 @@ impl Zeroconf {
         if_index: u32,
         service_name: String,
         now: u64,
-        invalid_intf_addrs: &mut Vec<Interface>,
+        invalid_intf_addrs: &mut Vec<u32>,
     ) {
         let Some(intf) = self.my_intfs.get(&if_index) else {
             return;
@@ -2001,8 +2003,8 @@ impl Zeroconf {
                     announced = true;
                 }
                 Ok(false) => {}
-                Err(MyError::IntfAddrInvalid(intf_addr)) => {
-                    invalid_intf_addrs.push(intf_addr.clone());
+                Err(MyError::IntfAddrInvalid(if_index)) => {
+                    invalid_intf_addrs.push(if_index);
                     return;
                 }
             }
@@ -2014,8 +2016,8 @@ impl Zeroconf {
                     announced = true;
                 }
                 Ok(false) => {}
-                Err(MyError::IntfAddrInvalid(intf_addr)) => {
-                    invalid_intf_addrs.push(intf_addr.clone());
+                Err(MyError::IntfAddrInvalid(if_index)) => {
+                    invalid_intf_addrs.push(if_index);
                     return;
                 }
             }
@@ -2050,7 +2052,7 @@ impl Zeroconf {
     /// Send probings or finish them if expired. Notify waiting services.
     fn probing_handler(&mut self) {
         let now = current_time_millis();
-        let mut invalid_intf_addrs = Vec::new();
+        let mut invalid_intf_addrs: Vec<u32> = Vec::new();
 
         let if_indices: Vec<u32> = self.my_intfs.keys().cloned().collect();
         for if_index in if_indices {
@@ -2207,20 +2209,20 @@ impl Zeroconf {
             }
         }
 
-        let mut invalid_intf_addrs = Vec::new();
+        let mut invalid_intf_addrs: Vec<u32> = Vec::new();
         for (_, intf) in self.my_intfs.iter() {
             if let Some(sock) = self.ipv4_sock.as_ref() {
-                if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                if let Err(MyError::IntfAddrInvalid(if_index)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                 {
-                    invalid_intf_addrs.push(intf_addr);
+                    invalid_intf_addrs.push(if_index);
                 }
             }
             if let Some(sock) = self.ipv6_sock.as_ref() {
-                if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                if let Err(MyError::IntfAddrInvalid(if_index)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                 {
-                    invalid_intf_addrs.push(intf_addr);
+                    invalid_intf_addrs.push(if_index);
                 }
             }
         }
@@ -3210,9 +3212,9 @@ impl Zeroconf {
                 self.exec_command_verify(instance_fullname, timeout, repeating);
             }
 
-            Command::InvalidIntfAddrs(invalid_intf_addrs) => {
-                for intf_addr in invalid_intf_addrs {
-                    self.del_interface_addr(&intf_addr);
+            Command::InvalidIntfAddrs(invalid_if_indices) => {
+                for if_index in invalid_if_indices {
+                    self.del_intf(if_index, None, None);
                 }
 
                 self.check_ip_changes();
@@ -3850,7 +3852,7 @@ enum Command {
     Verify(String, Duration),
 
     /// Invalidate some interface addresses.
-    InvalidIntfAddrs(Vec<Interface>),
+    InvalidIntfAddrs(Vec<u32>), // Vec of interface indices
 
     Exit(Sender<DaemonStatus>),
 }
@@ -4082,14 +4084,7 @@ fn send_dns_outgoing_impl(
                 );
                 // cannot send without a valid interface
                 if e.kind() == std::io::ErrorKind::AddrNotAvailable {
-                    let intf_addr = Interface {
-                        name: if_name.to_string(),
-                        addr: if_addr.clone(),
-                        index: Some(if_index),
-                        adapter_name: if_name.to_string(),
-                        oper_status: if_addrs::IfOperStatus::Down,
-                    };
-                    return Err(MyError::IntfAddrInvalid(intf_addr));
+                    return Err(MyError::IntfAddrInvalid(if_index));
                 }
                 return Ok(vec![]); // non-fatal other failure
             }
@@ -4102,14 +4097,7 @@ fn send_dns_outgoing_impl(
                 );
                 // cannot send without a valid interface
                 if e.kind() == std::io::ErrorKind::AddrNotAvailable {
-                    let intf_addr = Interface {
-                        name: if_name.to_string(),
-                        addr: if_addr.clone(),
-                        index: Some(if_index),
-                        adapter_name: if_name.to_string(),
-                        oper_status: if_addrs::IfOperStatus::Down,
-                    };
-                    return Err(MyError::IntfAddrInvalid(intf_addr));
+                    return Err(MyError::IntfAddrInvalid(if_index));
                 }
                 return Ok(vec![]); // non-fatal other failure
             }
