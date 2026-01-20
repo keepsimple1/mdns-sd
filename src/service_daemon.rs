@@ -4086,6 +4086,7 @@ fn send_dns_outgoing_impl(
                         name: if_name.to_string(),
                         addr: if_addr.clone(),
                         index: Some(if_index),
+                        adapter_name: if_name.to_string(),
                         oper_status: if_addrs::IfOperStatus::Down,
                     };
                     return Err(MyError::IntfAddrInvalid(intf_addr));
@@ -4105,6 +4106,7 @@ fn send_dns_outgoing_impl(
                         name: if_name.to_string(),
                         addr: if_addr.clone(),
                         index: Some(if_index),
+                        adapter_name: if_name.to_string(),
                         oper_status: if_addrs::IfOperStatus::Down,
                     };
                     return Err(MyError::IntfAddrInvalid(intf_addr));
