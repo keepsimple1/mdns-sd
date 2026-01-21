@@ -8,6 +8,7 @@
 use crate::log::trace;
 
 use crate::error::{e_fmt, Error, Result};
+use crate::service_info::is_unicast_link_local;
 
 use if_addrs::Interface;
 
@@ -143,7 +144,7 @@ impl fmt::Display for ScopedIp {
         match self {
             ScopedIp::V4(v4) => write!(f, "{}", v4.addr),
             ScopedIp::V6(v6) => {
-                if v6.scope_id.index != 0 {
+                if v6.scope_id.index != 0 && is_unicast_link_local(&v6.addr) {
                     #[cfg(windows)]
                     {
                         write!(f, "{}%{}", v6.addr, v6.scope_id.index)
