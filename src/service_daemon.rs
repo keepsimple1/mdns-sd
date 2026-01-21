@@ -4087,6 +4087,8 @@ fn send_dns_outgoing_impl(
                         addr: if_addr.clone(),
                         index: Some(if_index),
                         oper_status: if_addrs::IfOperStatus::Down,
+                        #[cfg(windows)]
+                        adapter_name: String::new(),
                     };
                     return Err(MyError::IntfAddrInvalid(intf_addr));
                 }
@@ -4106,6 +4108,8 @@ fn send_dns_outgoing_impl(
                         addr: if_addr.clone(),
                         index: Some(if_index),
                         oper_status: if_addrs::IfOperStatus::Down,
+                        #[cfg(windows)]
+                        adapter_name: String::new(),
                     };
                     return Err(MyError::IntfAddrInvalid(intf_addr));
                 }
