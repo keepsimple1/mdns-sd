@@ -155,19 +155,19 @@ impl fmt::Display for Counter {
 }
 
 #[derive(Debug)]
-enum MyError {
+enum InternalError {
     IntfAddrInvalid(Interface),
 }
 
-impl fmt::Display for MyError {
+impl fmt::Display for InternalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            MyError::IntfAddrInvalid(iface) => write!(f, "interface addr invalid: {iface:?}"),
+            InternalError::IntfAddrInvalid(iface) => write!(f, "interface addr invalid: {iface:?}"),
         }
     }
 }
 
-type MyResult<T> = core::result::Result<T, MyError>;
+type MyResult<T> = core::result::Result<T, InternalError>;
 
 /// A wrapper around UDP socket used by the mDNS daemon.
 ///
@@ -1868,7 +1868,7 @@ impl Zeroconf {
                         announced = true;
                     }
                     Ok(false) => {}
-                    Err(MyError::IntfAddrInvalid(intf_addr)) => {
+                    Err(InternalError::IntfAddrInvalid(intf_addr)) => {
                         invalid_intf_addrs.push(intf_addr);
                     }
                 }
@@ -1890,7 +1890,7 @@ impl Zeroconf {
                         announced = true;
                     }
                     Ok(false) => {}
-                    Err(MyError::IntfAddrInvalid(intf_addr)) => {
+                    Err(InternalError::IntfAddrInvalid(intf_addr)) => {
                         invalid_intf_addrs.push(intf_addr);
                     }
                 }
@@ -1943,14 +1943,14 @@ impl Zeroconf {
         if !out.questions().is_empty() {
             trace!("sending out probing of questions: {:?}", out.questions());
             if let Some(sock) = self.ipv4_sock.as_mut() {
-                if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                 {
                     invalid_intf_addrs.push(intf_addr.clone());
                 }
             }
             if let Some(sock) = self.ipv6_sock.as_mut() {
-                if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                 {
                     invalid_intf_addrs.push(intf_addr.clone());
@@ -2001,7 +2001,7 @@ impl Zeroconf {
                     announced = true;
                 }
                 Ok(false) => {}
-                Err(MyError::IntfAddrInvalid(intf_addr)) => {
+                Err(InternalError::IntfAddrInvalid(intf_addr)) => {
                     invalid_intf_addrs.push(intf_addr.clone());
                     return;
                 }
@@ -2014,7 +2014,7 @@ impl Zeroconf {
                     announced = true;
                 }
                 Ok(false) => {}
-                Err(MyError::IntfAddrInvalid(intf_addr)) => {
+                Err(InternalError::IntfAddrInvalid(intf_addr)) => {
                     invalid_intf_addrs.push(intf_addr.clone());
                     return;
                 }
@@ -2153,7 +2153,7 @@ impl Zeroconf {
         // Only (at most) one packet is expected to be sent out.
         let sent_vec = match send_dns_outgoing(&out, intf, sock, self.port) {
             Ok(sent_vec) => sent_vec,
-            Err(MyError::IntfAddrInvalid(intf_addr)) => {
+            Err(InternalError::IntfAddrInvalid(intf_addr)) => {
                 let invalid_intf_addrs = vec![intf_addr];
                 let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
                 vec![]
@@ -2210,14 +2210,14 @@ impl Zeroconf {
         let mut invalid_intf_addrs = Vec::new();
         for (_, intf) in self.my_intfs.iter() {
             if let Some(sock) = self.ipv4_sock.as_ref() {
-                if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                 {
                     invalid_intf_addrs.push(intf_addr);
                 }
             }
             if let Some(sock) = self.ipv6_sock.as_ref() {
-                if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                 {
                     invalid_intf_addrs.push(intf_addr);
@@ -3064,7 +3064,7 @@ impl Zeroconf {
         if out.answers_count() > 0 {
             debug!("sending response on intf {}", &intf.name);
             out.set_id(msg.id());
-            if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+            if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
                 send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
             {
                 let invalid_intf_addr = vec![intf_addr];
@@ -3156,7 +3156,7 @@ impl Zeroconf {
 
             Command::RegisterResend(fullname, intf) => {
                 trace!("register-resend service: {fullname} on {}", &intf);
-                if let Err(MyError::IntfAddrInvalid(intf_addr)) =
+                if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
                     self.exec_command_register_resend(fullname, intf)
                 {
                     let invalid_intf_addr = vec![intf_addr];
@@ -4090,7 +4090,7 @@ fn send_dns_outgoing_impl(
                         #[cfg(windows)]
                         adapter_name: String::new(),
                     };
-                    return Err(MyError::IntfAddrInvalid(intf_addr));
+                    return Err(InternalError::IntfAddrInvalid(intf_addr));
                 }
                 return Ok(vec![]); // non-fatal other failure
             }
@@ -4111,7 +4111,7 @@ fn send_dns_outgoing_impl(
                         #[cfg(windows)]
                         adapter_name: String::new(),
                     };
-                    return Err(MyError::IntfAddrInvalid(intf_addr));
+                    return Err(InternalError::IntfAddrInvalid(intf_addr));
                 }
                 return Ok(vec![]); // non-fatal other failure
             }
