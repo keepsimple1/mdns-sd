@@ -1501,47 +1501,6 @@ impl Zeroconf {
         self.notify_monitors(DaemonEvent::IpDel(ip));
     }
 
-    /// Remove an interface when it was down, disabled or removed from the system.
-    fn del_intf(
-        &mut self,
-        if_index: u32,
-        last_ipv4: Option<Ipv4Addr>,
-        last_ipv6: Option<Ipv6Addr>,
-    ) {
-        let Some(my_intf) = self.my_intfs.remove(&if_index) else {
-            return;
-        };
-
-        if let Some(ipv4) = last_ipv4 {
-            debug!("leave multicast for {ipv4}");
-            if let Some(sock) = self.ipv4_sock.as_mut() {
-                if let Err(e) = sock.pktinfo.leave_multicast_v4(&GROUP_ADDR_V4, &ipv4) {
-                    debug!("leave multicast group for addr {ipv4}: {e}");
-                }
-            }
-        }
-
-        if let Some(ipv6) = last_ipv6 {
-            debug!("leave multicast for {ipv6}");
-            if let Some(sock) = self.ipv6_sock.as_mut() {
-                if let Err(e) = sock
-                    .pktinfo
-                    .leave_multicast_v6(&GROUP_ADDR_V6, my_intf.index)
-                {
-                    debug!("leave multicast group for IPv6: {ipv6}: {e}");
-                }
-            }
-        }
-
-        // Remove cache records for this interface.
-        let intf_id = InterfaceId {
-            name: my_intf.name.to_string(),
-            index: my_intf.index,
-        };
-        let removed_instances = self.cache.remove_records_on_intf(intf_id);
-        self.notify_service_removal(removed_instances);
-    }
-
     /// Check for IP changes and update [my_intfs] as needed.
     fn check_ip_changes(&mut self) {
         // Get the current interfaces.
@@ -1613,7 +1572,38 @@ impl Zeroconf {
         }
 
         for (if_index, last_ipv4, last_ipv6) in deleted_intfs {
-            self.del_intf(if_index, last_ipv4, last_ipv6);
+            let Some(my_intf) = self.my_intfs.remove(&if_index) else {
+                continue;
+            };
+
+            if let Some(ipv4) = last_ipv4 {
+                debug!("leave multicast for {ipv4}");
+                if let Some(sock) = self.ipv4_sock.as_mut() {
+                    if let Err(e) = sock.pktinfo.leave_multicast_v4(&GROUP_ADDR_V4, &ipv4) {
+                        debug!("leave multicast group for addr {ipv4}: {e}");
+                    }
+                }
+            }
+
+            if let Some(ipv6) = last_ipv6 {
+                debug!("leave multicast for {ipv6}");
+                if let Some(sock) = self.ipv6_sock.as_mut() {
+                    if let Err(e) = sock
+                        .pktinfo
+                        .leave_multicast_v6(&GROUP_ADDR_V6, my_intf.index)
+                    {
+                        debug!("leave multicast group for IPv6: {ipv6}: {e}");
+                    }
+                }
+            }
+
+            // Remove cache records for this interface.
+            let intf_id = InterfaceId {
+                name: my_intf.name.to_string(),
+                index: my_intf.index,
+            };
+            let removed_instances = self.cache.remove_records_on_intf(intf_id);
+            self.notify_service_removal(removed_instances);
         }
 
         // Add newly found interfaces only if in our selections.
