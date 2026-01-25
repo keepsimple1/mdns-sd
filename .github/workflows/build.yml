@@ -42,5 +42,7 @@ jobs:
         timeout-minutes: 2
         run: RUST_LOG=debug cargo test -- --nocapture
       - name: Run tests on Windows
+        env:
+          RUST_LOG: debug
         if: matrix.os == 'windows-latest'
-        run: cargo test
+        run: cargo test -- --nocapture

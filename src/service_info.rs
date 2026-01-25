@@ -1060,7 +1060,7 @@ impl Probe {
 
 /// DNS records of all the registered services.
 pub(crate) struct DnsRegistry {
-    /// keyed by the name of all related records.
+    /// keyed by the name of all related DNS records.
     /*
      When a host is probing for a group of related records with the same
     name (e.g., the SRV and TXT record describing a DNS-SD service), only
@@ -1073,6 +1073,7 @@ pub(crate) struct DnsRegistry {
     pub(crate) probing: HashMap<String, Probe>,
 
     /// Already done probing, or no need to probe.
+    /// Keyed by DNS record name.
     pub(crate) active: HashMap<String, Vec<DnsRecordBox>>,
 
     /// timers of the newly added probes.
