@@ -2039,8 +2039,13 @@ fn test_name_tiebreaking() {
         .expect("failed to register service2");
 
     // Verify name change event for the first service, per tiebreaking rules.
+    // Timeout is set to 3 seconds for:
+    // - Initial probing (750ms)
+    // - 1 second wait after LOST the tiebreaking
+    // - New probing (750ms)
+    // Total: 2.5s + some margin => 3s
     let server1_monitor = server1.monitor().unwrap();
-    let timeout = Duration::from_secs(2);
+    let timeout = Duration::from_secs(3);
     let mut name_changed = false;
 
     while let Ok(event) = server1_monitor.recv_timeout(timeout) {
