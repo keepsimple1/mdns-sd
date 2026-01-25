@@ -1912,139 +1912,111 @@ impl Zeroconf {
         outgoing_addrs
     }
 
-    /// A helper function to handle probing for a given interface index.
-    fn handle_probing_for_index(
-        &mut self,
-        if_index: u32,
-        now: u64,
-        invalid_intf_addrs: &mut Vec<Interface>,
-    ) {
-        let Some(intf) = self.my_intfs.get(&if_index) else {
-            return;
-        };
-
-        let Some(dns_registry) = self.dns_registry_map.get_mut(&if_index) else {
-            return;
-        };
-
-        let (out, expired_probes) = check_probing(dns_registry, &mut self.timers, now);
-
-        // send probing.
-        if !out.questions().is_empty() {
-            trace!("sending out probing of questions: {:?}", out.questions());
-            if let Some(sock) = self.ipv4_sock.as_mut() {
-                if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
-                {
-                    invalid_intf_addrs.push(intf_addr.clone());
-                }
-            }
-            if let Some(sock) = self.ipv6_sock.as_mut() {
-                if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
-                {
-                    invalid_intf_addrs.push(intf_addr.clone());
-                }
-            }
-        }
-
-        // For finished probes, wake up services that are waiting for the probes.
-        let waiting_services =
-            handle_expired_probes(expired_probes, &intf.name, dns_registry, &mut self.monitors);
-
-        for service_name in waiting_services {
-            self.announce_waiting_service(if_index, service_name, now, invalid_intf_addrs);
-        }
-    }
-
-    /// A helper function to announce a waiting service on an interface.
-    fn announce_waiting_service(
-        &mut self,
-        if_index: u32,
-        service_name: String,
-        now: u64,
-        invalid_intf_addrs: &mut Vec<Interface>,
-    ) {
-        let Some(intf) = self.my_intfs.get(&if_index) else {
-            return;
-        };
-
-        let Some(dns_registry) = self.dns_registry_map.get_mut(&if_index) else {
-            return;
-        };
-
-        // service names are lowercase
-        let Some(info) = self.my_services.get_mut(&service_name.to_lowercase()) else {
-            return;
-        };
-
-        if info.get_status(if_index) == ServiceStatus::Announced {
-            debug!("service {} already announced", info.get_fullname());
-            return;
-        }
-
-        let mut announced = false;
-
-        if let Some(sock) = self.ipv4_sock.as_mut() {
-            match announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo, self.port) {
-                Ok(true) => {
-                    announced = true;
-                }
-                Ok(false) => {}
-                Err(InternalError::IntfAddrInvalid(intf_addr)) => {
-                    invalid_intf_addrs.push(intf_addr.clone());
-                    return;
-                }
-            }
-        }
-
-        if let Some(sock) = self.ipv6_sock.as_mut() {
-            match announce_service_on_intf(dns_registry, info, intf, &sock.pktinfo, self.port) {
-                Ok(true) => {
-                    announced = true;
-                }
-                Ok(false) => {}
-                Err(InternalError::IntfAddrInvalid(intf_addr)) => {
-                    invalid_intf_addrs.push(intf_addr.clone());
-                    return;
-                }
-            }
-        }
-
-        if announced {
-            let next_time = now + 1000;
-            let command = Command::RegisterResend(info.get_fullname().to_string(), if_index);
-            self.retransmissions.push(ReRun { next_time, command });
-            self.timers.push(Reverse(next_time));
-
-            let fullname = match dns_registry.name_changes.get(&service_name) {
-                Some(new_name) => new_name.to_string(),
-                None => service_name.to_string(),
-            };
-
-            let mut hostname = info.get_hostname();
-            if let Some(new_name) = dns_registry.name_changes.get(hostname) {
-                hostname = new_name;
-            }
-
-            debug!("wake up: announce service {} on {}", fullname, intf.name);
-            notify_monitors(
-                &mut self.monitors,
-                DaemonEvent::Announce(fullname, format!("{}:{}", hostname, &intf.name)),
-            );
-
-            info.set_status(if_index, ServiceStatus::Announced);
-        }
-    }
-
     /// Send probings or finish them if expired. Notify waiting services.
     fn probing_handler(&mut self) {
         let now = current_time_millis();
         let mut invalid_intf_addrs = Vec::new();
 
-        let if_indices: Vec<u32> = self.my_intfs.keys().cloned().collect();
-        for if_index in if_indices {
-            self.handle_probing_for_index(if_index, now, &mut invalid_intf_addrs);
+        for (if_index, intf) in self.my_intfs.iter() {
+            let Some(dns_registry) = self.dns_registry_map.get_mut(if_index) else {
+                continue;
+            };
+
+            let (out, expired_probes) = check_probing(dns_registry, &mut self.timers, now);
+
+            // send probing.
+            if !out.questions().is_empty() {
+                trace!("sending out probing of questions: {:?}", out.questions());
+                if let Some(sock) = self.ipv4_sock.as_mut() {
+                    if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
+                        send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+                    {
+                        invalid_intf_addrs.push(intf_addr);
+                    }
+                }
+                if let Some(sock) = self.ipv6_sock.as_mut() {
+                    if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
+                        send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+                    {
+                        invalid_intf_addrs.push(intf_addr);
+                    }
+                }
+            }
+
+            // For finished probes, wake up services that are waiting for the probes.
+            let waiting_services =
+                handle_expired_probes(expired_probes, &intf.name, dns_registry, &mut self.monitors);
+
+            for service_name in waiting_services {
+                // service names are lowercase
+                if let Some(info) = self.my_services.get_mut(&service_name.to_lowercase()) {
+                    if info.get_status(*if_index) == ServiceStatus::Announced {
+                        debug!("service {} already announced", info.get_fullname());
+                        continue;
+                    }
+
+                    let announced_v4 = if let Some(sock) = self.ipv4_sock.as_mut() {
+                        match announce_service_on_intf(
+                            dns_registry,
+                            info,
+                            intf,
+                            &sock.pktinfo,
+                            self.port,
+                        ) {
+                            Ok(announced) => announced,
+                            Err(InternalError::IntfAddrInvalid(intf_addr)) => {
+                                invalid_intf_addrs.push(intf_addr);
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    };
+                    let announced_v6 = if let Some(sock) = self.ipv6_sock.as_mut() {
+                        match announce_service_on_intf(
+                            dns_registry,
+                            info,
+                            intf,
+                            &sock.pktinfo,
+                            self.port,
+                        ) {
+                            Ok(announced) => announced,
+                            Err(InternalError::IntfAddrInvalid(intf_addr)) => {
+                                invalid_intf_addrs.push(intf_addr);
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    };
+
+                    if announced_v4 || announced_v6 {
+                        let next_time = now + 1000;
+                        let command =
+                            Command::RegisterResend(info.get_fullname().to_string(), *if_index);
+                        self.retransmissions.push(ReRun { next_time, command });
+                        self.timers.push(Reverse(next_time));
+
+                        let fullname = match dns_registry.name_changes.get(&service_name) {
+                            Some(new_name) => new_name.to_string(),
+                            None => service_name.to_string(),
+                        };
+
+                        let mut hostname = info.get_hostname();
+                        if let Some(new_name) = dns_registry.name_changes.get(hostname) {
+                            hostname = new_name;
+                        }
+
+                        debug!("wake up: announce service {} on {}", fullname, intf.name);
+                        notify_monitors(
+                            &mut self.monitors,
+                            DaemonEvent::Announce(fullname, format!("{}:{}", hostname, &intf.name)),
+                        );
+
+                        info.set_status(*if_index, ServiceStatus::Announced);
+                    }
+                }
+            }
         }
 
         let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
