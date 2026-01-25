@@ -2534,9 +2534,11 @@ fn timed_println(msg: String) {
 }
 
 fn to_local_fqdn(name: &str) -> String {
-    if name.ends_with('.') {
+    if name.ends_with(".local.") {
         name.to_string()
-    } else {
+    } else if name.ends_with(".local") {
         format!("{}.", name)
+    } else {
+        format!("{}.local.", name)
     }
 }
