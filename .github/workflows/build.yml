@@ -43,4 +43,4 @@ jobs:
         run: RUST_LOG=debug cargo test -- --nocapture
       - name: Run tests on Windows
         if: matrix.os == 'windows-latest'
-        run: cargo test
+        run: RUST_LOG=debug cargo test -- --nocapture
