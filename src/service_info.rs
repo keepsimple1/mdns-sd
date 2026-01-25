@@ -86,6 +86,9 @@ pub struct ServiceInfo {
 
     /// If true, only link-local addresses are published.
     is_link_local_only: bool,
+
+    /// If true, skip address records when announcing the service.
+    skip_address_records: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,6 +186,7 @@ impl ServiceInfo {
             requires_probe: true,
             is_link_local_only: false,
             supported_intfs: vec![IfKind::All],
+            skip_address_records: false,
         };
 
         Ok(this)
@@ -230,6 +234,14 @@ impl ServiceInfo {
     /// By default, it returns true for every service info.
     pub const fn requires_probe(&self) -> bool {
         self.requires_probe
+    }
+
+    pub const fn set_skip_address_records(&mut self, skip: bool) {
+        self.skip_address_records = skip;
+    }
+
+    pub const fn get_skip_address_records(&self) -> bool {
+        self.skip_address_records
     }
 
     /// Returns the service type including the domain label.

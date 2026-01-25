@@ -2092,18 +2092,20 @@ impl Zeroconf {
             return vec![];
         }
 
-        for address in if_addrs {
-            out.add_answer_at_time(
-                DnsAddress::new(
-                    info.get_hostname(),
-                    ip_address_rr_type(&address),
-                    CLASS_IN | CLASS_CACHE_FLUSH,
+        if !info.get_skip_address_records() {
+            for address in if_addrs {
+                out.add_answer_at_time(
+                    DnsAddress::new(
+                        info.get_hostname(),
+                        ip_address_rr_type(&address),
+                        CLASS_IN | CLASS_CACHE_FLUSH,
+                        0,
+                        address,
+                        intf.into(),
+                    ),
                     0,
-                    address,
-                    intf.into(),
-                ),
-                0,
-            );
+                );
+            }
         }
 
         // Only (at most) one packet is expected to be sent out.
@@ -2930,6 +2932,10 @@ impl Zeroconf {
                             continue;
                         }
 
+                        if service.get_skip_address_records() {
+                            continue;
+                        }
+
                         let service_hostname =
                             match dns_registry.name_changes.get(service.get_hostname()) {
                                 Some(new_name) => new_name,
@@ -3657,7 +3663,7 @@ fn add_answer_of_service(
         );
     }
 
-    if qtype == RRType::SRV {
+    if qtype == RRType::SRV && !service.get_skip_address_records() {
         for address in intf_addrs {
             out.add_additional_answer(DnsAddress::new(
                 service.get_hostname(),
@@ -4253,31 +4259,31 @@ fn prepare_announce(
     }
 
     // Address records. (A and AAAA)
+    if !info.get_skip_address_records() {
+        let hostname = info.get_hostname();
+        for address in intf_addrs {
+            let mut dns_addr = DnsAddress::new(
+                hostname,
+                ip_address_rr_type(&address),
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                info.get_host_ttl(),
+                address,
+                intf.into(),
+            );
 
-    let hostname = info.get_hostname();
-    for address in intf_addrs {
-        let mut dns_addr = DnsAddress::new(
-            hostname,
-            ip_address_rr_type(&address),
-            CLASS_IN | CLASS_CACHE_FLUSH,
-            info.get_host_ttl(),
-            address,
-            intf.into(),
-        );
+            if let Some(new_name) = dns_registry.name_changes.get(hostname) {
+                dns_addr.get_record_mut().set_new_name(new_name.to_string());
+            }
 
-        if let Some(new_name) = dns_registry.name_changes.get(hostname) {
-            dns_addr.get_record_mut().set_new_name(new_name.to_string());
-        }
-
-        if !info.requires_probe()
-            || dns_registry.is_probing_done(&dns_addr, info.get_fullname(), create_time)
-        {
-            out.add_answer_at_time(dns_addr, 0);
-        } else {
-            probing_count += 1;
+            if !info.requires_probe()
+                || dns_registry.is_probing_done(&dns_addr, info.get_fullname(), create_time)
+            {
+                out.add_answer_at_time(dns_addr, 0);
+            } else {
+                probing_count += 1;
+            }
         }
     }
-
     if probing_count > 0 {
         return None;
     }
@@ -4442,15 +4448,17 @@ fn add_answer_with_additionals(
         service.generate_txt(),
     ));
 
-    for address in intf_addrs {
-        out.add_additional_answer(DnsAddress::new(
-            hostname,
-            ip_address_rr_type(&address),
-            CLASS_IN | CLASS_CACHE_FLUSH,
-            service.get_host_ttl(),
-            address,
-            intf.into(),
-        ));
+    if !service.get_skip_address_records() {
+        for address in intf_addrs {
+            out.add_additional_answer(DnsAddress::new(
+                hostname,
+                ip_address_rr_type(&address),
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                service.get_host_ttl(),
+                address,
+                intf.into(),
+            ));
+        }
     }
 }
 

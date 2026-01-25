@@ -2472,9 +2472,71 @@ fn test_set_ip_check_interval() {
     assert_eq!(interval, 0);
 }
 
+#[test]
+fn test_set_skip_address_records() {
+    let ty_domain = "_skip-addr._udp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string(); // Create a unique name
+
+    // Use the real hostname from the system
+    let host_name = hostname::get()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    timed_println(format!("hostname: {host_name}"));
+
+    let host_name = to_local_fqdn(&host_name);
+    let port = 5300;
+    let mut my_service = ServiceInfo::new(ty_domain, &instance_name, &host_name, "", port, None)
+        .expect("valid service info");
+
+    assert!(!my_service.get_skip_address_records());
+    my_service.set_skip_address_records(true);
+
+    let server = ServiceDaemon::new().expect("Failed to create server");
+    server
+        .register(my_service)
+        .expect("Failed to register my service");
+
+    let client = ServiceDaemon::new().expect("Failed to create client");
+    let browse_chan = client.browse(ty_domain).unwrap();
+    let timeout = Duration::from_secs(2);
+    let mut resolved = false;
+    while let Ok(event) = browse_chan.recv_timeout(timeout) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                resolved = true;
+                let addrs = info.get_addresses();
+                timed_println(format!(
+                    "Resolved a service of {} with addresses: {:?}",
+                    &info.get_fullname(),
+                    addrs
+                ));
+                break;
+            }
+            e => {
+                timed_println(format!("Received event {:?}", e));
+            }
+        }
+    }
+
+    assert!(resolved);
+    server.shutdown().unwrap();
+}
+
 /// A helper function to include a timestamp for println.
 fn timed_println(msg: String) {
     let now = SystemTime::now();
     let formatted_time = humantime::format_rfc3339(now);
     println!("[{}] {}", formatted_time, msg);
+}
+
+fn to_local_fqdn(name: &str) -> String {
+    if name.ends_with('.') {
+        name.to_string()
+    } else {
+        format!("{}.", name)
+    }
 }

@@ -28,7 +28,7 @@ socket-pktinfo = "0.3.2"
 
 [dev-dependencies]
 env_logger = { version = "= 0.10.2", default-features = false, features= ["humantime"] }
-fastrand = "2.3"
+hostname = "0.4"
 humantime = "2.1"
 test-log = "= 0.2.14"
 test-log-macros = "= 0.2.14"
