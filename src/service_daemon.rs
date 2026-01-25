@@ -1896,7 +1896,9 @@ impl Zeroconf {
             }
         }
 
-        let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
+        if !invalid_intf_addrs.is_empty() {
+            let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
+        }
 
         // RFC 6762 section 8.3.
         // ..The Multicast DNS responder MUST send at least two unsolicited
@@ -2019,7 +2021,9 @@ impl Zeroconf {
             }
         }
 
-        let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
+        if !invalid_intf_addrs.is_empty() {
+            let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
+        }
     }
 
     fn unregister_service(
@@ -2177,7 +2181,9 @@ impl Zeroconf {
             }
         }
 
-        let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
+        if !invalid_intf_addrs.is_empty() {
+            let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
+        }
     }
 
     /// Reads one UDP datagram from the socket of `intf`.
