@@ -1828,7 +1828,7 @@ impl Zeroconf {
         let mut outgoing_addrs = Vec::new();
         let mut outgoing_intfs = HashSet::new();
 
-        let mut invalid_intf_addrs = Vec::new();
+        let mut invalid_intf_addrs = HashSet::new();
 
         for (if_index, intf) in self.my_intfs.iter() {
             let dns_registry = match self.dns_registry_map.get_mut(if_index) {
@@ -1859,7 +1859,7 @@ impl Zeroconf {
                     }
                     Ok(false) => {}
                     Err(InternalError::IntfAddrInvalid(intf_addr)) => {
-                        invalid_intf_addrs.push(intf_addr);
+                        invalid_intf_addrs.insert(intf_addr);
                     }
                 }
             }
@@ -1881,7 +1881,7 @@ impl Zeroconf {
                     }
                     Ok(false) => {}
                     Err(InternalError::IntfAddrInvalid(intf_addr)) => {
-                        invalid_intf_addrs.push(intf_addr);
+                        invalid_intf_addrs.insert(intf_addr);
                     }
                 }
             }
@@ -1915,7 +1915,7 @@ impl Zeroconf {
     /// Send probings or finish them if expired. Notify waiting services.
     fn probing_handler(&mut self) {
         let now = current_time_millis();
-        let mut invalid_intf_addrs = Vec::new();
+        let mut invalid_intf_addrs = HashSet::new();
 
         for (if_index, intf) in self.my_intfs.iter() {
             let Some(dns_registry) = self.dns_registry_map.get_mut(if_index) else {
@@ -1931,14 +1931,14 @@ impl Zeroconf {
                     if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
                         send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                     {
-                        invalid_intf_addrs.push(intf_addr);
+                        invalid_intf_addrs.insert(intf_addr);
                     }
                 }
                 if let Some(sock) = self.ipv6_sock.as_mut() {
                     if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
                         send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                     {
-                        invalid_intf_addrs.push(intf_addr);
+                        invalid_intf_addrs.insert(intf_addr);
                     }
                 }
             }
@@ -1965,7 +1965,7 @@ impl Zeroconf {
                         ) {
                             Ok(announced) => announced,
                             Err(InternalError::IntfAddrInvalid(intf_addr)) => {
-                                invalid_intf_addrs.push(intf_addr);
+                                invalid_intf_addrs.insert(intf_addr);
                                 false
                             }
                         }
@@ -1982,7 +1982,7 @@ impl Zeroconf {
                         ) {
                             Ok(announced) => announced,
                             Err(InternalError::IntfAddrInvalid(intf_addr)) => {
-                                invalid_intf_addrs.push(intf_addr);
+                                invalid_intf_addrs.insert(intf_addr);
                                 false
                             }
                         }
@@ -2022,23 +2022,13 @@ impl Zeroconf {
         let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
     }
 
-    fn unregister_service(&mut self, info: &ServiceInfo, if_index: u32, is_ipv4: bool) -> Vec<u8> {
-        let Some(intf) = self.my_intfs.get(&if_index) else {
-            debug!("unregister_service: interface index {} not found", if_index);
-            return vec![];
-        };
-
-        let sock = if is_ipv4 {
-            if let Some(ipv4_sock) = self.ipv4_sock.as_ref() {
-                &ipv4_sock.pktinfo
-            } else {
-                return vec![];
-            }
-        } else if let Some(ipv6_sock) = self.ipv6_sock.as_ref() {
-            &ipv6_sock.pktinfo
-        } else {
-            return vec![];
-        };
+    fn unregister_service(
+        &self,
+        info: &ServiceInfo,
+        intf: &MyIntf,
+        sock: &PktInfoUdpSocket,
+    ) -> Vec<u8> {
+        let is_ipv4 = sock.domain() == Domain::IPV4;
 
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         out.add_answer_at_time(
@@ -2116,7 +2106,7 @@ impl Zeroconf {
         let sent_vec = match send_dns_outgoing(&out, intf, sock, self.port) {
             Ok(sent_vec) => sent_vec,
             Err(InternalError::IntfAddrInvalid(intf_addr)) => {
-                let invalid_intf_addrs = vec![intf_addr];
+                let invalid_intf_addrs = HashSet::from([intf_addr]);
                 let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
                 vec![]
             }
@@ -2169,20 +2159,20 @@ impl Zeroconf {
             }
         }
 
-        let mut invalid_intf_addrs = Vec::new();
+        let mut invalid_intf_addrs = HashSet::new();
         for (_, intf) in self.my_intfs.iter() {
             if let Some(sock) = self.ipv4_sock.as_ref() {
                 if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                 {
-                    invalid_intf_addrs.push(intf_addr);
+                    invalid_intf_addrs.insert(intf_addr);
                 }
             }
             if let Some(sock) = self.ipv6_sock.as_ref() {
                 if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
                 {
-                    invalid_intf_addrs.push(intf_addr);
+                    invalid_intf_addrs.insert(intf_addr);
                 }
             }
         }
@@ -3029,7 +3019,7 @@ impl Zeroconf {
             if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
                 send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
             {
-                let invalid_intf_addr = vec![intf_addr];
+                let invalid_intf_addr = HashSet::from([intf_addr]);
                 let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addr));
             }
 
@@ -3121,7 +3111,7 @@ impl Zeroconf {
                 if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
                     self.exec_command_register_resend(fullname, intf)
                 {
-                    let invalid_intf_addr = vec![intf_addr];
+                    let invalid_intf_addr = HashSet::from([intf_addr]);
                     let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addr));
                 }
             }
@@ -3360,29 +3350,31 @@ impl Zeroconf {
             Some((_k, info)) => {
                 let mut timers = Vec::new();
 
-                let if_indices: Vec<u32> = self.my_intfs.keys().cloned().collect();
-                for if_index in if_indices {
-                    // ipv4
-                    let packet = self.unregister_service(&info, if_index, true);
-                    // repeat for one time just in case some peers miss the message
-                    if !repeating && !packet.is_empty() {
-                        let next_time = current_time_millis() + 120;
-                        self.retransmissions.push(ReRun {
-                            next_time,
-                            command: Command::UnregisterResend(packet, if_index, true),
-                        });
-                        timers.push(next_time);
+                for (if_index, intf) in self.my_intfs.iter() {
+                    if let Some(sock) = self.ipv4_sock.as_ref() {
+                        let packet = self.unregister_service(&info, intf, &sock.pktinfo);
+                        // repeat for one time just in case some peers miss the message
+                        if !repeating && !packet.is_empty() {
+                            let next_time = current_time_millis() + 120;
+                            self.retransmissions.push(ReRun {
+                                next_time,
+                                command: Command::UnregisterResend(packet, *if_index, true),
+                            });
+                            timers.push(next_time);
+                        }
                     }
 
                     // ipv6
-                    let packet = self.unregister_service(&info, if_index, false);
-                    if !repeating && !packet.is_empty() {
-                        let next_time = current_time_millis() + 120;
-                        self.retransmissions.push(ReRun {
-                            next_time,
-                            command: Command::UnregisterResend(packet, if_index, false),
-                        });
-                        timers.push(next_time);
+                    if let Some(sock) = self.ipv6_sock.as_ref() {
+                        let packet = self.unregister_service(&info, intf, &sock.pktinfo);
+                        if !repeating && !packet.is_empty() {
+                            let next_time = current_time_millis() + 120;
+                            self.retransmissions.push(ReRun {
+                                next_time,
+                                command: Command::UnregisterResend(packet, *if_index, false),
+                            });
+                            timers.push(next_time);
+                        }
                     }
                 }
 
@@ -3812,7 +3804,7 @@ enum Command {
     Verify(String, Duration),
 
     /// Invalidate some interface addresses.
-    InvalidIntfAddrs(Vec<Interface>),
+    InvalidIntfAddrs(HashSet<Interface>),
 
     Exit(Sender<DaemonStatus>),
 }
