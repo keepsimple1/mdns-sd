@@ -26,6 +26,7 @@ fn main() {
     let mut should_unreg = false;
     let mut disable_ipv6 = false;
     let mut use_logfile = false;
+    let mut include_apple_p2p = false;
 
     for arg in args.iter() {
         if arg.as_str() == "--unregister" {
@@ -34,6 +35,8 @@ fn main() {
             disable_ipv6 = true;
         } else if arg.as_str() == "--logfile" {
             use_logfile = true;
+        } else if arg.as_str() == "--include-apple-p2p" {
+            include_apple_p2p = true;
         }
     }
 
@@ -58,6 +61,10 @@ fn main() {
 
     if disable_ipv6 {
         mdns.disable_interface(IfKind::IPv6).unwrap();
+    }
+
+    if include_apple_p2p {
+        mdns.set_apple_p2p(true).unwrap();
     }
 
     let service_type = match args.get(1) {
@@ -140,6 +147,7 @@ fn print_usage() {
     println!("--unregister: automatically unregister after 2 seconds");
     println!("--disable-ipv6: not to use IPv6 interfaces.");
     println!("--logfile: write debug log to a file instead of stderr. The logfile is named 'mdns-register-<timestamp>.log'.");
+    println!("--include-apple-p2p: include Apple p2p interfaces (e.g., awdl, llw) for mDNS.");
     println!();
     println!("For example:");
     println!("cargo run --example register _my-hello._udp instance1 host1");

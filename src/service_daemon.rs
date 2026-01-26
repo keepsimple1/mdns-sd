@@ -570,6 +570,11 @@ impl ServiceDaemon {
         self.send_cmd(Command::SetOption(DaemonOption::AcceptUnsolicited(accept)))
     }
 
+    /// Enable or disable Apple P2P interfaces, e.g. "awdl0", "llw0".
+    pub fn set_apple_p2p(&self, enable: bool) -> Result<()> {
+        self.send_cmd(Command::SetOption(DaemonOption::EnableAppleP2P(enable)))
+    }
+
     #[cfg(test)]
     pub fn test_down_interface(&self, ifname: &str) -> Result<()> {
         self.send_cmd(Command::SetOption(DaemonOption::TestDownInterface(
@@ -942,6 +947,8 @@ struct Zeroconf {
 
     accept_unsolicited: bool,
 
+    include_apple_p2p: bool,
+
     cmd_sender: Sender<Command>,
 
     signal_addr: SocketAddr,
@@ -1118,6 +1125,7 @@ impl Zeroconf {
             multicast_loop_v4: true,
             multicast_loop_v6: true,
             accept_unsolicited: false,
+            include_apple_p2p: false,
             cmd_sender,
             signal_addr,
 
@@ -1335,6 +1343,7 @@ impl Zeroconf {
             DaemonOption::MulticastLoopV4(on) => self.set_multicast_loop_v4(on),
             DaemonOption::MulticastLoopV6(on) => self.set_multicast_loop_v6(on),
             DaemonOption::AcceptUnsolicited(accept) => self.set_accept_unsolicited(accept),
+            DaemonOption::EnableAppleP2P(enable) => self.set_apple_p2p(enable),
             #[cfg(test)]
             DaemonOption::TestDownInterface(ifname) => {
                 self.test_down_interfaces.insert(ifname);
@@ -1355,7 +1364,7 @@ impl Zeroconf {
             });
         }
 
-        self.apply_intf_selections(my_ip_interfaces(true));
+        self.apply_intf_selections(my_ip_interfaces_inner(true, self.include_apple_p2p));
     }
 
     fn disable_interface(&mut self, kinds: Vec<IfKind>) {
@@ -1367,7 +1376,7 @@ impl Zeroconf {
             });
         }
 
-        self.apply_intf_selections(my_ip_interfaces(true));
+        self.apply_intf_selections(my_ip_interfaces_inner(true, self.include_apple_p2p));
     }
 
     fn set_multicast_loop_v4(&mut self, on: bool) {
@@ -1394,6 +1403,13 @@ impl Zeroconf {
 
     fn set_accept_unsolicited(&mut self, accept: bool) {
         self.accept_unsolicited = accept;
+    }
+
+    fn set_apple_p2p(&mut self, include: bool) {
+        if self.include_apple_p2p != include {
+            self.include_apple_p2p = include;
+            self.apply_intf_selections(my_ip_interfaces_inner(true, self.include_apple_p2p));
+        }
     }
 
     fn notify_monitors(&mut self, event: DaemonEvent) {
@@ -1504,7 +1520,7 @@ impl Zeroconf {
     /// Check for IP changes and update [my_intfs] as needed.
     fn check_ip_changes(&mut self) {
         // Get the current interfaces.
-        let my_ifaddrs = my_ip_interfaces(true);
+        let my_ifaddrs = my_ip_interfaces_inner(true, self.include_apple_p2p);
 
         #[cfg(test)]
         let my_ifaddrs: Vec<_> = my_ifaddrs
@@ -1800,7 +1816,8 @@ impl Zeroconf {
         }
 
         if info.is_addr_auto() {
-            let selected_intfs = self.selected_intfs(my_ip_interfaces(true));
+            let selected_intfs =
+                self.selected_intfs(my_ip_interfaces_inner(true, self.include_apple_p2p));
             for intf in selected_intfs {
                 info.insert_ipaddr(&intf);
             }
@@ -3853,6 +3870,7 @@ enum DaemonOption {
     MulticastLoopV4(bool),
     MulticastLoopV6(bool),
     AcceptUnsolicited(bool),
+    EnableAppleP2P(bool),
     #[cfg(test)]
     TestDownInterface(String),
     #[cfg(test)]
@@ -3975,11 +3993,31 @@ fn call_hostname_resolution_listener(
 /// Operational down interfaces are excluded.
 /// Loopback interfaces are excluded if `with_loopback` is false.
 fn my_ip_interfaces(with_loopback: bool) -> Vec<Interface> {
+    my_ip_interfaces_inner(with_loopback, false)
+}
+
+fn my_ip_interfaces_inner(with_loopback: bool, with_apple_p2p: bool) -> Vec<Interface> {
     if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
-        .filter(|i| i.is_oper_up() && (!i.is_loopback() || with_loopback))
+        .filter(|i| {
+            i.is_oper_up()
+                && !is_iff_point_to_point_by_name(&i.name)
+                && (!i.is_loopback() || with_loopback)
+                && (with_apple_p2p || !is_apple_p2p_by_name(&i.name))
+        })
         .collect()
+}
+
+fn is_apple_p2p_by_name(name: &str) -> bool {
+    let p2p_prefixes = ["awdl", "llw"];
+    p2p_prefixes.iter().any(|prefix| name.starts_with(prefix))
+}
+
+/// A poor man's check as `if_addrs` does not support IFF_POINTTOPOINT flag yet.
+fn is_iff_point_to_point_by_name(name: &str) -> bool {
+    let p2p_prefixes = ["utun", "tun", "tap", "ppp", "gif", "stf"];
+    p2p_prefixes.iter().any(|prefix| name.starts_with(prefix))
 }
 
 /// Send an outgoing mDNS query or response, and returns the packet bytes.
