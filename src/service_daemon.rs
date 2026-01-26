@@ -572,7 +572,7 @@ impl ServiceDaemon {
 
     /// Enable or disable Apple P2P interfaces, e.g. "awdl0", "llw0".
     pub fn set_apple_p2p(&self, enable: bool) -> Result<()> {
-        self.send_cmd(Command::SetOption(DaemonOption::EnableAppleP2P(enable)))
+        self.send_cmd(Command::SetOption(DaemonOption::IncludeAppleP2P(enable)))
     }
 
     #[cfg(test)]
@@ -1343,7 +1343,7 @@ impl Zeroconf {
             DaemonOption::MulticastLoopV4(on) => self.set_multicast_loop_v4(on),
             DaemonOption::MulticastLoopV6(on) => self.set_multicast_loop_v6(on),
             DaemonOption::AcceptUnsolicited(accept) => self.set_accept_unsolicited(accept),
-            DaemonOption::EnableAppleP2P(enable) => self.set_apple_p2p(enable),
+            DaemonOption::IncludeAppleP2P(enable) => self.set_apple_p2p(enable),
             #[cfg(test)]
             DaemonOption::TestDownInterface(ifname) => {
                 self.test_down_interfaces.insert(ifname);
@@ -3870,7 +3870,7 @@ enum DaemonOption {
     MulticastLoopV4(bool),
     MulticastLoopV6(bool),
     AcceptUnsolicited(bool),
-    EnableAppleP2P(bool),
+    IncludeAppleP2P(bool),
     #[cfg(test)]
     TestDownInterface(String),
     #[cfg(test)]
