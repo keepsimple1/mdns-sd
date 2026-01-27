@@ -1,3 +1,9 @@
+# Version 0.15.2 (2026-01-27)
+
+Created a new release branch `release-0.15` as some users have to stay with older `mio` version (mio v1.0.4).
+
+Backport a bugfix: 50e32722d3b6529b8d94c0990edfdf08d880a409
+
 # Version 0.15.1 (2025-09-06)
 
 New feature: cache only browsing. Check out the new methods `browse_cache` and `accept_unsolicited`.
