@@ -1234,7 +1234,7 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
 /// stable on the current mdns-sd Rust version (1.71.0).
 ///
 /// https://github.com/rust-lang/rust/blob/9fc6b43126469e3858e2fe86cafb4f0fd5068869/library/core/src/net/ip_addr.rs#L1684
-fn is_unicast_link_local(addr: &Ipv6Addr) -> bool {
+pub(crate) fn is_unicast_link_local(addr: &Ipv6Addr) -> bool {
     (addr.segments()[0] & 0xffc0) == 0xfe80
 }
 
