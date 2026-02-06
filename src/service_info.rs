@@ -55,7 +55,9 @@ impl From<&MyIntf> for InterfaceId {
 
 /// Escapes dots and backslashes in a DNS instance name according to RFC 6763 Section 4.3.
 /// - '.' becomes '\.'
-/// - '\\' becomes '\\\\'
+/// - '\' becomes '\\'
+///
+/// Note: `\` itself needs to be escaped in the source code.
 ///
 /// This is required when concatenating the three portions of a Service Instance Name
 /// to ensure that literal dots in the instance name are not interpreted as label separators.
@@ -128,6 +130,7 @@ impl ServiceInfo {
     /// "_my-service._udp.local.".
     ///
     /// `my_name` is the instance name, without the service type suffix.
+    /// It allows dots (`.`) and backslashes (`\`).
     ///
     /// `host_name` is the "host" in the context of DNS. It is used as the "name"
     /// in the address records (i.e. TYPE_A and TYPE_AAAA records). It means that

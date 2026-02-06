@@ -1537,6 +1537,7 @@ impl DnsOutPacket {
     //
     // This function also handles RFC 6763 Section 4.3 escaping where dots and backslashes
     // in instance names are escaped (e.g., "My\\.Service" represents a single label "My.Service").
+    // The actual name sent over the wire is the unescaped version.
     fn write_name(&mut self, name: &str) {
         // Remove trailing dot if present
         let name_to_parse = name.strip_suffix('.').unwrap_or(name);
