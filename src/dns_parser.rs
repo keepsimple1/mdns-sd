@@ -1460,6 +1460,59 @@ impl DnsOutPacket {
         self.size += 2;
     }
 
+    /// Parses a DNS name that may contain escaped characters according to RFC 6763 Section 4.3.
+    /// Returns a vector of labels where each label is the unescaped content.
+    ///
+    /// Escape sequences:
+    /// - \\. becomes . (literal dot)
+    /// - \\\\ becomes \\ (literal backslash)
+    fn parse_escaped_name(name: &str) -> Vec<String> {
+        let mut labels = Vec::new();
+        let mut current_label = String::new();
+        let mut chars = name.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            match ch {
+                '\\' => {
+                    // Backslash escape sequence
+                    if let Some(&next_ch) = chars.peek() {
+                        match next_ch {
+                            '.' | '\\' => {
+                                // \\. or \\\\ - consume the backslash and add the escaped char
+                                chars.next();
+                                current_label.push(next_ch);
+                            }
+                            _ => {
+                                // Not a recognized escape - treat backslash literally
+                                current_label.push(ch);
+                            }
+                        }
+                    } else {
+                        // Trailing backslash - add it literally
+                        current_label.push(ch);
+                    }
+                }
+                '.' => {
+                    // Unescaped dot - label separator
+                    if !current_label.is_empty() {
+                        labels.push(current_label.clone());
+                        current_label.clear();
+                    }
+                }
+                _ => {
+                    current_label.push(ch);
+                }
+            }
+        }
+
+        // Add the last label if not empty
+        if !current_label.is_empty() {
+            labels.push(current_label);
+        }
+
+        labels
+    }
+
     // Write name to packet
     //
     // [RFC1035]
@@ -1481,51 +1534,43 @@ impl DnsOutPacket {
     // the start of the message (i.e., the first octet of the ID field in the
     // domain header).  A zero offset specifies the first byte of the ID field,
     // etc.
+    //
+    // This function also handles RFC 6763 Section 4.3 escaping where dots and backslashes
+    // in instance names are escaped (e.g., "My\\.Service" represents a single label "My.Service").
     fn write_name(&mut self, name: &str) {
-        // ignore the ending "." if exists
-        let end = name.len();
-        let end = if end > 0 && &name[end - 1..] == "." {
-            end - 1
-        } else {
-            end
-        };
+        // Remove trailing dot if present
+        let name_to_parse = name.strip_suffix('.').unwrap_or(name);
 
-        let mut here = 0;
-        while here < end {
-            const POINTER_MASK: u16 = 0xC000;
-            let remaining = &name[here..end];
+        // Parse the name considering escape sequences
+        let labels = Self::parse_escaped_name(name_to_parse);
 
-            // Check if 'remaining' already appeared in this message
-            match self.names.get(remaining) {
-                Some(offset) => {
-                    let pointer = *offset | POINTER_MASK;
-                    self.write_short(pointer);
-                    // println!(
-                    //     "written pointer {} ({}) for {}",
-                    //     pointer,
-                    //     pointer ^ POINTER_MASK,
-                    //     remaining
-                    // );
-                    break;
-                }
-                None => {
-                    // Remember the remaining parts so we can point to it
-                    self.names.insert(remaining.to_string(), self.size as u16);
-                    // println!("set offset {} for {}", self.size, remaining);
-
-                    // Find the current label to write into the packet
-                    let stop = remaining.find('.').map_or(end, |i| here + i);
-                    let label = &name[here..stop];
-                    self.write_utf8(label);
-
-                    here = stop + 1; // move past the current label
-                }
-            }
-
-            if here >= end {
-                self.write_byte(0); // name ends with 0 if not using a pointer
-            }
+        if labels.is_empty() {
+            self.write_byte(0);
+            return;
         }
+
+        // Write each label
+        for (i, label) in labels.iter().enumerate() {
+            // Build the remaining name for compression (with dots as separators)
+            let remaining: String = labels[i..].join(".");
+
+            // Check if we can use compression for the remaining part
+            const POINTER_MASK: u16 = 0xC000;
+            if let Some(&offset) = self.names.get(&remaining) {
+                let pointer = offset | POINTER_MASK;
+                self.write_short(pointer);
+                return;
+            }
+
+            // Store this position for potential future compression
+            self.names.insert(remaining, self.size as u16);
+
+            // Write the label
+            self.write_utf8(label);
+        }
+
+        // Write terminating zero byte
+        self.write_byte(0);
     }
 
     fn write_utf8(&mut self, utf: &str) {
