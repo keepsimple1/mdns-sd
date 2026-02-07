@@ -1152,6 +1152,73 @@ impl Zeroconf {
         Ok(())
     }
 
+    /// Clean up all resources before shutdown.
+    ///
+    /// This method:
+    /// 1. Unregisters all registered services (sends goodbye packets)
+    /// 2. Stops all active browse operations
+    /// 3. Stops all active hostname resolution operations
+    /// 4. Clears all retransmissions
+    fn cleanup(&mut self) {
+        debug!("Starting cleanup for shutdown");
+
+        // 1. Unregister all services - send goodbye packets
+        let service_names: Vec<String> = self.my_services.keys().cloned().collect();
+        for fullname in service_names {
+            if let Some(info) = self.my_services.get(&fullname) {
+                debug!("Unregistering service during shutdown: {}", &fullname);
+
+                for intf in self.my_intfs.values() {
+                    if let Some(sock) = self.ipv4_sock.as_ref() {
+                        self.unregister_service(info, intf, &sock.pktinfo);
+                    }
+
+                    if let Some(sock) = self.ipv6_sock.as_ref() {
+                        self.unregister_service(info, intf, &sock.pktinfo);
+                    }
+                }
+            }
+        }
+        self.my_services.clear();
+
+        // 2. Stop all browse operations
+        let browse_types: Vec<String> = self.service_queriers.keys().cloned().collect();
+        for ty_domain in browse_types {
+            debug!("Stopping browse during shutdown: {}", &ty_domain);
+            if let Some(sender) = self.service_queriers.remove(&ty_domain) {
+                // Notify the client
+                if let Err(e) = sender.send(ServiceEvent::SearchStopped(ty_domain.clone())) {
+                    debug!("Failed to send SearchStopped during shutdown: {}", e);
+                }
+            }
+        }
+
+        // 3. Stop all hostname resolution operations
+        let hostnames: Vec<String> = self.hostname_resolvers.keys().cloned().collect();
+        for hostname in hostnames {
+            debug!(
+                "Stopping hostname resolution during shutdown: {}",
+                &hostname
+            );
+            if let Some((sender, _timeout)) = self.hostname_resolvers.remove(&hostname) {
+                // Notify the client
+                if let Err(e) =
+                    sender.send(HostnameResolutionEvent::SearchStopped(hostname.clone()))
+                {
+                    debug!(
+                        "Failed to send HostnameResolutionEvent::SearchStopped during shutdown: {}",
+                        e
+                    );
+                }
+            }
+        }
+
+        // 4. Clear all retransmissions
+        self.retransmissions.clear();
+
+        debug!("Cleanup completed");
+    }
+
     /// The main event loop of the daemon thread
     ///
     /// In each round, it will:
@@ -1254,6 +1321,8 @@ impl Zeroconf {
             // process commands from the command channel
             while let Ok(command) = receiver.try_recv() {
                 if matches!(command, Command::Exit(_)) {
+                    debug!("Exit command received, performing cleanup");
+                    self.cleanup();
                     self.status = DaemonStatus::Shutdown;
                     return Some(command);
                 }
