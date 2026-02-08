@@ -53,6 +53,34 @@ impl From<&MyIntf> for InterfaceId {
     }
 }
 
+/// Escapes dots and backslashes in a DNS instance name according to RFC 6763 Section 4.3.
+/// - '.' becomes '\.'
+/// - '\' becomes '\\'
+///
+/// Note: `\` itself needs to be escaped in the source code.
+///
+/// This is required when concatenating the three portions of a Service Instance Name
+/// to ensure that literal dots in the instance name are not interpreted as label separators.
+fn escape_instance_name(name: &str) -> String {
+    let mut result = String::with_capacity(name.len() + 10); // Extra space for escapes
+
+    for ch in name.chars() {
+        match ch {
+            '.' => {
+                result.push('\\');
+                result.push('.');
+            }
+            '\\' => {
+                result.push('\\');
+                result.push('\\');
+            }
+            _ => result.push(ch),
+        }
+    }
+
+    result
+}
+
 /// Complete info about a Service Instance.
 ///
 /// We can construct some PTR, one SRV and one TXT record from this info,
@@ -102,6 +130,7 @@ impl ServiceInfo {
     /// "_my-service._udp.local.".
     ///
     /// `my_name` is the instance name, without the service type suffix.
+    /// It allows dots (`.`) and backslashes (`\`).
     ///
     /// `host_name` is the "host" in the context of DNS. It is used as the "name"
     /// in the address records (i.e. TYPE_A and TYPE_AAAA records). It means that
@@ -140,7 +169,8 @@ impl ServiceInfo {
     ) -> Result<Self> {
         let (ty_domain, sub_domain) = split_sub_domain(ty_domain);
 
-        let fullname = format!("{my_name}.{ty_domain}");
+        let escaped_name = escape_instance_name(my_name);
+        let fullname = format!("{escaped_name}.{ty_domain}");
         let ty_domain = ty_domain.to_string();
         let sub_domain = sub_domain.map(str::to_string);
         let server = normalize_hostname(host_name.to_string());
@@ -1234,7 +1264,7 @@ pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
 /// stable on the current mdns-sd Rust version (1.71.0).
 ///
 /// https://github.com/rust-lang/rust/blob/9fc6b43126469e3858e2fe86cafb4f0fd5068869/library/core/src/net/ip_addr.rs#L1684
-fn is_unicast_link_local(addr: &Ipv6Addr) -> bool {
+pub(crate) fn is_unicast_link_local(addr: &Ipv6Addr) -> bool {
     (addr.segments()[0] & 0xffc0) == 0xfe80
 }
 
