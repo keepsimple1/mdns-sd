@@ -29,7 +29,7 @@
 // in Service Discovery, the basic data structure is "Service Info". One Service Info
 // corresponds to a set of DNS Resource Records.
 #[cfg(feature = "logging")]
-use crate::log::{debug, trace};
+use crate::log::{debug, error, trace};
 use crate::{
     dns_cache::{current_time_millis, DnsCache},
     dns_parser::{
@@ -1863,7 +1863,7 @@ impl Zeroconf {
     fn register_service(&mut self, mut info: ServiceInfo) {
         // Check the service name length.
         if let Err(e) = check_service_name_length(info.get_type(), self.service_name_len_max) {
-            debug!("check_service_name_length: {}", &e);
+            error!("check_service_name_length: {}", &e);
             self.notify_monitors(DaemonEvent::Error(e));
             return;
         }
