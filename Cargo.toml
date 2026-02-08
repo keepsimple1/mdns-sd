@@ -12,6 +12,7 @@ categories = ["network-programming"]
 description = "mDNS Service Discovery library with no async runtime dependency"
 
 [features]
+# Disable SO_REUSEPORT socket option for older Linux kernels (before v3.9) that don't support it.
 no_reuseport = []
 async = ["flume/async"]
 logging = ["log"]
