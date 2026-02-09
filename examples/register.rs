@@ -64,7 +64,7 @@ fn main() {
     }
 
     if include_apple_p2p {
-        mdns.set_apple_p2p(true).unwrap();
+        mdns.include_apple_p2p(true).unwrap();
     }
 
     let service_type = match args.get(1) {

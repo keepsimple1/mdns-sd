@@ -570,9 +570,10 @@ impl ServiceDaemon {
         self.send_cmd(Command::SetOption(DaemonOption::AcceptUnsolicited(accept)))
     }
 
-    /// Enable or disable Apple P2P interfaces, e.g. "awdl0", "llw0".
-    pub fn set_apple_p2p(&self, enable: bool) -> Result<()> {
-        self.send_cmd(Command::SetOption(DaemonOption::IncludeAppleP2P(enable)))
+    /// Include or exclude Apple P2P interfaces, e.g. "awdl0", "llw0".
+    /// By default, they are excluded.
+    pub fn include_apple_p2p(&self, include: bool) -> Result<()> {
+        self.send_cmd(Command::SetOption(DaemonOption::IncludeAppleP2P(include)))
     }
 
     #[cfg(test)]
@@ -4071,21 +4072,17 @@ fn my_ip_interfaces_inner(with_loopback: bool, with_apple_p2p: bool) -> Vec<Inte
         .into_iter()
         .filter(|i| {
             i.is_oper_up()
-                && !is_iff_point_to_point_by_name(&i.name)
+                && !i.is_p2p()
                 && (!i.is_loopback() || with_loopback)
                 && (with_apple_p2p || !is_apple_p2p_by_name(&i.name))
         })
         .collect()
 }
 
+/// Checks if the interface name indicates it's an Apple peer-to-peer interface,
+/// which should be ignored by default.
 fn is_apple_p2p_by_name(name: &str) -> bool {
     let p2p_prefixes = ["awdl", "llw"];
-    p2p_prefixes.iter().any(|prefix| name.starts_with(prefix))
-}
-
-/// A poor man's check as `if_addrs` does not support IFF_POINTTOPOINT flag yet.
-fn is_iff_point_to_point_by_name(name: &str) -> bool {
-    let p2p_prefixes = ["utun", "tun", "tap", "ppp", "gif", "stf"];
     p2p_prefixes.iter().any(|prefix| name.starts_with(prefix))
 }
 
@@ -4154,6 +4151,7 @@ fn send_dns_outgoing_impl(
                         addr: if_addr.clone(),
                         index: Some(if_index),
                         oper_status: if_addrs::IfOperStatus::Down,
+                        is_p2p: false,
                         #[cfg(windows)]
                         adapter_name: String::new(),
                     };
@@ -4175,6 +4173,7 @@ fn send_dns_outgoing_impl(
                         addr: if_addr.clone(),
                         index: Some(if_index),
                         oper_status: if_addrs::IfOperStatus::Down,
+                        is_p2p: false,
                         #[cfg(windows)]
                         adapter_name: String::new(),
                     };
