@@ -741,9 +741,13 @@ fn new_socket(addr: SocketAddr, non_block: bool) -> Result<PktInfoUdpSocket> {
 
     fd.set_reuse_address(true)
         .map_err(|e| e_fmt!("set ReuseAddr failed: {}", e))?;
-    #[cfg(all(unix, feature = "reuseport"))] // this is currently restricted to Unix's in socket2
-    fd.set_reuse_port(true)
-        .map_err(|e| e_fmt!("set ReusePort failed: {}", e))?;
+    #[cfg(unix)]
+    if let Err(e) = fd.set_reuse_port(true) {
+        debug!(
+            "SO_REUSEPORT is not supported, continuing without it: {}",
+            e
+        );
+    }
 
     if non_block {
         fd.set_nonblocking(true)
