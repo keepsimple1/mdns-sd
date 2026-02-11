@@ -41,9 +41,6 @@
 //! let mdns = ServiceDaemon::new().expect("Failed to create daemon");
 //!
 //! // Browse for a service type.
-//! // ❗ Make sure that the service name: "mdns-sd-my-test" is <= 15 characters or this will silently fail
-//! // You may also want to setup a monitor connection via `mdns.monitor` and log any `DaemonEvent::Error`
-//! // You can see how to setup this inside the register example
 //! let service_type = "_mdns-sd-my-test._udp.local.";
 //! let receiver = mdns.browse(service_type).expect("Failed to browse");
 //!
@@ -78,7 +75,7 @@
 //! let mdns = ServiceDaemon::new().expect("Failed to create daemon");
 //!
 //! // Create a service info.
-//! // ❗ Make sure that the service name: "mdns-sd-my-test" is <= 15 characters or this will silently fail
+//! // ❗ Make sure that the service name: "mdns-sd-my-test" is not longer than the max length limit. (15 characters by default)
 //! // You may also want to setup a monitor connection via `mdns.monitor` and log any `DaemonEvent::Error`
 //! // You can see how to setup this inside the register example
 //! let service_type = "_mdns-sd-my-test._udp.local.";
