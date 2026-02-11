@@ -1547,6 +1547,7 @@ mod tests {
                 prefixlen: 16,
             }),
             oper_status: IfOperStatus::Up,
+            is_p2p: false,
             #[cfg(windows)]
             adapter_name: String::new(),
         };
@@ -1561,6 +1562,7 @@ mod tests {
                 prefixlen: 16,
             }),
             oper_status: IfOperStatus::Up,
+            is_p2p: false,
             #[cfg(windows)]
             adapter_name: String::new(),
         };
@@ -1575,6 +1577,7 @@ mod tests {
                 prefixlen: 16,
             }),
             oper_status: IfOperStatus::Up,
+            is_p2p: false,
             #[cfg(windows)]
             adapter_name: String::new(),
         };
@@ -1589,6 +1592,7 @@ mod tests {
                 prefixlen: 16,
             }),
             oper_status: IfOperStatus::Up,
+            is_p2p: false,
             #[cfg(windows)]
             adapter_name: String::new(),
         };
@@ -1605,6 +1609,7 @@ mod tests {
                 prefixlen: 16,
             }),
             oper_status: IfOperStatus::Up,
+            is_p2p: false,
             #[cfg(windows)]
             adapter_name: String::new(),
         };
@@ -1619,6 +1624,7 @@ mod tests {
                 prefixlen: 16,
             }),
             oper_status: IfOperStatus::Up,
+            is_p2p: false,
             #[cfg(windows)]
             adapter_name: String::new(),
         };
@@ -1633,6 +1639,7 @@ mod tests {
                 prefixlen: 16,
             }),
             oper_status: IfOperStatus::Up,
+            is_p2p: false,
             #[cfg(windows)]
             adapter_name: String::new(),
         };
