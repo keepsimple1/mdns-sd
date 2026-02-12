@@ -74,7 +74,21 @@
 //! // Create a daemon
 //! let mdns = ServiceDaemon::new().expect("Failed to create daemon");
 //!
+//! // Recommended: Setup a monitor connection to receive events, especially errors from the daemon thread.
+//! let receiver = mdns.monitor().expect("Failed to monitor daemon");
+//! std::thread::spawn(move || {
+//!     while let Ok(event) = receiver.recv() {
+//!         match event {
+//!             mdns_sd::DaemonEvent::Error(error) => {
+//!                 eprintln!("Daemon error: {error}");
+//!             }
+//!             _ => {}
+//!         }
+//!     }
+//! });
+//!
 //! // Create a service info.
+//! // ❗ Make sure that the service name: "mdns-sd-my-test" is not longer than the max length limit. (15 characters by default)
 //! let service_type = "_mdns-sd-my-test._udp.local.";
 //! let instance_name = "my_instance";
 //! let ip = "192.168.1.12";
