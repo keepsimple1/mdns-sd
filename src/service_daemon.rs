@@ -5258,17 +5258,16 @@ mod tests {
 
     #[test]
     fn test_cache_only_unsolicited() {
-        // construct service info
-        let service_type = "_cache_only._udp.local.";
+        let service_type = "_c_unsolicit._udp.local.";
         let instance = "test_instance";
-        let host_name = "cache_only_host.local.";
+        let host_name = "c_unsolicit_host.local.";
         let service_ip_addr = my_ip_interfaces(false)
             .iter()
             .find(|iface| iface.ip().is_ipv4())
             .map(|iface| iface.ip())
             .unwrap();
 
-        let mut my_service = ServiceInfo::new(
+        let my_service = ServiceInfo::new(
             service_type,
             instance,
             host_name,
@@ -5277,9 +5276,6 @@ mod tests {
             None,
         )
         .unwrap();
-
-        let new_ttl = 3; // for testing only.
-        my_service._set_other_ttl(new_ttl);
 
         // register my service
         let mdns_server = ServiceDaemon::new().expect("Failed to create mdns server");

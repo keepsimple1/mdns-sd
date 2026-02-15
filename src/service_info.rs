@@ -87,9 +87,10 @@ fn escape_instance_name(name: &str) -> String {
 /// as well as A (IPv4 Address) and AAAA (IPv6 Address) records.
 #[derive(Debug, Clone)]
 pub struct ServiceInfo {
-    // With default settings service name length must be <= 15 bytes
-    // so "_abcdefghijklmno._udp.local." would be valid but "_abcdefghijklmnop._udp.local." is not
-    ty_domain: String, // <service>.<domain>
+    /// Service type and domain: {service-type-name}.{domain}
+    /// By default the service-type-name length must be <= 15.
+    /// so "_abcdefghijklmno._udp.local." would be valid but "_abcdefghijklmnop._udp.local." is not
+    ty_domain: String,
 
     /// See RFC6763 section 7.1 about "Subtypes":
     /// <https://datatracker.ietf.org/doc/html/rfc6763#section-7.1>
@@ -128,12 +129,8 @@ pub(crate) enum ServiceStatus {
 impl ServiceInfo {
     /// Creates a new service info.
     ///
-    /// `ty_domain` is the service type and the domain label, for example
-    /// "_my-service._udp.local.".
-    /// With default settings service name length must be <= 15 bytes
-    /// so "_abcdefghijklmno._udp.local." would be valid but "_abcdefghijklmnop._udp.local." is not  
-    /// ❗ **This will fail with an error log which may not be noticed unless you properly setup logging**.
-    /// It is recommended to setup a monitor connection via `ServiceDaemon::monitor()`
+    /// `ty_domain` is the service type and the domain label, for example "_my-service._udp.local.".
+    /// By default the service type length must be <= 15 bytes
     ///
     /// `my_name` is the instance name, without the service type suffix.
     /// It allows dots (`.`) and backslashes (`\`).

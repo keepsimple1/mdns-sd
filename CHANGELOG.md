@@ -1,3 +1,26 @@
+# Version 0.18.0 (2026-02-15)
+
+A few new features, documentation enhancements and breaking changes.
+
+## Breaking changes
+- Removed one default feature: `reuseport`. It is handled transparently now. (see commit `58bc8c5`)
+- New feature: support `.` and `\` in instance names (see commit `3481b94`)
+- New internal fix: proper cleanup on daemon shutdown (see commit `8d24304`)
+- New internal fix: exclude point-to-point interfaces by default (e.g. tunnel interface) (see commit `85b6cd9`)
+
+## All changes
+* `b694333 2026-02-12` Added documentation about service name length (FelixSelter)
+* `85b6cd9 2026-02-10` fix for macOS: exclude IFF_POINTTOPOINT interfaces and exclude Apple P2P interfaces by default (#425) (keepsimple1)
+* `58bc8c5 2026-02-09` fix: invert reuseport feature (#430) (keepsimple1)
+* `8d24304 2026-02-07` feat: add proper cleanup on daemon shutdown (#421) (Thibaut M.)
+* `69418d6 2026-02-05` chore: update some comments (#429) (keepsimple1)
+* `3481b94 2026-02-06` feat: implement RFC 6763 Section 4.3 escaping for instance names (#420) (Thibaut M.)
+* `58c15b4 2026-01-27` fix: only add a scope in Display to unicast link local v6 addresses (#424) (hrzlgnm)
+* `3f34136 2026-01-24` Return errors from send_dns_outgoing (#419) (keepsimple1)
+* `0e323f6 2026-01-21` ci: update github action checkout (#422) (Thibaut M.)
+
+Thanks and welcome new contributors: @thibaut-pascal, @FelixSelter
+
 # Version 0.17.2 (2026-01-16)
 
 ## New features (non-breaking)
