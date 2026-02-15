@@ -87,7 +87,7 @@ fn escape_instance_name(name: &str) -> String {
 /// as well as A (IPv4 Address) and AAAA (IPv6 Address) records.
 #[derive(Debug, Clone)]
 pub struct ServiceInfo {
-    /// <service-type-name>.<domain>
+    /// Service type and domain: {service-type-name}.{domain}
     /// By default the service-type-name length must be <= 15.
     /// so "_abcdefghijklmno._udp.local." would be valid but "_abcdefghijklmnop._udp.local." is not
     ty_domain: String,
