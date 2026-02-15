@@ -5267,7 +5267,7 @@ mod tests {
             .map(|iface| iface.ip())
             .unwrap();
 
-        let mut my_service = ServiceInfo::new(
+        let my_service = ServiceInfo::new(
             service_type,
             instance,
             host_name,
@@ -5276,9 +5276,6 @@ mod tests {
             None,
         )
         .unwrap();
-
-        let new_ttl = 3; // for testing only.
-        my_service._set_other_ttl(new_ttl);
 
         // register my service
         let mdns_server = ServiceDaemon::new().expect("Failed to create mdns server");
