@@ -755,7 +755,7 @@ fn test_disable_interface_cache() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let instance_name = now.as_micros().to_string();
-    let service_ip_addr: Vec<_> = my_ip_interfaces()
+    let ipv4_list: Vec<_> = my_ip_interfaces()
         .iter()
         .map(|iface| iface.ip())
         .filter(|ip| ip.is_ipv4() && !ip.is_loopback())
@@ -767,7 +767,7 @@ fn test_disable_interface_cache() {
         ty_domain,
         &instance_name,
         host_name,
-        &service_ip_addr[..],
+        &ipv4_list[..],
         port,
         None,
     )
@@ -783,8 +783,8 @@ fn test_disable_interface_cache() {
     sleep(Duration::from_secs(1));
 
     // Disable the interface for the client.
-    println!("Disabling interface with IP: {:?}", service_ip_addr);
-    client.disable_interface(service_ip_addr).unwrap();
+    println!("Disabling interface with IP: {:?}", ipv4_list);
+    client.disable_interface(ipv4_list).unwrap();
 
     // Browse for the service.
     let handle = client.browse(ty_domain).unwrap();
