@@ -755,11 +755,11 @@ fn test_disable_interface_cache() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let instance_name = now.as_micros().to_string();
-    let service_ip_addr = my_ip_interfaces()
+    let service_ip_addr: Vec<_> = my_ip_interfaces()
         .iter()
-        .find(|iface| iface.ip().is_ipv4())
         .map(|iface| iface.ip())
-        .unwrap();
+        .filter(|ip| ip.is_ipv4() && !ip.is_loopback())
+        .collect();
 
     let host_name = "disabled_intf_host.local.";
     let port = 5201;
@@ -767,7 +767,7 @@ fn test_disable_interface_cache() {
         ty_domain,
         &instance_name,
         host_name,
-        service_ip_addr,
+        &service_ip_addr[..],
         port,
         None,
     )
@@ -783,7 +783,7 @@ fn test_disable_interface_cache() {
     sleep(Duration::from_secs(1));
 
     // Disable the interface for the client.
-    println!("Disabling interface with IP: {service_ip_addr}");
+    println!("Disabling interface with IP: {:?}", service_ip_addr);
     client.disable_interface(service_ip_addr).unwrap();
 
     // Browse for the service.
