@@ -1704,7 +1704,7 @@ impl Zeroconf {
     /// If no more addresses on the interface, remove the interface as well.
     fn del_interface_addr(&mut self, intf: &Interface) {
         let if_index = intf.index.unwrap_or(0);
-        trace!(
+        debug!(
             "del_interface_addr: {} ({if_index}) addr {}",
             intf.name,
             intf.ip()
