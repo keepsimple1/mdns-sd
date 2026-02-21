@@ -793,6 +793,8 @@ pub enum IfKind {
     Name(String),
 
     /// By an IPv4 or IPv6 address.
+    /// This is used to look up the interface. The intent still refers to the interface,
+    /// not a specific address on the interface.
     Addr(IpAddr),
 
     /// 127.0.0.1 (or anything in 127.0.0.0/8), enabled by default.
@@ -1431,26 +1433,49 @@ impl Zeroconf {
 
     fn enable_interface(&mut self, kinds: Vec<IfKind>) {
         debug!("enable_interface: {:?}", kinds);
+        let interfaces = my_ip_interfaces_inner(true, self.include_apple_p2p);
+
         for if_kind in kinds {
+            let if_kind = match &if_kind {
+                IfKind::Addr(addr) => match interfaces.iter().find(|intf| &intf.ip() == addr) {
+                    Some(intf) => IfKind::Name(intf.name.clone()),
+                    None => if_kind,
+                },
+                _ => if_kind,
+            };
+
             self.if_selections.push(IfSelection {
                 if_kind,
                 selected: true,
             });
         }
 
-        self.apply_intf_selections(my_ip_interfaces_inner(true, self.include_apple_p2p));
+        self.apply_intf_selections(interfaces);
     }
 
     fn disable_interface(&mut self, kinds: Vec<IfKind>) {
         debug!("disable_interface: {:?}", kinds);
+        let interfaces = my_ip_interfaces_inner(true, self.include_apple_p2p);
+
         for if_kind in kinds {
+            // IfKind::Addr(ip) uses the IP to identify an interface (consistent
+            // with join_multicast_v4 semantics). Resolve it to the interface
+            // name so the entire interface is disabled, not just one address.
+            let if_kind = match &if_kind {
+                IfKind::Addr(addr) => match interfaces.iter().find(|intf| &intf.ip() == addr) {
+                    Some(intf) => IfKind::Name(intf.name.clone()),
+                    None => if_kind,
+                },
+                _ => if_kind,
+            };
+
             self.if_selections.push(IfSelection {
                 if_kind,
                 selected: false,
             });
         }
 
-        self.apply_intf_selections(my_ip_interfaces_inner(true, self.include_apple_p2p));
+        self.apply_intf_selections(interfaces);
     }
 
     fn set_multicast_loop_v4(&mut self, on: bool) {
