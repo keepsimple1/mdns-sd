@@ -1755,6 +1755,8 @@ impl Zeroconf {
                         if let Some(sock) = self.ipv4_sock.as_mut() {
                             if let Err(e) = sock.pktinfo.leave_multicast_v4(&GROUP_ADDR_V4, &ipv4) {
                                 debug!("leave multicast group for addr {ipv4}: {e}");
+                            } else {
+                                debug!("leave multicast for {ipv4}");
                             }
                         }
                     }
