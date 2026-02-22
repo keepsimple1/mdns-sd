@@ -1445,7 +1445,7 @@ impl Zeroconf {
 
         for if_kind in kinds {
             self.if_selections.push(IfSelection {
-                if_kind: Self::resolve_addr_to_index(if_kind, &interfaces),
+                if_kind: resolve_addr_to_index(if_kind, &interfaces),
                 selected: true,
             });
         }
@@ -1459,27 +1459,12 @@ impl Zeroconf {
 
         for if_kind in kinds {
             self.if_selections.push(IfSelection {
-                if_kind: Self::resolve_addr_to_index(if_kind, &interfaces),
+                if_kind: resolve_addr_to_index(if_kind, &interfaces),
                 selected: false,
             });
         }
 
         self.apply_intf_selections(interfaces);
-    }
-
-    /// Resolves `IfKind::Addr(ip)` to `IndexV4(if_index)` or `IndexV6(if_index)`.
-    fn resolve_addr_to_index(if_kind: IfKind, interfaces: &[Interface]) -> IfKind {
-        if let IfKind::Addr(addr) = &if_kind {
-            if let Some(intf) = interfaces.iter().find(|intf| &intf.ip() == addr) {
-                let if_index = intf.index.unwrap_or(0);
-                return if addr.is_ipv4() {
-                    IfKind::IndexV4(if_index)
-                } else {
-                    IfKind::IndexV6(if_index)
-                };
-            }
-        }
-        if_kind
     }
 
     fn set_multicast_loop_v4(&mut self, on: bool) {
@@ -4724,6 +4709,21 @@ fn handle_expired_probes(
     }
 
     waiting_services
+}
+
+/// Resolves `IfKind::Addr(ip)` to `IndexV4(if_index)` or `IndexV6(if_index)`.
+fn resolve_addr_to_index(if_kind: IfKind, interfaces: &[Interface]) -> IfKind {
+    if let IfKind::Addr(addr) = &if_kind {
+        if let Some(intf) = interfaces.iter().find(|intf| &intf.ip() == addr) {
+            let if_index = intf.index.unwrap_or(0);
+            return if addr.is_ipv4() {
+                IfKind::IndexV4(if_index)
+            } else {
+                IfKind::IndexV6(if_index)
+            };
+        }
+    }
+    if_kind
 }
 
 #[cfg(test)]
