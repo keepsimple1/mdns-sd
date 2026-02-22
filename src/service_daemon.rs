@@ -2368,6 +2368,22 @@ impl Zeroconf {
             return true; // We still return true to indicate that we read something.
         };
 
+        // Drop packets for an IP version that has been disabled on this interface.
+        // This is needed because some times the socket layer may still receive packets
+        // for an IP version even after we left the multicast group for that IP version.
+        // We want to drop such packets to avoid unnecessary processing.
+        let is_ipv4 = event_key == IPV4_SOCK_EVENT_KEY;
+        if (is_ipv4 && my_intf.next_ifaddr_v4().is_none())
+            || (!is_ipv4 && my_intf.next_ifaddr_v6().is_none())
+        {
+            debug!(
+                "handle_read: dropping {} packet on intf {} (disabled)",
+                if is_ipv4 { "IPv4" } else { "IPv6" },
+                my_intf.name
+            );
+            return true;
+        }
+
         buf.truncate(sz); // reduce potential processing errors
 
         match DnsIncoming::new(buf, my_intf.into()) {
