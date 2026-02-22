@@ -31,7 +31,7 @@
 #[cfg(feature = "logging")]
 use crate::log::{debug, error, trace};
 use crate::{
-    dns_cache::{current_time_millis, DnsCache},
+    dns_cache::{current_time_millis, DnsCache, IpType},
     dns_parser::{
         ip_address_rr_type, DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer,
         DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, InterfaceId, RRType, ScopedIp,
@@ -1778,7 +1778,22 @@ impl Zeroconf {
                 debug!("del_interface_addr: removing interface {}", intf.name);
                 self.my_intfs.remove(&if_index);
                 self.dns_registry_map.remove(&if_index);
-                self.cache.remove_addrs_on_disabled_intf(if_index);
+                self.cache
+                    .remove_addrs_on_disabled_intf(if_index, IpType::BOTH);
+            } else {
+                // Interface still has addresses of the other IP version.
+                // Remove cached address records for the disabled IP version
+                // only if no more addresses of that version remain.
+                let is_v4 = intf.addr.ip().is_ipv4();
+                let version_gone = if is_v4 {
+                    my_intf.next_ifaddr_v4().is_none()
+                } else {
+                    my_intf.next_ifaddr_v6().is_none()
+                };
+                if version_gone {
+                    let ip_type = if is_v4 { IpType::V4 } else { IpType::V6 };
+                    self.cache.remove_addrs_on_disabled_intf(if_index, ip_type);
+                }
             }
         }
 
