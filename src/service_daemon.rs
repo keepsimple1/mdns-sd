@@ -793,8 +793,8 @@ pub enum IfKind {
     Name(String),
 
     /// By an IPv4 or IPv6 address.
-    /// This is used to look up the interface. The intent still refers to the interface,
-    /// not a specific address on the interface.
+    /// This is used to look up the interface. The semantics is to identify an interface of
+    /// IPv4 or IPv6, not a specific address on the interface.
     Addr(IpAddr),
 
     /// 127.0.0.1 (or anything in 127.0.0.0/8), enabled by default.
