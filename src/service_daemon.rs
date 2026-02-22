@@ -804,6 +804,12 @@ pub enum IfKind {
 
     /// ::1/128, enabled by default.
     LoopbackV6,
+
+    /// By interface index, IPv4 only.
+    IndexV4(u32),
+
+    /// By interface index, IPv6 only.
+    IndexV6(u32),
 }
 
 impl IfKind {
@@ -817,6 +823,8 @@ impl IfKind {
             Self::Addr(addr) => addr == &intf.ip(),
             Self::LoopbackV4 => intf.is_loopback() && intf.ip().is_ipv4(),
             Self::LoopbackV6 => intf.is_loopback() && intf.ip().is_ipv6(),
+            Self::IndexV4(idx) => intf.index == Some(*idx) && intf.ip().is_ipv4(),
+            Self::IndexV6(idx) => intf.index == Some(*idx) && intf.ip().is_ipv6(),
         }
     }
 }
@@ -1436,16 +1444,8 @@ impl Zeroconf {
         let interfaces = my_ip_interfaces_inner(true, self.include_apple_p2p);
 
         for if_kind in kinds {
-            let if_kind = match &if_kind {
-                IfKind::Addr(addr) => match interfaces.iter().find(|intf| &intf.ip() == addr) {
-                    Some(intf) => IfKind::Name(intf.name.clone()),
-                    None => if_kind,
-                },
-                _ => if_kind,
-            };
-
             self.if_selections.push(IfSelection {
-                if_kind,
+                if_kind: Self::resolve_addr_to_index(if_kind, &interfaces),
                 selected: true,
             });
         }
@@ -1458,24 +1458,28 @@ impl Zeroconf {
         let interfaces = my_ip_interfaces_inner(true, self.include_apple_p2p);
 
         for if_kind in kinds {
-            // IfKind::Addr(ip) uses the IP to identify an interface (consistent
-            // with join_multicast_v4 semantics). Resolve it to the interface
-            // name so the entire interface is disabled, not just one address.
-            let if_kind = match &if_kind {
-                IfKind::Addr(addr) => match interfaces.iter().find(|intf| &intf.ip() == addr) {
-                    Some(intf) => IfKind::Name(intf.name.clone()),
-                    None => if_kind,
-                },
-                _ => if_kind,
-            };
-
             self.if_selections.push(IfSelection {
-                if_kind,
+                if_kind: Self::resolve_addr_to_index(if_kind, &interfaces),
                 selected: false,
             });
         }
 
         self.apply_intf_selections(interfaces);
+    }
+
+    /// Resolves `IfKind::Addr(ip)` to `IndexV4(if_index)` or `IndexV6(if_index)`.
+    fn resolve_addr_to_index(if_kind: IfKind, interfaces: &[Interface]) -> IfKind {
+        if let IfKind::Addr(addr) = &if_kind {
+            if let Some(intf) = interfaces.iter().find(|intf| &intf.ip() == addr) {
+                let if_index = intf.index.unwrap_or(0);
+                return if addr.is_ipv4() {
+                    IfKind::IndexV4(if_index)
+                } else {
+                    IfKind::IndexV6(if_index)
+                };
+            }
+        }
+        if_kind
     }
 
     fn set_multicast_loop_v4(&mut self, on: bool) {
