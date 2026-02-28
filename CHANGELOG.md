@@ -1,3 +1,12 @@
+# Version 0.18.1 (2026-02-28)
+
+- A bugfix for `disable_interface` with an IPv4 address: clarified that the semantics is to disable IPv4 on the interface identified by the IPv4 address.
+- Added new variants for `IfKind` enum:  `IndexIPV4(u32)` and `IndexIPV6(u32)`.
+
+## All changes
+
+* `7e04122 2026-02-28` fix(test): use all IPv4 interfaces in test_disable_interface_cache (#435) (keepsimple1)
+
 # Version 0.18.0 (2026-02-15)
 
 A few new features, documentation enhancements and breaking changes.
