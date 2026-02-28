@@ -497,6 +497,8 @@ impl ServiceInfo {
             IfKind::Addr(a) => *a == addr,
             IfKind::LoopbackV4 => matches!(addr, IpAddr::V4(ipv4) if ipv4.is_loopback()),
             IfKind::LoopbackV6 => matches!(addr, IpAddr::V6(ipv6) if ipv6.is_loopback()),
+            IfKind::IndexV4(idx) => intf.index == Some(*idx) && addr.is_ipv4(),
+            IfKind::IndexV6(idx) => intf.index == Some(*idx) && addr.is_ipv6(),
             IfKind::All => true,
         });
 

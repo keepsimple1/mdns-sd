@@ -11,8 +11,30 @@ use crate::{
 };
 use std::{
     collections::{HashMap, HashSet},
+    ops::BitOr,
     time::SystemTime,
 };
+
+/// Bitflags-style type for filtering by IP version.
+#[derive(Clone, Copy)]
+pub(crate) struct IpType(u8);
+
+impl IpType {
+    pub const V4: Self = Self(0b01);
+    pub const V6: Self = Self(0b10);
+    pub const BOTH: Self = Self(0b11);
+
+    fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl BitOr for IpType {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
 
 /// Associate a DnsRecord with the interface it was received on.
 pub(crate) struct DnsRecordIntf {
@@ -673,23 +695,34 @@ impl DnsCache {
             .collect()
     }
 
-    pub(crate) fn remove_addrs_on_disabled_intf(&mut self, disabled_if_index: u32) {
+    /// Removes cached address records on a disabled interface, filtered by IP version.
+    /// Use `IpType::V4` for A records only, `IpType::V6` for AAAA only,
+    /// or `IpType::V4 | IpType::V6` for both.
+    pub(crate) fn remove_addrs_on_disabled_intf(
+        &mut self,
+        disabled_if_index: u32,
+        ip_type: IpType,
+    ) {
         for (host, records) in self.addr.iter_mut() {
             records.retain(|record| {
                 let Some(dns_addr) = record.record.any().downcast_ref::<DnsAddress>() else {
                     return false; // invalid address record.
                 };
 
-                // Remove the record if it is on this interface.
+                // Remove the record if it is on this interface and matches the IP version filter.
                 if dns_addr.interface_id.index == disabled_if_index {
-                    debug!(
-                        "removing ADDR on disabled intf: {:?} host {host}",
-                        dns_addr.interface_id.name
-                    );
-                    false
-                } else {
-                    true
+                    let rr_type = dns_addr.record.entry.ty;
+                    let version_matches = (rr_type == RRType::A && ip_type.contains(IpType::V4))
+                        || (rr_type == RRType::AAAA && ip_type.contains(IpType::V6));
+                    if version_matches {
+                        debug!(
+                            "removing ADDR on disabled intf: {:?} host {host}",
+                            dns_addr.interface_id.name
+                        );
+                        return false;
+                    }
                 }
+                true
             });
         }
     }
