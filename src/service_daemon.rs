@@ -4966,7 +4966,7 @@ mod tests {
         let service_ip_addr: ScopedIp = my_ip_interfaces(false)
             .iter()
             .find(|iface| iface.ip().is_ipv4())
-            .map(|iface| iface.ip().into())
+            .map(|iface| iface.into())
             .unwrap();
 
         let mut my_service = ServiceInfo::new(

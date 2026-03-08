@@ -48,19 +48,23 @@ impl From<&Interface> for InterfaceId {
     }
 }
 
-/// An IPv4 address used in `ScopedIp`.
-///
-/// Note: IPv4 addresses don't have scope IDs, but this type is named for consistency
-/// with the rest of the addressing system.
+/// An IPv4 address with an interface identifier.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ScopedIpV4 {
     addr: Ipv4Addr,
+    /// The `interface_id` indicates which interface this address is associated with.
+    interface_id: InterfaceId,
 }
 
 impl ScopedIpV4 {
     /// Returns the IPv4 address.
     pub const fn addr(&self) -> &Ipv4Addr {
         &self.addr
+    }
+
+    /// Returns the interface this address is found on.
+    pub const fn interface_id(&self) -> &InterfaceId {
+        &self.interface_id
     }
 }
 
@@ -113,12 +117,23 @@ impl ScopedIp {
             ScopedIp::V6(v6) => v6.addr.is_loopback(),
         }
     }
+
+    /// Returns the interface identifier for this address.
+    pub const fn interface_id(&self) -> &InterfaceId {
+        match self {
+            ScopedIp::V4(v4) => &v4.interface_id,
+            ScopedIp::V6(v6) => &v6.scope_id,
+        }
+    }
 }
 
 impl From<IpAddr> for ScopedIp {
     fn from(ip: IpAddr) -> Self {
         match ip {
-            IpAddr::V4(v4) => ScopedIp::V4(ScopedIpV4 { addr: v4 }),
+            IpAddr::V4(v4) => ScopedIp::V4(ScopedIpV4 {
+                addr: v4,
+                interface_id: InterfaceId::default(),
+            }),
             IpAddr::V6(v6) => ScopedIp::V6(ScopedIpV6 {
                 addr: v6,
                 scope_id: InterfaceId::default(),
@@ -130,7 +145,10 @@ impl From<IpAddr> for ScopedIp {
 impl From<&Interface> for ScopedIp {
     fn from(interface: &Interface) -> Self {
         match interface.ip() {
-            IpAddr::V4(v4) => ScopedIp::V4(ScopedIpV4 { addr: v4 }),
+            IpAddr::V4(v4) => ScopedIp::V4(ScopedIpV4 {
+                addr: v4,
+                interface_id: InterfaceId::from(interface),
+            }),
             IpAddr::V6(v6) => ScopedIp::V6(ScopedIpV6 {
                 addr: v6,
                 scope_id: InterfaceId::from(interface),
@@ -666,7 +684,10 @@ impl DnsAddress {
 
     pub fn address(&self) -> ScopedIp {
         match self.address {
-            IpAddr::V4(v4) => ScopedIp::V4(ScopedIpV4 { addr: v4 }),
+            IpAddr::V4(v4) => ScopedIp::V4(ScopedIpV4 {
+                addr: v4,
+                interface_id: self.interface_id.clone(),
+            }),
             IpAddr::V6(v6) => ScopedIp::V6(ScopedIpV6 {
                 addr: v6,
                 scope_id: self.interface_id.clone(),
