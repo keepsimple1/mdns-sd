@@ -1724,7 +1724,7 @@ mod tests {
             fullname: "example._http._tcp.local.".to_owned(),
             host: "example.local.".to_owned(),
             port: 1234,
-            addresses: addresses,
+            addresses,
             txt_properties: TxtProperties::new(),
         };
 
