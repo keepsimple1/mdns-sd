@@ -1749,7 +1749,9 @@ mod tests {
                 }
             ],
             "txt_properties": []
-        }"#.replace(" ", "").replace("\n", "");
+        }"#
+        .replace(" ", "")
+        .replace("\n", "");
 
         assert_eq!(json, correct);
 
