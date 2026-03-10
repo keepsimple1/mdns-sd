@@ -611,7 +611,7 @@ impl DnsCache {
         for hostname in hostnames_browsed {
             let refresh_timers: HashSet<u64> = self
                 .addr
-                .get_mut(&hostname)
+                .get_mut(&hostname.to_lowercase())
                 .into_iter()
                 .flatten()
                 .filter_map(|record| record.record.updated_refresh_time(now))
