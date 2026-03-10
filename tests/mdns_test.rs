@@ -1,7 +1,7 @@
 use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
-    DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, IntoTxtProperties, ScopedIp,
-    ServiceDaemon, ServiceEvent, ServiceInfo, TxtProperty, UnregisterStatus,
+    DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, InterfaceId, IntoTxtProperties,
+    ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo, TxtProperty, UnregisterStatus,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -2551,6 +2551,26 @@ fn test_rfc6763_utf8_network_integration() {
     );
 
     d.shutdown().unwrap();
+}
+
+#[test]
+fn test_interface_id_get_addrs() {
+    // Get actual interfaces from the OS to build a valid InterfaceId.
+    let if_addrs = if_addrs::get_if_addrs().expect("failed to get interfaces");
+    let first = if_addrs.first().expect("no interfaces found");
+    let intf_id = InterfaceId::from(first);
+
+    let addrs = intf_id.get_addrs();
+    assert!(
+        !addrs.is_empty(),
+        "interface {} should have at least one address",
+        intf_id.name
+    );
+    assert!(
+        addrs.contains(&first.ip()),
+        "get_addrs() should contain the address we constructed from: {}",
+        first.ip()
+    );
 }
 
 /// A helper function to include a timestamp for println.

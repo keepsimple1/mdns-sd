@@ -33,6 +33,18 @@ pub struct InterfaceId {
     pub index: u32,
 }
 
+impl InterfaceId {
+    /// Returns all IP addresses associated with this interface by querying the OS.
+    pub fn get_addrs(&self) -> Vec<IpAddr> {
+        if_addrs::get_if_addrs()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|iface| iface.index == Some(self.index))
+            .map(|iface| iface.ip())
+            .collect()
+    }
+}
+
 impl fmt::Display for InterfaceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}('{}')", self.index, self.name)
