@@ -1,3 +1,11 @@
+# Verison 0.18.2 (2026-03-10)
+
+- A bugfix: refresh of address records didn't work when hostname is not lowercase.
+
+## All changes
+
+* `ec1e733 2026-03-11` fix: Refresh of A and AAAA records (#441) (hrzlgnm)
+
 # Version 0.18.1 (2026-02-28)
 
 - A bugfix for `disable_interface` with an IPv4 address: clarified that the semantics is to disable IPv4 on the interface identified by the IPv4 address.
