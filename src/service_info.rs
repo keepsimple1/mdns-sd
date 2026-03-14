@@ -1379,12 +1379,9 @@ impl ResolvedService {
 #[cfg(test)]
 mod tests {
     use super::{decode_txt, encode_txt, u8_slice_to_hex, ServiceInfo, TxtProperty};
-    use crate::{IfKind, ResolvedService, ScopedIp, TxtProperties};
+    use crate::{IfKind};
     use if_addrs::{IfAddr, IfOperStatus, Ifv4Addr, Ifv6Addr, Interface};
-    use std::{
-        collections::HashSet,
-        net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    };
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn test_txt_encode_decode() {
@@ -1709,28 +1706,37 @@ mod tests {
         assert!(service_info.is_address_supported(&intf_loopback_v6));
     }
 
-    #[test]
-    fn test_serialize() -> Result<(), Box<dyn std::error::Error>> {
-        let addresses = HashSet::from([
-            ScopedIp::from(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
-            ScopedIp::from(IpAddr::V6(Ipv6Addr::new(
-                0xfe80, 0x2001, 0x0db8, 0x85a3, 0x0000, 0x8a2e, 0x0370, 0x7334,
-            ))),
-        ]);
+    #[cfg(test)]
+    #[cfg(feature = "serde")]
+    mod serde {
+        use super::{Ipv4Addr, Ipv6Addr, ScopedIp};
+        use crate::{ResolvedService, TxtProperties};
 
-        let service = ResolvedService {
-            ty_domain: "_http._tcp.local.".to_owned(),
-            sub_ty_domain: None,
-            fullname: "example._http._tcp.local.".to_owned(),
-            host: "example.local.".to_owned(),
-            port: 1234,
-            addresses,
-            txt_properties: TxtProperties::new(),
-        };
+        use core::net::IpAddr;
+        use std::collections::HashSet;
 
-        let json = serde_json::to_string(&service)?;
+        #[test]
+        fn test_serialize() -> Result<(), Box<dyn std::error::Error>> {
+            let addresses = HashSet::from([
+                ScopedIp::from(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+                ScopedIp::from(IpAddr::V6(Ipv6Addr::new(
+                    0xfe80, 0x2001, 0x0db8, 0x85a3, 0x0000, 0x8a2e, 0x0370, 0x7334,
+                ))),
+            ]);
 
-        let correct = r#"{
+            let service = ResolvedService {
+                ty_domain: "_http._tcp.local.".to_owned(),
+                sub_ty_domain: None,
+                fullname: "example._http._tcp.local.".to_owned(),
+                host: "example.local.".to_owned(),
+                port: 1234,
+                addresses,
+                txt_properties: TxtProperties::new(),
+            };
+
+            let json = serde_json::to_string(&service)?;
+
+            let correct = r#"{
             "ty_domain": "_http._tcp.local.",
             "sub_ty_domain": null,
             "fullname": "example._http._tcp.local.",
@@ -1750,11 +1756,12 @@ mod tests {
             ],
             "txt_properties": []
         }"#
-        .replace(" ", "")
-        .replace("\n", "");
+            .replace(" ", "")
+            .replace("\n", "");
 
-        assert_eq!(json, correct);
+            assert_eq!(json, correct);
 
-        Ok(())
+            Ok(())
+        }
     }
 }
