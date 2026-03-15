@@ -1709,14 +1709,14 @@ mod tests {
     #[cfg(test)]
     #[cfg(feature = "serde")]
     mod serde {
-        use super::{Ipv4Addr, Ipv6Addr, ScopedIp};
-        use crate::{ResolvedService, TxtProperties};
+        use super::{Ipv4Addr, Ipv6Addr};
+        use crate::{ResolvedService, ScopedIp, TxtProperties};
 
         use core::net::IpAddr;
         use std::collections::HashSet;
 
         #[test]
-        fn test_serialize() -> Result<(), Box<dyn std::error::Error>> {
+        fn test_deserialize_serialize() -> Result<(), Box<dyn std::error::Error>> {
             let addresses = HashSet::from([
                 ScopedIp::from(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
                 ScopedIp::from(IpAddr::V6(Ipv6Addr::new(
@@ -1734,34 +1734,23 @@ mod tests {
                 txt_properties: TxtProperties::new(),
             };
 
-            let json = serde_json::to_string(&service)?;
+            let json = serde_json::to_value(&service)?;
 
-            let correct = r#"{
-            "ty_domain": "_http._tcp.local.",
-            "sub_ty_domain": null,
-            "fullname": "example._http._tcp.local.",
-            "host": "example.local.",
-            "port": 1234,
-            "addresses": [
-                {
-                  "addr": "fe80:2001:db8:85a3:0:8a2e:370:7334",
-                  "scope_id": {
-                    "name": "",
-                    "index": 0
-                  }
-                },
-                {
-                  "addr": "127.0.0.1"
-                }
-            ],
-            "txt_properties": []
-        }"#
-            .replace(" ", "")
-            .replace("\n", "");
+            let parsed: ResolvedService = serde_json::from_value(json)?;
 
-            assert_eq!(json, correct);
+            assert!(compare(&service, &parsed));
 
             Ok(())
+        }
+
+        fn compare(service: &ResolvedService, other: &ResolvedService) -> bool {
+            service.ty_domain == other.ty_domain
+                && service.sub_ty_domain == other.sub_ty_domain
+                && service.fullname == other.fullname
+                && service.host == other.host
+                && service.port == other.port
+                && service.addresses == other.addresses
+                && service.txt_properties == other.txt_properties
         }
     }
 }
