@@ -1712,8 +1712,8 @@ mod tests {
         use super::{Ipv4Addr, Ipv6Addr};
         use crate::{ResolvedService, ScopedIp, TxtProperties};
 
-        use std::net::IpAddr;
         use std::collections::HashSet;
+        use std::net::IpAddr;
 
         #[test]
         fn test_deserialize_serialize() -> Result<(), Box<dyn std::error::Error>> {
