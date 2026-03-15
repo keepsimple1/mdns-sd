@@ -37,6 +37,8 @@ jobs:
         run: cargo clippy -- -D warnings
       - name: Run clippy for tests and fail if any warnings
         run: cargo clippy --tests -- -D warnings
+      - name: Run clippy for tests with features enabled
+        run: cargo clippy --tests --all-features -- -D warnings
       - name: Run tests with debugs
         if: matrix.os == 'ubuntu-20.04' || matrix.os == 'macos-14'
         timeout-minutes: 2
@@ -46,3 +48,12 @@ jobs:
           RUST_LOG: debug
         if: matrix.os == 'windows-latest'
         run: cargo test -- --nocapture
+      - name: Run tests with features
+        if: matrix.os == 'ubuntu-20.04' || matrix.os == 'macos-14'
+        timeout-minutes: 2
+        run: RUST_LOG=debug cargo test --all-features -- --nocapture
+      - name: Run tests with features on Windows
+        env:
+          RUST_LOG: debug
+        if: matrix.os == 'windows-latest'
+        run: cargo test --all-features -- --nocapture
