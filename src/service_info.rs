@@ -1712,7 +1712,7 @@ mod tests {
         use super::{Ipv4Addr, Ipv6Addr};
         use crate::{ResolvedService, ScopedIp, TxtProperties};
 
-        use core::net::IpAddr;
+        use std::net::IpAddr;
         use std::collections::HashSet;
 
         #[test]
