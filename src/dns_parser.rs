@@ -12,6 +12,9 @@ use crate::service_info::is_unicast_link_local;
 
 use if_addrs::Interface;
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 use std::{
     any::Any,
     cmp,
@@ -25,6 +28,7 @@ use std::{
 
 /// Represents a network interface identifier defined by the OS.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct InterfaceId {
     /// Interface name, e.g. "en0", "wlan0", etc.
     pub name: String,
@@ -62,6 +66,7 @@ impl From<&Interface> for InterfaceId {
 
 /// An IPv4 address with an interface identifier.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct ScopedIpV4 {
     addr: Ipv4Addr,
     /// The `interface_id` indicates which interface this address is associated with.
@@ -82,6 +87,7 @@ impl ScopedIpV4 {
 
 /// An IPv6 address with scope_id (interface identifier).
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct ScopedIpV6 {
     addr: Ipv6Addr,
     scope_id: InterfaceId,
@@ -101,6 +107,8 @@ impl ScopedIpV6 {
 
 /// An IP address, either IPv4 or IPv6, that supports scope_id for IPv6.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", serde(untagged))]
 #[non_exhaustive]
 pub enum ScopedIp {
     V4(ScopedIpV4),

@@ -17,6 +17,9 @@ use std::{
     str::FromStr,
 };
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 /// Default TTL values in seconds
 const DNS_HOST_TTL: u32 = 120; // 2 minutes for host records (A, SRV etc) per RFC6762
 const DNS_OTHER_TTL: u32 = 4500; // 75 minutes for non-host records (PTR, TXT etc) per RFC6762
@@ -605,6 +608,8 @@ impl AsIpAddrs for Box<dyn AsIpAddrs> {
 /// [RFC 6763](https://www.rfc-editor.org/rfc/rfc6763#section-6.4):
 /// "A given key SHOULD NOT appear more than once in a TXT record."
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct TxtProperties {
     // Use `Vec` instead of `HashMap` to keep the order of insertions.
     properties: Vec<TxtProperty>,
@@ -703,6 +708,7 @@ impl From<&[u8]> for TxtProperties {
 
 /// Represents a property in a TXT record.
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct TxtProperty {
     /// The name of the property. The original cases are kept.
     key: String,
@@ -710,6 +716,7 @@ pub struct TxtProperty {
     /// RFC 6763 says values are bytes, not necessarily UTF-8.
     /// It is also possible that there is no value, in which case
     /// the key is a boolean key.
+    #[cfg_attr(feature = "serde", serde(rename = "value"))]
     val: Option<Vec<u8>>,
 }
 
@@ -1276,6 +1283,7 @@ pub(crate) fn is_unicast_link_local(addr: &Ipv6Addr) -> bool {
 /// Represents a resolved service as a plain data struct.
 /// This is from a client (i.e. querier) point of view.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[non_exhaustive]
 pub struct ResolvedService {
     /// Service type and domain. For example, "_http._tcp.local."
@@ -1696,5 +1704,53 @@ mod tests {
         service_info.set_interfaces(vec![IfKind::LoopbackV6]);
         assert!(!service_info.is_address_supported(&intf_loopback_v4));
         assert!(service_info.is_address_supported(&intf_loopback_v6));
+    }
+
+    #[cfg(test)]
+    #[cfg(feature = "serde")]
+    mod serde {
+        use super::{Ipv4Addr, Ipv6Addr};
+        use crate::{ResolvedService, ScopedIp, TxtProperties};
+
+        use std::collections::HashSet;
+        use std::net::IpAddr;
+
+        #[test]
+        fn test_deserialize_serialize() -> Result<(), Box<dyn std::error::Error>> {
+            let addresses = HashSet::from([
+                ScopedIp::from(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+                ScopedIp::from(IpAddr::V6(Ipv6Addr::new(
+                    0xfe80, 0x2001, 0x0db8, 0x85a3, 0x0000, 0x8a2e, 0x0370, 0x7334,
+                ))),
+            ]);
+
+            let service = ResolvedService {
+                ty_domain: "_http._tcp.local.".to_owned(),
+                sub_ty_domain: None,
+                fullname: "example._http._tcp.local.".to_owned(),
+                host: "example.local.".to_owned(),
+                port: 1234,
+                addresses,
+                txt_properties: TxtProperties::new(),
+            };
+
+            let json = serde_json::to_value(&service)?;
+
+            let parsed: ResolvedService = serde_json::from_value(json)?;
+
+            assert!(compare(&service, &parsed));
+
+            Ok(())
+        }
+
+        fn compare(service: &ResolvedService, other: &ResolvedService) -> bool {
+            service.ty_domain == other.ty_domain
+                && service.sub_ty_domain == other.sub_ty_domain
+                && service.fullname == other.fullname
+                && service.host == other.host
+                && service.port == other.port
+                && service.addresses == other.addresses
+                && service.txt_properties == other.txt_properties
+        }
     }
 }
