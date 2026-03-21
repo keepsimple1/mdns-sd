@@ -2559,7 +2559,22 @@ impl Zeroconf {
                             dns_a.address().to_ip_addr()
                         );
                     } else {
-                        resolved_service.addresses.insert(dns_a.address());
+                        let scoped = dns_a.address();
+                        if let ScopedIp::V4(v4) = &scoped {
+                            // Merge interface_ids if this V4 addr already exists
+                            if let Some(mut existing) = resolved_service.addresses.take(&scoped) {
+                                if let ScopedIp::V4(existing_v4) = &mut existing {
+                                    for id in v4.interface_ids() {
+                                        existing_v4.add_interface_id(id.clone());
+                                    }
+                                }
+                                resolved_service.addresses.insert(existing);
+                            } else {
+                                resolved_service.addresses.insert(scoped);
+                            }
+                        } else {
+                            resolved_service.addresses.insert(scoped);
+                        }
                     }
                 }
             }
