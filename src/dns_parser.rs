@@ -21,6 +21,7 @@ use std::{
     collections::HashMap,
     convert::TryInto,
     fmt,
+    hash::{Hash, Hasher},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     str,
     time::SystemTime,
@@ -64,24 +65,56 @@ impl From<&Interface> for InterfaceId {
     }
 }
 
-/// An IPv4 address with an interface identifier.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+/// An IPv4 address with interface identifiers indicating which interfaces discovered it.
+///
+/// Two `ScopedIpV4` values are considered equal if their addresses are equal,
+/// regardless of which interfaces discovered them.
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct ScopedIpV4 {
     addr: Ipv4Addr,
-    /// The `interface_id` indicates which interface this address is associated with.
-    interface_id: InterfaceId,
+    /// The interfaces this address was discovered on.
+    interface_ids: Vec<InterfaceId>,
+}
+
+impl PartialEq for ScopedIpV4 {
+    fn eq(&self, other: &Self) -> bool {
+        self.addr == other.addr
+    }
+}
+
+impl Eq for ScopedIpV4 {}
+
+impl Hash for ScopedIpV4 {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.addr.hash(state);
+    }
 }
 
 impl ScopedIpV4 {
+    /// Creates a new `ScopedIpV4` with a single interface identifier.
+    pub fn new(addr: Ipv4Addr, interface_id: InterfaceId) -> Self {
+        Self {
+            addr,
+            interface_ids: vec![interface_id],
+        }
+    }
+
     /// Returns the IPv4 address.
     pub const fn addr(&self) -> &Ipv4Addr {
         &self.addr
     }
 
-    /// Returns the interface this address is found on.
-    pub const fn interface_id(&self) -> &InterfaceId {
-        &self.interface_id
+    /// Returns the interfaces this address was discovered on.
+    pub fn interface_ids(&self) -> &[InterfaceId] {
+        &self.interface_ids
+    }
+
+    /// Adds an interface identifier if not already present.
+    pub(crate) fn add_interface_id(&mut self, id: InterfaceId) {
+        if !self.interface_ids.contains(&id) {
+            self.interface_ids.push(id);
+        }
     }
 }
 
@@ -137,14 +170,6 @@ impl ScopedIp {
             ScopedIp::V6(v6) => v6.addr.is_loopback(),
         }
     }
-
-    /// Returns the interface identifier for this address.
-    pub const fn interface_id(&self) -> &InterfaceId {
-        match self {
-            ScopedIp::V4(v4) => &v4.interface_id,
-            ScopedIp::V6(v6) => &v6.scope_id,
-        }
-    }
 }
 
 impl From<IpAddr> for ScopedIp {
@@ -152,7 +177,7 @@ impl From<IpAddr> for ScopedIp {
         match ip {
             IpAddr::V4(v4) => ScopedIp::V4(ScopedIpV4 {
                 addr: v4,
-                interface_id: InterfaceId::default(),
+                interface_ids: vec![],
             }),
             IpAddr::V6(v6) => ScopedIp::V6(ScopedIpV6 {
                 addr: v6,
@@ -167,7 +192,7 @@ impl From<&Interface> for ScopedIp {
         match interface.ip() {
             IpAddr::V4(v4) => ScopedIp::V4(ScopedIpV4 {
                 addr: v4,
-                interface_id: InterfaceId::from(interface),
+                interface_ids: vec![InterfaceId::from(interface)],
             }),
             IpAddr::V6(v6) => ScopedIp::V6(ScopedIpV6 {
                 addr: v6,
@@ -706,7 +731,7 @@ impl DnsAddress {
         match self.address {
             IpAddr::V4(v4) => ScopedIp::V4(ScopedIpV4 {
                 addr: v4,
-                interface_id: self.interface_id.clone(),
+                interface_ids: vec![self.interface_id.clone()],
             }),
             IpAddr::V6(v6) => ScopedIp::V6(ScopedIpV6 {
                 addr: v6,
