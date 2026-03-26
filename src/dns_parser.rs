@@ -21,7 +21,7 @@ use std::{
     collections::HashMap,
     convert::TryInto,
     fmt,
-    hash::{Hash, Hasher},
+    hash::Hash,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     str,
     time::SystemTime,
@@ -66,29 +66,12 @@ impl From<&Interface> for InterfaceId {
 }
 
 /// An IPv4 address with interface identifiers indicating which interfaces discovered it.
-///
-/// Two `ScopedIpV4` values are considered equal if their addresses are equal,
-/// regardless of which interfaces discovered them.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct ScopedIpV4 {
     addr: Ipv4Addr,
     /// The interfaces this address was discovered on.
     interface_ids: Vec<InterfaceId>,
-}
-
-impl PartialEq for ScopedIpV4 {
-    fn eq(&self, other: &Self) -> bool {
-        self.addr == other.addr
-    }
-}
-
-impl Eq for ScopedIpV4 {}
-
-impl Hash for ScopedIpV4 {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.addr.hash(state);
-    }
 }
 
 impl ScopedIpV4 {

@@ -2561,8 +2561,15 @@ impl Zeroconf {
                     } else {
                         let scoped = dns_a.address();
                         if let ScopedIp::V4(v4) = &scoped {
-                            // Merge interface_ids if this V4 addr already exists
-                            if let Some(mut existing) = resolved_service.addresses.take(&scoped) {
+                            // Merge interface_ids if this V4 addr already exists.
+                            // Linear scan by IP since Eq/Hash include interface_ids.
+                            let existing = resolved_service
+                                .addresses
+                                .iter()
+                                .find(|a| a.to_ip_addr() == IpAddr::V4(*v4.addr()))
+                                .cloned();
+                            if let Some(mut existing) = existing {
+                                resolved_service.addresses.remove(&existing);
                                 if let ScopedIp::V4(existing_v4) = &mut existing {
                                     for id in v4.interface_ids() {
                                         existing_v4.add_interface_id(id.clone());
