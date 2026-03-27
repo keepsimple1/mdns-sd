@@ -1706,6 +1706,33 @@ mod tests {
         assert!(service_info.is_address_supported(&intf_loopback_v6));
     }
 
+    #[test]
+    fn test_scoped_ip_set_detects_interface_id_change() {
+        use crate::{InterfaceId, ScopedIp, ScopedIpV4};
+        use std::collections::HashSet;
+
+        let intf1 = InterfaceId {
+            name: "en0".to_string(),
+            index: 1,
+        };
+        let intf2 = InterfaceId {
+            name: "en1".to_string(),
+            index: 2,
+        };
+        let addr = Ipv4Addr::new(192, 168, 1, 100);
+
+        let scoped_v4_one_intf = ScopedIpV4::new(addr, intf1);
+        let mut scoped_v4_two_intfs = scoped_v4_one_intf.clone();
+        scoped_v4_two_intfs.add_interface_id(intf2);
+
+        assert_ne!(scoped_v4_one_intf, scoped_v4_two_intfs);
+
+        let set_old: HashSet<ScopedIp> = HashSet::from([ScopedIp::V4(scoped_v4_one_intf)]);
+        let set_new: HashSet<ScopedIp> = HashSet::from([ScopedIp::V4(scoped_v4_two_intfs)]);
+
+        assert_ne!(set_old, set_new);
+    }
+
     #[cfg(test)]
     #[cfg(feature = "serde")]
     mod serde {
