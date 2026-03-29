@@ -1706,8 +1706,9 @@ impl Zeroconf {
                 name: my_intf.name.to_string(),
                 index: my_intf.index,
             };
-            let removed_instances = self.cache.remove_records_on_intf(intf_id);
-            self.notify_service_removal(removed_instances);
+            let result = self.cache.remove_records_on_intf(intf_id);
+            self.notify_service_removal(result.removed_instances);
+            self.resolve_updated_instances(&result.modified_instances);
         }
 
         // Add newly found interfaces only if in our selections.
@@ -2931,6 +2932,10 @@ impl Zeroconf {
     /// service type PTR can both point to the same service instance.
     /// This loop automatically handles the sub-type PTRs.
     fn resolve_updated_instances(&mut self, updated_instances: &HashSet<String>) {
+        if updated_instances.is_empty() {
+            return;
+        }
+
         let mut resolved: HashSet<String> = HashSet::new();
         let mut unresolved: HashSet<String> = HashSet::new();
         let mut removed_instances = HashMap::new();
