@@ -36,6 +36,14 @@ impl BitOr for IpType {
     }
 }
 
+/// The result of removing records on a specific interface.
+pub(crate) struct IntfRemovalResult {
+    /// Map of ty_domain -> set of fully removed instance names (PTR gone).
+    pub(crate) removed_instances: HashMap<String, HashSet<String>>,
+    /// Set of instance names that lost records but still have PTR entries.
+    pub(crate) modified_instances: HashSet<String>,
+}
+
 /// Associate a DnsRecord with the interface it was received on.
 pub(crate) struct DnsRecordIntf {
     pub(crate) record: DnsRecordBox,
@@ -728,20 +736,22 @@ impl DnsCache {
     }
 
     /// Removes all records that were received on `intf_id`.
-    pub(crate) fn remove_records_on_intf(
-        &mut self,
-        intf_id: InterfaceId,
-    ) -> HashMap<String, HashSet<String>> {
+    /// Returns a tuple of:
+    /// 1. a map of fully removed instances per ty_domain (PTR gone).
+    /// 2. a set of modified instances that lost records but still have PTR entries.
+    pub(crate) fn remove_records_on_intf(&mut self, intf_id: InterfaceId) -> IntfRemovalResult {
         let mut removed_instances = HashMap::new();
+        let mut modified_instances = HashSet::new();
 
         self.ptr.iter_mut().for_each(|(name, records)| {
-            let mut instances: HashSet<String> = HashSet::new();
+            let mut instances_on_intf: HashSet<String> = HashSet::new();
 
+            // Remove PTR records on `intf_id` and collect their instance names.
             records.retain(|r| {
                 if r.src_intf == intf_id {
                     if let Some(dns_ptr) = r.record.any().downcast_ref::<DnsPointer>() {
                         trace!("removing PTR on intf {:?}: {:?}", intf_id, dns_ptr);
-                        instances.insert(dns_ptr.alias().to_string());
+                        instances_on_intf.insert(dns_ptr.alias().to_string());
                     }
                     false
                 } else {
@@ -749,8 +759,8 @@ impl DnsCache {
                 }
             });
 
-            for instance in instances.drain() {
-                // if no more record for this instance in `records`, it means its PTR record is removed.
+            for instance in instances_on_intf {
+                // if no more record for this instance on any intf, we shall fully remove it.
                 if !records.iter().any(|r| {
                     if let Some(dns_ptr) = r.record.any().downcast_ref::<DnsPointer>() {
                         dns_ptr.alias() == instance
@@ -766,29 +776,176 @@ impl DnsCache {
             }
         });
 
+        // Remove any PTR entry that no longer has records.
         self.ptr.retain(|_, records| !records.is_empty());
 
-        self.srv.values_mut().for_each(|records| {
+        // Clean up SRV and TXT records for fully removed instances.
+        let all_removed: HashSet<&String> = removed_instances.values().flatten().collect();
+        self.srv
+            .retain(|instance, _| !all_removed.contains(instance));
+        self.txt
+            .retain(|instance, _| !all_removed.contains(instance));
+
+        // Filter remaining SRV/TXT by intf_id
+        self.srv.iter_mut().for_each(|(instance, records)| {
+            let before = records.len();
             records.retain(|r| r.src_intf != intf_id);
+            if records.len() != before {
+                modified_instances.insert(instance.clone());
+            }
         });
         self.srv.retain(|_, records| !records.is_empty());
 
-        self.txt.values_mut().for_each(|records| {
+        self.txt.iter_mut().for_each(|(instance, records)| {
+            let before = records.len();
             records.retain(|r| r.src_intf != intf_id);
+            if records.len() != before {
+                modified_instances.insert(instance.clone());
+            }
         });
         self.txt.retain(|_, records| !records.is_empty());
 
-        self.addr.values_mut().for_each(|records| {
+        // For ADDR records, track which hostnames lost records.
+        let mut affected_hosts = HashSet::new();
+        self.addr.iter_mut().for_each(|(host, records)| {
+            let before = records.len();
             records.retain(|r| r.src_intf != intf_id);
+            if records.len() != before {
+                // These hosts are in lower case.
+                affected_hosts.insert(host.clone());
+            }
         });
         self.addr.retain(|_, records| !records.is_empty());
+
+        // Map affected hosts back to instances via SRV hostname lookup.
+        if !affected_hosts.is_empty() {
+            for (instance, srv_records) in self.srv.iter() {
+                for srv in srv_records {
+                    if let Some(dns_srv) = srv.record.any().downcast_ref::<DnsSrv>() {
+                        if affected_hosts.contains(&dns_srv.host().to_lowercase())
+                            && !modified_instances.contains(instance)
+                        {
+                            modified_instances.insert(instance.clone());
+                        }
+                    }
+                }
+            }
+        }
 
         self.nsec.values_mut().for_each(|records| {
             records.retain(|r| r.src_intf != intf_id);
         });
         self.nsec.retain(|_, records| !records.is_empty());
 
-        removed_instances
+        IntfRemovalResult {
+            removed_instances,
+            modified_instances,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        dns_parser::{DnsAddress, DnsPointer, DnsRecordExt, DnsSrv, DnsTxt, RRType, CLASS_IN},
+        service_info::MyIntf,
+    };
+    use std::collections::HashSet;
+    use std::net::IpAddr;
+
+    fn make_intf(name: &str, index: u32) -> MyIntf {
+        MyIntf {
+            name: name.to_string(),
+            index,
+            addrs: HashSet::new(),
+        }
+    }
+
+    /// Two interfaces discover the same service instance. All record types are
+    /// stored per name (ty_domain / instance / hostname) as the map key. For
+    /// PTR/SRV/TXT, `matches()` does not include interface_id, so a second
+    /// insert from another interface just resets the TTL — only one Vec entry
+    /// exists per logical record. For ADDR, `matches()` includes interface_id,
+    /// so each interface produces a separate Vec entry under the same hostname.
+    ///
+    /// Setup: PTR, SRV, TXT come from intf_b. ADDR exists on both intf_a and
+    /// intf_b (different IPs). Removing intf_a should leave PTR/SRV/TXT intact
+    /// but remove addr_a, producing a `modified_instances` entry.
+    #[test]
+    fn test_modified_instance_when_intf_removed() {
+        let ty_domain = "_http._tcp.local.";
+        let instance = "my-svc._http._tcp.local.";
+        let host = "myhost.local.";
+        let addr_a: IpAddr = "192.168.1.1".parse().unwrap();
+        let addr_b: IpAddr = "192.168.2.1".parse().unwrap();
+
+        let intf_a = make_intf("en0", 1);
+        let intf_b = make_intf("en1", 2);
+
+        let mut cache = DnsCache::new();
+        let mut timers = Vec::new();
+
+        macro_rules! add {
+            ($intf:expr, $record:expr) => {
+                cache.add_or_update(&$intf, $record.boxed(), &mut timers, true)
+            };
+        }
+
+        // PTR, SRV, TXT from intf_b only — these survive when intf_a is removed.
+        add!(
+            intf_b,
+            DnsPointer::new(ty_domain, RRType::PTR, CLASS_IN, 4500, instance.to_string())
+        );
+        add!(
+            intf_b,
+            DnsSrv::new(instance, CLASS_IN, 4500, 0, 0, 80, host.to_string())
+        );
+        add!(intf_b, DnsTxt::new(instance, CLASS_IN, 4500, vec![]));
+
+        // ADDR: each interface contributes its own address (interface is part of identity).
+        let intf_a_id = InterfaceId {
+            name: "en0".to_string(),
+            index: 1,
+        };
+        let intf_b_id = InterfaceId {
+            name: "en1".to_string(),
+            index: 2,
+        };
+        add!(
+            intf_a,
+            DnsAddress::new(host, RRType::A, CLASS_IN, 4500, addr_a, intf_a_id.clone())
+        );
+        add!(
+            intf_b,
+            DnsAddress::new(host, RRType::A, CLASS_IN, 4500, addr_b, intf_b_id)
+        );
+
+        // Remove interface A.
+        let result = cache.remove_records_on_intf(intf_a_id);
+
+        // PTR still exists via intf_b — instance is not fully removed.
+        assert!(
+            result.removed_instances.is_empty(),
+            "expected no removed instances, got {:?}",
+            result.removed_instances
+        );
+
+        // addr_a was removed, so the instance is in modified_instances.
+        assert!(
+            result.modified_instances.contains(instance),
+            "expected {instance} in modified_instances, got {:?}",
+            result.modified_instances
+        );
+
+        // Only addr_b remains in the cache.
+        let addrs = cache.get_addresses_for_host(host);
+        let all_ips: HashSet<IpAddr> = addrs
+            .values()
+            .flatten()
+            .map(|scoped| scoped.to_ip_addr())
+            .collect();
+        assert_eq!(all_ips, HashSet::from([addr_b]));
     }
 }
 
