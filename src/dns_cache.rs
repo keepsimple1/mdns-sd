@@ -5,6 +5,7 @@
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace};
 use crate::{
+    current_time_millis,
     dns_parser::{DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, InterfaceId, RRType},
     service_info::{split_sub_domain, MyIntf},
     ScopedIp,
@@ -12,7 +13,6 @@ use crate::{
 use std::{
     collections::{HashMap, HashSet},
     ops::BitOr,
-    time::SystemTime,
 };
 
 /// Bitflags-style type for filtering by IP version.
@@ -947,12 +947,4 @@ mod tests {
             .collect();
         assert_eq!(all_ips, HashSet::from([addr_b]));
     }
-}
-
-/// Returns UNIX time in millis
-pub(crate) fn current_time_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .expect("failed to get current UNIX time")
-        .as_millis() as u64
 }

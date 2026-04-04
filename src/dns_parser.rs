@@ -7,6 +7,7 @@
 #[cfg(feature = "logging")]
 use crate::log::trace;
 
+use crate::current_time_millis;
 use crate::error::{e_fmt, Error, Result};
 use crate::service_info::{is_unicast_link_local, DnsRegistry, MyIntf, ServiceInfo};
 
@@ -24,7 +25,6 @@ use std::{
     hash::Hash,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     str,
-    time::SystemTime,
 };
 
 /// Represents a network interface identifier defined by the OS.
@@ -1864,15 +1864,8 @@ impl DnsOutgoing {
         }
 
         // check if we changed our name due to conflicts.
-        let service_fullname = match dns_registry.name_changes.get(service.get_fullname()) {
-            Some(new_name) => new_name,
-            None => service.get_fullname(),
-        };
-
-        let hostname = match dns_registry.name_changes.get(service.get_hostname()) {
-            Some(new_name) => new_name,
-            None => service.get_hostname(),
-        };
+        let service_fullname = dns_registry.resolve_name(service.get_fullname());
+        let hostname = dns_registry.resolve_name(service.get_hostname());
 
         let ptr_added = self.add_answer(
             msg,
@@ -2591,14 +2584,6 @@ impl DnsIncoming {
 
         Ok(name)
     }
-}
-
-/// Returns UNIX time in millis
-fn current_time_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .expect("failed to get current UNIX time")
-        .as_millis() as u64
 }
 
 const fn u16_from_be_slice(bytes: &[u8]) -> u16 {

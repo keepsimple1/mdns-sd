@@ -3,7 +3,7 @@
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace};
 use crate::{
-    dns_parser::{DnsRecordBox, DnsRecordExt, DnsSrv, RRType, ScopedIp},
+    dns_parser::{DnsIncoming, DnsRecordBox, DnsRecordExt, DnsSrv, RRType, ScopedIp},
     Error, IfKind, InterfaceId, Result,
 };
 use if_addrs::{IfAddr, Interface};
@@ -283,6 +283,11 @@ impl ServiceInfo {
     #[inline]
     pub const fn get_subtype(&self) -> &Option<String> {
         &self.sub_domain
+    }
+
+    /// Returns whether the service type or subtype matches the given name.
+    pub(crate) fn matches_type_or_subtype(&self, name: &str) -> bool {
+        name == self.get_type() || self.get_subtype().as_ref().is_some_and(|v| v == name)
     }
 
     /// Returns a reference of the service fullname.
@@ -1047,7 +1052,21 @@ impl Probe {
     }
 
     /// Compares with `incoming` records. Postpone probe and retry if we yield.
-    pub(crate) fn tiebreaking(&mut self, incoming: &[&DnsRecordBox], now: u64, probe_name: &str) {
+    pub(crate) fn tiebreaking(&mut self, msg: &DnsIncoming, probe_name: &str) {
+        let now = crate::current_time_millis();
+
+        // Only do tiebreaking if probe already started.
+        // This check also helps avoid redo tiebreaking if start time
+        // was postponed.
+        if self.start_time >= now {
+            return;
+        }
+
+        let incoming: Vec<_> = msg
+            .authorities()
+            .iter()
+            .filter(|r| r.get_name() == probe_name)
+            .collect();
         /*
         RFC 6762 section 8.2: https://datatracker.ietf.org/doc/html/rfc6762#section-8.2
         ...
@@ -1132,6 +1151,14 @@ impl DnsRegistry {
             active: HashMap::new(),
             new_timers: Vec::new(),
             name_changes: HashMap::new(),
+        }
+    }
+
+    /// Returns the renamed name if a name change exists, otherwise returns the original name.
+    pub(crate) fn resolve_name<'a>(&'a self, name: &'a str) -> &'a str {
+        match self.name_changes.get(name) {
+            Some(new_name) => new_name,
+            None => name,
         }
     }
 

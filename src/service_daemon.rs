@@ -31,7 +31,8 @@
 #[cfg(feature = "logging")]
 use crate::log::{debug, error, trace};
 use crate::{
-    dns_cache::{current_time_millis, DnsCache, IpType},
+    current_time_millis,
+    dns_cache::{DnsCache, IpType},
     dns_parser::{
         ip_address_rr_type, DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer,
         DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, InterfaceId, RRType, ScopedIp,
@@ -2117,15 +2118,9 @@ impl Zeroconf {
                         self.retransmissions.push(ReRun { next_time, command });
                         self.timers.push(Reverse(next_time));
 
-                        let fullname = match dns_registry.name_changes.get(&service_name) {
-                            Some(new_name) => new_name.to_string(),
-                            None => service_name.to_string(),
-                        };
+                        let fullname = dns_registry.resolve_name(&service_name).to_string();
 
-                        let mut hostname = info.get_hostname();
-                        if let Some(new_name) = dns_registry.name_changes.get(hostname) {
-                            hostname = new_name;
-                        }
+                        let hostname = dns_registry.resolve_name(info.get_hostname());
 
                         debug!("wake up: announce service {} on {}", fullname, intf.name);
                         notify_monitors(
@@ -3052,6 +3047,7 @@ impl Zeroconf {
 
         for question in msg.questions().iter() {
             let qtype = question.entry_type();
+            let q_name = question.entry_name();
 
             if qtype == RRType::PTR {
                 for service in self.my_services.values() {
@@ -3059,25 +3055,13 @@ impl Zeroconf {
                         continue;
                     }
 
-                    if question.entry_name() == service.get_type()
-                        || service
-                            .get_subtype()
-                            .as_ref()
-                            .is_some_and(|v| v == question.entry_name())
-                    {
+                    if service.matches_type_or_subtype(q_name) {
                         out.add_answer_with_additionals(&msg, service, intf, dns_registry, is_ipv4);
-                    } else if question.entry_name() == META_QUERY {
-                        let ptr_added = out.add_answer(
-                            &msg,
-                            DnsPointer::new(
-                                question.entry_name(),
-                                RRType::PTR,
-                                CLASS_IN,
-                                service.get_other_ttl(),
-                                service.get_type().to_string(),
-                            ),
-                        );
-                        if !ptr_added {
+                    } else if q_name == META_QUERY {
+                        let ttl = service.get_other_ttl();
+                        let alias = service.get_type().to_string();
+                        let ptr = DnsPointer::new(q_name, RRType::PTR, CLASS_IN, ttl, alias);
+                        if !out.add_answer(&msg, ptr) {
                             trace!("answer was not added for meta-query {:?}", &question);
                         }
                     }
@@ -3085,23 +3069,8 @@ impl Zeroconf {
             } else {
                 // Simultaneous Probe Tiebreaking (RFC 6762 section 8.2)
                 if qtype == RRType::ANY && msg.num_authorities() > 0 {
-                    let probe_name = question.entry_name();
-
-                    if let Some(probe) = dns_registry.probing.get_mut(probe_name) {
-                        let now = current_time_millis();
-
-                        // Only do tiebreaking if probe already started.
-                        // This check also helps avoid redo tiebreaking if start time
-                        // was postponed.
-                        if probe.start_time < now {
-                            let incoming_records: Vec<_> = msg
-                                .authorities()
-                                .iter()
-                                .filter(|r| r.get_name() == probe_name)
-                                .collect();
-
-                            probe.tiebreaking(&incoming_records, now, probe_name);
-                        }
+                    if let Some(probe) = dns_registry.probing.get_mut(q_name) {
+                        probe.tiebreaking(&msg, q_name);
                     }
                 }
 
@@ -3111,11 +3080,7 @@ impl Zeroconf {
                             continue;
                         }
 
-                        let service_hostname =
-                            match dns_registry.name_changes.get(service.get_hostname()) {
-                                Some(new_name) => new_name,
-                                None => service.get_hostname(),
-                            };
+                        let service_hostname = dns_registry.resolve_name(service.get_hostname());
 
                         if service_hostname.to_lowercase() == question.entry_name().to_lowercase() {
                             let intf_addrs = if is_ipv4 {
@@ -3155,17 +3120,11 @@ impl Zeroconf {
                     }
                 }
 
-                let query_name = question.entry_name().to_lowercase();
+                let query_name = q_name.to_lowercase();
                 let service_opt = self
                     .my_services
                     .iter()
-                    .find(|(k, _v)| {
-                        let service_name = match dns_registry.name_changes.get(k.as_str()) {
-                            Some(new_name) => new_name,
-                            None => k,
-                        };
-                        service_name == &query_name
-                    })
+                    .find(|(k, _v)| dns_registry.resolve_name(k.as_str()) == query_name)
                     .map(|(_, v)| v);
 
                 let Some(service) = service_opt else {
@@ -3696,14 +3655,8 @@ impl Zeroconf {
         };
 
         if announced_v4 || announced_v6 {
-            let mut hostname = info.get_hostname();
-            if let Some(new_name) = dns_registry.name_changes.get(hostname) {
-                hostname = new_name;
-            }
-            let service_name = match dns_registry.name_changes.get(&fullname) {
-                Some(new_name) => new_name.to_string(),
-                None => fullname,
-            };
+            let hostname = dns_registry.resolve_name(info.get_hostname());
+            let service_name = dns_registry.resolve_name(&fullname).to_string();
 
             debug!("resend: announce service {service_name} on {}", intf.name);
 
@@ -4364,10 +4317,7 @@ fn prepare_announce(
     }
 
     // check if we changed our name due to conflicts.
-    let service_fullname = match dns_registry.name_changes.get(info.get_fullname()) {
-        Some(new_name) => new_name,
-        None => info.get_fullname(),
-    };
+    let service_fullname = dns_registry.resolve_name(info.get_fullname());
 
     debug!(
         "prepare to announce service {service_fullname} on {:?}",
@@ -4404,10 +4354,7 @@ fn prepare_announce(
     }
 
     // SRV records.
-    let hostname = match dns_registry.name_changes.get(info.get_hostname()) {
-        Some(new_name) => new_name.to_string(),
-        None => info.get_hostname().to_string(),
-    };
+    let hostname = dns_registry.resolve_name(info.get_hostname()).to_string();
 
     let mut srv = DnsSrv::new(
         info.get_fullname(),
