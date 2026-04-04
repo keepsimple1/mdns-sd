@@ -1886,19 +1886,14 @@ impl Zeroconf {
             }
         }
 
-        // As we added a new interface, we want to execute all active "Browse" reruns now.
-        let mut browse_reruns = Vec::new();
-        let mut i = 0;
-        while i < self.retransmissions.len() {
-            if matches!(self.retransmissions[i].command, Command::Browse(..)) {
-                browse_reruns.push(self.retransmissions.remove(i));
-            } else {
-                i += 1;
+        // Send browse queries on the new interface without known answers.
+        // This avoids known-answer suppression (RFC 6762 Section 7.1) that
+        // would cause the responder to suppress its response, preventing
+        // address records from being attributed to the new interface.
+        if let Some(my_intf) = self.my_intfs.get(&if_index) {
+            for ty in self.service_queriers.keys() {
+                self.send_query_on_intf(ty, RRType::PTR, my_intf);
             }
-        }
-
-        for rerun in browse_reruns {
-            self.exec_command(rerun.command, true);
         }
 
         // Notify the monitors.
@@ -2261,6 +2256,34 @@ impl Zeroconf {
     /// Sends a multicast query for `name` with `qtype`.
     fn send_query(&self, name: &str, qtype: RRType) {
         self.send_query_vec(&[(name, qtype)]);
+    }
+
+    /// Sends a query on a specific interface without known answers.
+    ///
+    /// Used when a new interface is added so the responder won't suppress
+    /// its response due to known-answer suppression (RFC 6762 Section 7.1).
+    fn send_query_on_intf(&self, name: &str, qtype: RRType, intf: &MyIntf) {
+        let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
+        out.add_question(name, qtype);
+
+        let mut invalid_intf_addrs = HashSet::new();
+        if let Some(sock) = self.ipv4_sock.as_ref() {
+            if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
+                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+            {
+                invalid_intf_addrs.insert(intf_addr);
+            }
+        }
+        if let Some(sock) = self.ipv6_sock.as_ref() {
+            if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
+                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+            {
+                invalid_intf_addrs.insert(intf_addr);
+            }
+        }
+        if !invalid_intf_addrs.is_empty() {
+            let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
+        }
     }
 
     /// Sends out a list of `questions` (i.e. DNS questions) via multicast.
