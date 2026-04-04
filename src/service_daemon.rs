@@ -3052,6 +3052,7 @@ impl Zeroconf {
 
         for question in msg.questions().iter() {
             let qtype = question.entry_type();
+            let q_name = question.entry_name();
 
             if qtype == RRType::PTR {
                 for service in self.my_services.values() {
@@ -3059,25 +3060,13 @@ impl Zeroconf {
                         continue;
                     }
 
-                    if question.entry_name() == service.get_type()
-                        || service
-                            .get_subtype()
-                            .as_ref()
-                            .is_some_and(|v| v == question.entry_name())
-                    {
+                    if service.matches_type_or_subtype(q_name) {
                         out.add_answer_with_additionals(&msg, service, intf, dns_registry, is_ipv4);
-                    } else if question.entry_name() == META_QUERY {
-                        let ptr_added = out.add_answer(
-                            &msg,
-                            DnsPointer::new(
-                                question.entry_name(),
-                                RRType::PTR,
-                                CLASS_IN,
-                                service.get_other_ttl(),
-                                service.get_type().to_string(),
-                            ),
-                        );
-                        if !ptr_added {
+                    } else if q_name == META_QUERY {
+                        let ttl = service.get_other_ttl();
+                        let alias = service.get_type().to_string();
+                        let ptr = DnsPointer::new(q_name, RRType::PTR, CLASS_IN, ttl, alias);
+                        if !out.add_answer(&msg, ptr) {
                             trace!("answer was not added for meta-query {:?}", &question);
                         }
                     }
@@ -3085,22 +3074,14 @@ impl Zeroconf {
             } else {
                 // Simultaneous Probe Tiebreaking (RFC 6762 section 8.2)
                 if qtype == RRType::ANY && msg.num_authorities() > 0 {
-                    let probe_name = question.entry_name();
-
-                    if let Some(probe) = dns_registry.probing.get_mut(probe_name) {
+                    if let Some(probe) = dns_registry.probing.get_mut(q_name) {
                         let now = current_time_millis();
 
                         // Only do tiebreaking if probe already started.
                         // This check also helps avoid redo tiebreaking if start time
                         // was postponed.
                         if probe.start_time < now {
-                            let incoming_records: Vec<_> = msg
-                                .authorities()
-                                .iter()
-                                .filter(|r| r.get_name() == probe_name)
-                                .collect();
-
-                            probe.tiebreaking(&incoming_records, now, probe_name);
+                            probe.tiebreaking(&msg, now, q_name);
                         }
                     }
                 }
