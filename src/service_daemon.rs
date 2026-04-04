@@ -3065,14 +3065,7 @@ impl Zeroconf {
                             .as_ref()
                             .is_some_and(|v| v == question.entry_name())
                     {
-                        add_answer_with_additionals(
-                            &mut out,
-                            &msg,
-                            service,
-                            intf,
-                            dns_registry,
-                            is_ipv4,
-                        );
+                        out.add_answer_with_additionals(&msg, service, intf, dns_registry, is_ipv4);
                     } else if question.entry_name() == META_QUERY {
                         let ptr_added = out.add_answer(
                             &msg,
@@ -4572,93 +4565,6 @@ fn hostname_change(original: &str) -> String {
 
     *first_part = &new_name;
     parts.join(".")
-}
-
-fn add_answer_with_additionals(
-    out: &mut DnsOutgoing,
-    msg: &DnsIncoming,
-    service: &ServiceInfo,
-    intf: &MyIntf,
-    dns_registry: &DnsRegistry,
-    is_ipv4: bool,
-) {
-    let intf_addrs = if is_ipv4 {
-        service.get_addrs_on_my_intf_v4(intf)
-    } else {
-        service.get_addrs_on_my_intf_v6(intf)
-    };
-    if intf_addrs.is_empty() {
-        trace!("No addrs on LAN of intf {:?}", intf);
-        return;
-    }
-
-    // check if we changed our name due to conflicts.
-    let service_fullname = match dns_registry.name_changes.get(service.get_fullname()) {
-        Some(new_name) => new_name,
-        None => service.get_fullname(),
-    };
-
-    let hostname = match dns_registry.name_changes.get(service.get_hostname()) {
-        Some(new_name) => new_name,
-        None => service.get_hostname(),
-    };
-
-    let ptr_added = out.add_answer(
-        msg,
-        DnsPointer::new(
-            service.get_type(),
-            RRType::PTR,
-            CLASS_IN,
-            service.get_other_ttl(),
-            service_fullname.to_string(),
-        ),
-    );
-
-    if !ptr_added {
-        trace!("answer was not added for msg {:?}", msg);
-        return;
-    }
-
-    if let Some(sub) = service.get_subtype() {
-        trace!("Adding subdomain {}", sub);
-        out.add_additional_answer(DnsPointer::new(
-            sub,
-            RRType::PTR,
-            CLASS_IN,
-            service.get_other_ttl(),
-            service_fullname.to_string(),
-        ));
-    }
-
-    // Add recommended additional answers according to
-    // https://tools.ietf.org/html/rfc6763#section-12.1.
-    out.add_additional_answer(DnsSrv::new(
-        service_fullname,
-        CLASS_IN | CLASS_CACHE_FLUSH,
-        service.get_host_ttl(),
-        service.get_priority(),
-        service.get_weight(),
-        service.get_port(),
-        hostname.to_string(),
-    ));
-
-    out.add_additional_answer(DnsTxt::new(
-        service_fullname,
-        CLASS_IN | CLASS_CACHE_FLUSH,
-        service.get_other_ttl(),
-        service.generate_txt(),
-    ));
-
-    for address in intf_addrs {
-        out.add_additional_answer(DnsAddress::new(
-            hostname,
-            ip_address_rr_type(&address),
-            CLASS_IN | CLASS_CACHE_FLUSH,
-            service.get_host_ttl(),
-            address,
-            intf.into(),
-        ));
-    }
 }
 
 /// Check probes in a registry and returns: a probing packet to send out, and a list of probe names
