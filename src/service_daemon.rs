@@ -31,7 +31,8 @@
 #[cfg(feature = "logging")]
 use crate::log::{debug, error, trace};
 use crate::{
-    dns_cache::{current_time_millis, DnsCache, IpType},
+    current_time_millis,
+    dns_cache::{DnsCache, IpType},
     dns_parser::{
         ip_address_rr_type, DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer,
         DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, InterfaceId, RRType, ScopedIp,
@@ -3075,14 +3076,7 @@ impl Zeroconf {
                 // Simultaneous Probe Tiebreaking (RFC 6762 section 8.2)
                 if qtype == RRType::ANY && msg.num_authorities() > 0 {
                     if let Some(probe) = dns_registry.probing.get_mut(q_name) {
-                        let now = current_time_millis();
-
-                        // Only do tiebreaking if probe already started.
-                        // This check also helps avoid redo tiebreaking if start time
-                        // was postponed.
-                        if probe.start_time < now {
-                            probe.tiebreaking(&msg, now, q_name);
-                        }
+                        probe.tiebreaking(&msg, q_name);
                     }
                 }
 

@@ -189,3 +189,13 @@ pub use service_info::{
 
 /// A handler to receive messages from [ServiceDaemon]. Re-export from `flume` crate.
 pub use flume::Receiver;
+
+use std::time::SystemTime;
+
+/// Returns the current time in milliseconds since the UNIX epoch.
+pub(crate) fn current_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("failed to get current UNIX time")
+        .as_millis() as u64
+}

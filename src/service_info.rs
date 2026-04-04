@@ -1052,7 +1052,16 @@ impl Probe {
     }
 
     /// Compares with `incoming` records. Postpone probe and retry if we yield.
-    pub(crate) fn tiebreaking(&mut self, msg: &DnsIncoming, now: u64, probe_name: &str) {
+    pub(crate) fn tiebreaking(&mut self, msg: &DnsIncoming, probe_name: &str) {
+        let now = crate::current_time_millis();
+
+        // Only do tiebreaking if probe already started.
+        // This check also helps avoid redo tiebreaking if start time
+        // was postponed.
+        if self.start_time >= now {
+            return;
+        }
+
         let incoming: Vec<_> = msg
             .authorities()
             .iter()
