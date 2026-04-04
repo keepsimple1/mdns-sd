@@ -1,3 +1,32 @@
+# Version 0.19.0 (2026-04-04)
+
+## Breaking changes
+
+- `ScopedIpV4` now carries `interface_ids` tracking which network interfaces discovered the address. The derived `Eq`/`Hash` now includes `interface_ids`, so two `ScopedIpV4` values with the same IP but different interface lists are no longer equal. (commits `43bd8f3`, `0661bf1`, `247447b`)
+
+## New features
+
+- New optional `serde` feature: adds `Serialize`/`Deserialize` on `InterfaceId`, `ScopedIpV4`, `ScopedIpV6`, `ScopedIp`, `TxtProperties`, `TxtProperty`, and `ResolvedService`. (commit `c2c2f75`)
+- New public APIs: `ScopedIpV4::new()`, `ScopedIpV4::interface_ids()`, `InterfaceId::get_addrs()`.
+
+## Bug fixes
+
+- Avoid known-answer suppression when querying on a new interface, so address records are discovered promptly. (commit `468c5ee`)
+- Track modified instances when removing records from an interface, so `ServiceResolved` events reflect updated addresses. (commit `7daa1d4`)
+
+## All changes
+
+* `3903f09 2026-04-04` refactoring: simplify handle_query (#452) (keepsimple1)
+* `b6ddc18 2026-04-04` refactoring: move add_answer_with_additionals into struct DnsOutgoing (#451) (keepsimple1)
+* `468c5ee 2026-04-03` fix: avoid known-answer suppression when querying on a new interface (#450) (keepsimple1)
+* `7daa1d4 2026-04-01` fix: track modified_instances when removing records from an interface (#448) (keepsimple1)
+* `247447b 2026-03-26` fix: ScopedIp considered Eq when interface_ids change (#446) (keepsimple1)
+* `0661bf1 2026-03-24` refactoring: ScopedIpV4 to use multiple InterfaceIds (#444) (keepsimple1)
+* `c2c2f75 2026-03-15` Serde Deserialize+Serialize implementation (#440) (Rascal)
+* `43bd8f3 2026-03-13` add interface_id in ScopedIpV4 (#439) (keepsimple1)
+
+Thanks and welcome our new contributor @Rascal !
+
 # Verison 0.18.2 (2026-03-10)
 
 - A bugfix: refresh of address records didn't work when hostname is not lowercase.
