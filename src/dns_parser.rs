@@ -1845,7 +1845,7 @@ impl DnsOutgoing {
     /// on `intf` or if the PTR answer is suppressed by known-answer entries in `msg`.
     ///
     /// [RFC 6763 Section 12.1]: https://tools.ietf.org/html/rfc6763#section-12.1
-    pub fn add_answer_with_additionals(
+    pub(crate) fn add_answer_with_additionals(
         &mut self,
         msg: &DnsIncoming,
         service: &ServiceInfo,
