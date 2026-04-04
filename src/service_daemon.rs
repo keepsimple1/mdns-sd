@@ -3120,7 +3120,7 @@ impl Zeroconf {
                     }
                 }
 
-                let query_name = question.entry_name().to_lowercase();
+                let query_name = q_name.to_lowercase();
                 let service_opt = self
                     .my_services
                     .iter()
