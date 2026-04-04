@@ -1864,15 +1864,8 @@ impl DnsOutgoing {
         }
 
         // check if we changed our name due to conflicts.
-        let service_fullname = match dns_registry.name_changes.get(service.get_fullname()) {
-            Some(new_name) => new_name,
-            None => service.get_fullname(),
-        };
-
-        let hostname = match dns_registry.name_changes.get(service.get_hostname()) {
-            Some(new_name) => new_name,
-            None => service.get_hostname(),
-        };
+        let service_fullname = dns_registry.resolve_name(service.get_fullname());
+        let hostname = dns_registry.resolve_name(service.get_hostname());
 
         let ptr_added = self.add_answer(
             msg,

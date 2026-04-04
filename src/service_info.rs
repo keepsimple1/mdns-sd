@@ -1154,6 +1154,14 @@ impl DnsRegistry {
         }
     }
 
+    /// Returns the renamed name if a name change exists, otherwise returns the original name.
+    pub(crate) fn resolve_name<'a>(&'a self, name: &'a str) -> &'a str {
+        match self.name_changes.get(name) {
+            Some(new_name) => new_name,
+            None => name,
+        }
+    }
+
     pub(crate) fn is_probing_done<T>(
         &mut self,
         answer: &T,

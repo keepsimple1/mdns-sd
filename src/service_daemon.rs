@@ -2118,15 +2118,9 @@ impl Zeroconf {
                         self.retransmissions.push(ReRun { next_time, command });
                         self.timers.push(Reverse(next_time));
 
-                        let fullname = match dns_registry.name_changes.get(&service_name) {
-                            Some(new_name) => new_name.to_string(),
-                            None => service_name.to_string(),
-                        };
+                        let fullname = dns_registry.resolve_name(&service_name).to_string();
 
-                        let mut hostname = info.get_hostname();
-                        if let Some(new_name) = dns_registry.name_changes.get(hostname) {
-                            hostname = new_name;
-                        }
+                        let hostname = dns_registry.resolve_name(info.get_hostname());
 
                         debug!("wake up: announce service {} on {}", fullname, intf.name);
                         notify_monitors(
@@ -3086,11 +3080,7 @@ impl Zeroconf {
                             continue;
                         }
 
-                        let service_hostname =
-                            match dns_registry.name_changes.get(service.get_hostname()) {
-                                Some(new_name) => new_name,
-                                None => service.get_hostname(),
-                            };
+                        let service_hostname = dns_registry.resolve_name(service.get_hostname());
 
                         if service_hostname.to_lowercase() == question.entry_name().to_lowercase() {
                             let intf_addrs = if is_ipv4 {
@@ -3134,13 +3124,7 @@ impl Zeroconf {
                 let service_opt = self
                     .my_services
                     .iter()
-                    .find(|(k, _v)| {
-                        let service_name = match dns_registry.name_changes.get(k.as_str()) {
-                            Some(new_name) => new_name,
-                            None => k,
-                        };
-                        service_name == &query_name
-                    })
+                    .find(|(k, _v)| dns_registry.resolve_name(k.as_str()) == query_name)
                     .map(|(_, v)| v);
 
                 let Some(service) = service_opt else {
@@ -3671,14 +3655,8 @@ impl Zeroconf {
         };
 
         if announced_v4 || announced_v6 {
-            let mut hostname = info.get_hostname();
-            if let Some(new_name) = dns_registry.name_changes.get(hostname) {
-                hostname = new_name;
-            }
-            let service_name = match dns_registry.name_changes.get(&fullname) {
-                Some(new_name) => new_name.to_string(),
-                None => fullname,
-            };
+            let hostname = dns_registry.resolve_name(info.get_hostname());
+            let service_name = dns_registry.resolve_name(&fullname).to_string();
 
             debug!("resend: announce service {service_name} on {}", intf.name);
 
@@ -4339,10 +4317,7 @@ fn prepare_announce(
     }
 
     // check if we changed our name due to conflicts.
-    let service_fullname = match dns_registry.name_changes.get(info.get_fullname()) {
-        Some(new_name) => new_name,
-        None => info.get_fullname(),
-    };
+    let service_fullname = dns_registry.resolve_name(info.get_fullname());
 
     debug!(
         "prepare to announce service {service_fullname} on {:?}",
@@ -4379,10 +4354,7 @@ fn prepare_announce(
     }
 
     // SRV records.
-    let hostname = match dns_registry.name_changes.get(info.get_hostname()) {
-        Some(new_name) => new_name.to_string(),
-        None => info.get_hostname().to_string(),
-    };
+    let hostname = dns_registry.resolve_name(info.get_hostname()).to_string();
 
     let mut srv = DnsSrv::new(
         info.get_fullname(),
