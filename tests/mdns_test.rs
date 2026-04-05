@@ -1515,7 +1515,6 @@ fn test_cache_flush_record() {
     .unwrap();
     let result = server.register(my_service);
     assert!(result.is_ok());
-    assert!(false);
 
     timed_println(format!(
         "Re-registered with updated IPv4 addr: {}",
