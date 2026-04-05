@@ -1515,6 +1515,7 @@ fn test_cache_flush_record() {
     .unwrap();
     let result = server.register(my_service);
     assert!(result.is_ok());
+    assert!(false);
 
     timed_println(format!(
         "Re-registered with updated IPv4 addr: {}",
@@ -2575,7 +2576,6 @@ fn test_interface_id_get_addrs() {
 
 /// A helper function to include a timestamp for println.
 fn timed_println(msg: String) {
-    let now = SystemTime::now();
-    let formatted_time = humantime::format_rfc3339(now);
+    let formatted_time = jiff::Timestamp::now().to_string();
     println!("[{}] {}", formatted_time, msg);
 }
