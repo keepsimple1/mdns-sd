@@ -4894,7 +4894,7 @@ mod tests {
         let resolved = loop {
             match event_receiver.recv() {
                 Ok(HostnameResolutionEvent::AddressesFound(found_hostname, addresses)) => {
-                    assert!(found_hostname == hostname);
+                    assert_eq!(found_hostname, hostname);
                     assert!(addresses.contains(&service_ip_addr));
                     println!("address found: {:?}", &addresses);
                     break true;
@@ -4915,7 +4915,7 @@ mod tests {
         let removed = loop {
             match event_receiver.recv_timeout(timeout) {
                 Ok(HostnameResolutionEvent::AddressesRemoved(removed_host, addresses)) => {
-                    assert!(removed_host == hostname);
+                    assert_eq!(removed_host, hostname);
                     assert!(addresses.contains(&service_ip_addr));
 
                     println!(
