@@ -1179,9 +1179,6 @@ fn is_apple_p2p_by_name(name: &str) -> bool {
 }
 
 fn my_ip_interfaces() -> Vec<Interface> {
-    // Use a random port for binding test.
-    let test_port = fastrand::u16(8000u16..9000u16);
-
     if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
@@ -1193,7 +1190,7 @@ fn my_ip_interfaces() -> Vec<Interface> {
                     IfAddr::V4(ifv4) =>
                     // Use a 'bind' to check if this is a valid IPv4 addr.
                     {
-                        match std::net::UdpSocket::bind((ifv4.ip, test_port)) {
+                        match std::net::UdpSocket::bind((ifv4.ip, 0)) {
                             Ok(_) => Some(i),
                             Err(e) => {
                                 println!("failed to bind {}: {e}, skipped.", ifv4.ip);
@@ -1204,7 +1201,7 @@ fn my_ip_interfaces() -> Vec<Interface> {
                     IfAddr::V6(ifv6) =>
                     // Use a 'bind' to check if this is a valid IPv6 addr.
                     {
-                        let mut sock = std::net::SocketAddrV6::new(ifv6.ip, test_port, 0, 0);
+                        let mut sock = std::net::SocketAddrV6::new(ifv6.ip, 0, 0, 0);
                         if i.is_link_local() {
                             // Only link local IPv6 address requires to specify scope_id
                             sock.set_scope_id(i.index.unwrap_or(0));
