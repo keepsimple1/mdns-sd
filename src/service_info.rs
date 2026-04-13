@@ -11,7 +11,6 @@ use std::net::Ipv6Addr;
 use std::{
     cmp,
     collections::{HashMap, HashSet},
-    convert::TryInto,
     fmt,
     net::{IpAddr, Ipv4Addr},
     str::FromStr,
@@ -198,6 +197,16 @@ impl ServiceInfo {
                 return Err(Error::Msg(format!(
                     "TXT property key {} contains '='",
                     prop.key()
+                )));
+            }
+
+            // RFC6763 section 6.1: each TXT record string is prefixed by a
+            // single length byte, so it cannot exceed 255 bytes.
+            let prop_len = key.len() + prop.val().map_or(0, |v| v.len() + 1);
+            if prop_len > u8::MAX as usize {
+                return Err(Error::Msg(format!(
+                    "TXT property '{}' has length {} bytes, exceeding the 255-byte limit",
+                    key, prop_len
                 )));
             }
         }
@@ -901,12 +910,13 @@ fn encode_txt<'a>(properties: impl Iterator<Item = &'a TxtProperty>) -> Vec<u8> 
             s.extend(v);
         }
 
-        // Property that exceed the length are truncated
-        let sz: u8 = s.len().try_into().unwrap_or_else(|_| {
-            debug!("Property {} is too long, truncating to 255 bytes", prop.key);
-            s.resize(u8::MAX as usize, 0);
-            u8::MAX
-        });
+        debug_assert!(
+            s.len() <= u8::MAX as usize,
+            "TXT property '{}' exceeds 255 bytes; should have been validated in ServiceInfo::new()",
+            prop.key
+        );
+        s.truncate(u8::MAX as usize);
+        let sz: u8 = s.len() as u8;
 
         // TXT uses (Length,Value) format for each property,
         // i.e. the first byte is the length.
@@ -1470,20 +1480,47 @@ mod tests {
         let decoded = decode_txt(&encoded);
         assert_eq!(properties, decoded);
 
-        // test very long property.
+        // test property at the 255-byte limit.
         let properties = [TxtProperty::from(
-            String::from_utf8(vec![0x30; 1024]).unwrap().as_str(), // A long string of 0 char
+            String::from_utf8(vec![0x30; 255]).unwrap().as_str(),
         )];
         let property_count = properties.len();
         let encoded = encode_txt(properties.iter());
+        // `property_count` is added because each property has a length byte.
         assert_eq!(encoded.len(), 255 + property_count);
         let decoded = decode_txt(&encoded);
-        assert_eq!(
-            vec![TxtProperty::from(
-                String::from_utf8(vec![0x30; 255]).unwrap().as_str()
-            )],
-            decoded
+        assert_eq!(properties.to_vec(), decoded);
+    }
+
+    #[test]
+    fn test_txt_property_exceeds_255_bytes() {
+        let long_key = String::from_utf8(vec![0x30; 256]).unwrap();
+        let result = ServiceInfo::new(
+            "_test._tcp.local.",
+            "test",
+            "host",
+            "",
+            1234,
+            &[(long_key.as_str(), "")][..],
         );
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeding the 255-byte limit"));
+
+        // A property exactly at 255 bytes should succeed.
+        // key (250 bytes) + "=" (1 byte) + value (4 bytes) = 255 bytes.
+        let key_at_limit = String::from_utf8(vec![0x30; 250]).unwrap();
+        let result = ServiceInfo::new(
+            "_test._tcp.local.",
+            "test",
+            "host",
+            "",
+            1234,
+            &[(key_at_limit.as_str(), "abcd")][..],
+        );
+        assert!(result.is_ok());
     }
 
     #[test]
