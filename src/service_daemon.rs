@@ -4660,7 +4660,12 @@ mod tests {
         },
         service_daemon::{add_answer_of_service, check_hostname},
     };
-    use std::time::{Duration, SystemTime};
+    use if_addrs::{IfAddr, Ifv4Addr};
+    use std::{
+        collections::HashSet,
+        net::{IpAddr, Ipv4Addr},
+        time::{Duration, SystemTime},
+    };
     use test_log::test;
 
     #[test]
@@ -4668,10 +4673,6 @@ mod tests {
         // When an interface has multiple IPs on unrelated subnets,
         // handle_query should pick the IfAddr whose subnet contains the querier,
         // and fall back to None if none match.
-        use if_addrs::{IfAddr, Ifv4Addr};
-        use std::collections::HashSet;
-        use std::net::{IpAddr, Ipv4Addr};
-
         let ifaddr_a = IfAddr::V4(Ifv4Addr {
             ip: Ipv4Addr::new(192, 168, 1, 148),
             netmask: Ipv4Addr::new(255, 255, 255, 0),
