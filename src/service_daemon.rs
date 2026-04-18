@@ -39,7 +39,7 @@ use crate::{
         CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
     },
     error::{e_fmt, Error, Result},
-    service_info::{DnsRegistry, MyIntf, Probe, ServiceInfo, ServiceStatus},
+    service_info::{valid_ip_on_intf, DnsRegistry, MyIntf, Probe, ServiceInfo, ServiceStatus},
     Receiver, ResolvedService, TxtProperties,
 };
 use flume::{bounded, Sender, TrySendError};
@@ -2050,14 +2050,14 @@ impl Zeroconf {
                 trace!("sending out probing of questions: {:?}", out.questions());
                 if let Some(sock) = self.ipv4_sock.as_mut() {
                     if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                        send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+                        send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None)
                     {
                         invalid_intf_addrs.insert(intf_addr);
                     }
                 }
                 if let Some(sock) = self.ipv6_sock.as_mut() {
                     if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                        send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+                        send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None)
                     {
                         invalid_intf_addrs.insert(intf_addr);
                     }
@@ -2220,7 +2220,7 @@ impl Zeroconf {
         }
 
         // Only (at most) one packet is expected to be sent out.
-        let sent_vec = match send_dns_outgoing(&out, intf, sock, self.port) {
+        let sent_vec = match send_dns_outgoing(&out, intf, sock, self.port, None) {
             Ok(sent_vec) => sent_vec,
             Err(InternalError::IntfAddrInvalid(intf_addr)) => {
                 let invalid_intf_addrs = HashSet::from([intf_addr]);
@@ -2264,14 +2264,14 @@ impl Zeroconf {
         let mut invalid_intf_addrs = HashSet::new();
         if let Some(sock) = self.ipv4_sock.as_ref() {
             if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None)
             {
                 invalid_intf_addrs.insert(intf_addr);
             }
         }
         if let Some(sock) = self.ipv6_sock.as_ref() {
             if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None)
             {
                 invalid_intf_addrs.insert(intf_addr);
             }
@@ -2308,14 +2308,14 @@ impl Zeroconf {
         for (_, intf) in self.my_intfs.iter() {
             if let Some(sock) = self.ipv4_sock.as_ref() {
                 if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None)
                 {
                     invalid_intf_addrs.insert(intf_addr);
                 }
             }
             if let Some(sock) = self.ipv6_sock.as_ref() {
                 if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None)
                 {
                     invalid_intf_addrs.insert(intf_addr);
                 }
@@ -2393,7 +2393,8 @@ impl Zeroconf {
         match DnsIncoming::new(buf, my_intf.into()) {
             Ok(msg) => {
                 if msg.is_query() {
-                    self.handle_query(msg, pkt_if_index, event_key == IPV4_SOCK_EVENT_KEY);
+                    let querier_ip = pktinfo.addr_src.ip();
+                    self.handle_query(msg, pkt_if_index, querier_ip);
                 } else if msg.is_response() {
                     self.handle_response(msg, pkt_if_index);
                 } else {
@@ -3019,7 +3020,8 @@ impl Zeroconf {
     }
 
     /// Handle incoming query packets, figure out whether and what to respond.
-    fn handle_query(&mut self, msg: DnsIncoming, if_index: u32, is_ipv4: bool) {
+    fn handle_query(&mut self, msg: DnsIncoming, if_index: u32, querier_ip: IpAddr) {
+        let is_ipv4 = querier_ip.is_ipv4();
         let sock_opt = if is_ipv4 {
             &self.ipv4_sock
         } else {
@@ -3162,8 +3164,16 @@ impl Zeroconf {
         if out.answers_count() > 0 {
             debug!("sending response on intf {}", &intf.name);
             out.set_id(msg.id());
+
+            // Pick a source IfAddr on `intf` whose subnet contains the querier's IP.
+            // It's OK if it's None, `send_dns_outgoing` will then pick one address.
+            let matched_source = intf
+                .addrs
+                .iter()
+                .find(|if_addr| valid_ip_on_intf(&querier_ip, if_addr));
+
             if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port)
+                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, matched_source)
             {
                 let invalid_intf_addr = HashSet::from([intf_addr]);
                 let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addr));
@@ -4140,18 +4150,24 @@ fn send_dns_outgoing(
     my_intf: &MyIntf,
     sock: &PktInfoUdpSocket,
     port: u16,
+    source: Option<&IfAddr>,
 ) -> MyResult<Vec<Vec<u8>>> {
     let if_name = &my_intf.name;
 
-    let if_addr = if sock.domain() == Domain::IPV4 {
-        match my_intf.next_ifaddr_v4() {
-            Some(addr) => addr,
-            None => return Ok(vec![]),
-        }
-    } else {
-        match my_intf.next_ifaddr_v6() {
-            Some(addr) => addr,
-            None => return Ok(vec![]),
+    let if_addr = match source {
+        Some(addr) => addr,
+        None => {
+            if sock.domain() == Domain::IPV4 {
+                match my_intf.next_ifaddr_v4() {
+                    Some(addr) => addr,
+                    None => return Ok(vec![]),
+                }
+            } else {
+                match my_intf.next_ifaddr_v6() {
+                    Some(addr) => addr,
+                    None => return Ok(vec![]),
+                }
+            }
         }
     };
 
@@ -4443,7 +4459,7 @@ fn announce_service_on_intf(
 ) -> MyResult<bool> {
     let is_ipv4 = sock.domain() == Domain::IPV4;
     if let Some(out) = prepare_announce(info, intf, dns_registry, is_ipv4) {
-        let _ = send_dns_outgoing(&out, intf, sock, port)?;
+        let _ = send_dns_outgoing(&out, intf, sock, port, None)?;
         return Ok(true);
     }
 
@@ -4634,7 +4650,8 @@ mod tests {
     use super::{
         _new_socket_bind, check_domain_suffix, check_service_name_length, hostname_change,
         my_ip_interfaces, name_change, send_dns_outgoing_impl, valid_instance_name,
-        HostnameResolutionEvent, ServiceDaemon, ServiceEvent, ServiceInfo, MDNS_PORT,
+        valid_ip_on_intf, HostnameResolutionEvent, MyIntf, ServiceDaemon, ServiceEvent,
+        ServiceInfo, MDNS_PORT,
     };
     use crate::{
         dns_parser::{
@@ -4643,8 +4660,56 @@ mod tests {
         },
         service_daemon::{add_answer_of_service, check_hostname},
     };
-    use std::time::{Duration, SystemTime};
+    use if_addrs::{IfAddr, Ifv4Addr};
+    use std::{
+        collections::HashSet,
+        net::{IpAddr, Ipv4Addr},
+        time::{Duration, SystemTime},
+    };
     use test_log::test;
+
+    #[test]
+    fn test_response_source_ifaddr_match() {
+        // When an interface has multiple IPs on unrelated subnets,
+        // handle_query should pick the IfAddr whose subnet contains the querier,
+        // and fall back to None if none match.
+        let ifaddr_a = IfAddr::V4(Ifv4Addr {
+            ip: Ipv4Addr::new(192, 168, 1, 148),
+            netmask: Ipv4Addr::new(255, 255, 255, 0),
+            broadcast: None,
+            prefixlen: 24,
+        });
+        let ifaddr_b = IfAddr::V4(Ifv4Addr {
+            ip: Ipv4Addr::new(10, 238, 0, 51),
+            netmask: Ipv4Addr::new(255, 255, 255, 0),
+            broadcast: None,
+            prefixlen: 24,
+        });
+
+        let intf = MyIntf {
+            name: "dummy0".to_string(),
+            index: 1,
+            addrs: HashSet::from([ifaddr_a.clone(), ifaddr_b.clone()]),
+        };
+
+        let pick = |querier: IpAddr| -> Option<IfAddr> {
+            intf.addrs
+                .iter()
+                .find(|a| valid_ip_on_intf(&querier, a))
+                .cloned()
+        };
+
+        assert_eq!(
+            pick(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2))),
+            Some(ifaddr_a)
+        );
+        assert_eq!(
+            pick(IpAddr::V4(Ipv4Addr::new(10, 238, 0, 99))),
+            Some(ifaddr_b)
+        );
+        // Querier not on any local subnet: fall back to None.
+        assert_eq!(pick(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))), None);
+    }
 
     #[test]
     fn test_instance_name() {
