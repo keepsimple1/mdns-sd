@@ -1,3 +1,17 @@
+# Version 0.19.1 (2026-04-19)
+
+This is a bugfix release.
+
+## Bug fixes
+
+- When responding to a query, pick a source IP that matches the querier's subnet, so responses are reachable on multi-homed hosts. (#460, commit `d210372`)
+- Validate TXT property length in the `ServiceInfo` constructor, catching oversized properties at registration time instead of at send time. (#458, commit `cc81eec`)
+
+## All changes
+
+* `d210372 2026-04-18` fix: use a source IP matching the querier's subnet when responding (#460) (keepsimple1)
+* `cc81eec 2026-04-12` fix: check TXT property length in ServiceInfo constructor (#458) (keepsimple1)
+
 # Version 0.19.0 (2026-04-04)
 
 ## Breaking changes
