@@ -3560,7 +3560,7 @@ impl Zeroconf {
         debug!("UnregisterResend from {:?}", if_addr);
         for packet in &packets {
             multicast_on_intf(
-                &packet.to_bytes(),
+                packet.as_bytes(),
                 &intf.name,
                 intf.index,
                 if_addr,
@@ -4257,8 +4257,8 @@ fn send_dns_outgoing_impl(
         }
     }
 
-    for packet in packets.iter().map(|p| p.to_bytes()) {
-        multicast_on_intf(&packet, if_name, if_index, if_addr, sock, port);
+    for packet in packets.iter().map(|p| p.as_bytes()) {
+        multicast_on_intf(packet, if_name, if_index, if_addr, sock, port);
     }
 
     Ok(())
