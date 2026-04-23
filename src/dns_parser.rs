@@ -1424,11 +1424,8 @@ enum PacketState {
 
 /// A single packet for outgoing DNS message.
 pub struct DnsOutPacket {
-    /// All bytes in `data` concatenated is the actual packet on the wire.
-    data: Vec<Vec<u8>>,
-
-    /// Current logical size of the packet. It starts with the size of the mandatory header.
-    size: usize,
+    /// All bytes in `data` is the actual packet on the wire.
+    data: Vec<u8>,
 
     /// An internal state, not defined by DNS.
     state: PacketState,
@@ -1440,19 +1437,18 @@ pub struct DnsOutPacket {
 impl DnsOutPacket {
     fn new() -> Self {
         Self {
-            data: Vec::new(),
-            size: MSG_HEADER_LEN, // Header is mandatory.
+            data: vec![0; MSG_HEADER_LEN],
             state: PacketState::Init,
             names: HashMap::new(),
         }
     }
 
     pub fn size(&self) -> usize {
-        self.size
+        self.data.len()
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        self.data.concat()
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data
     }
 
     fn write_question(&mut self, question: &DnsQuestion) {
@@ -1465,8 +1461,7 @@ impl DnsOutPacket {
     /// Returns false if the packet exceeds the max size with this record, nothing is written to the packet.
     /// otherwise returns true.
     fn write_record(&mut self, record_ext: &dyn DnsRecordExt, now: u64) -> bool {
-        let start_data_length = self.data.len();
-        let start_size = self.size;
+        let start_size = self.size();
 
         let record = record_ext.get_record();
         self.write_name(record.get_name());
@@ -1484,19 +1479,14 @@ impl DnsOutPacket {
             self.write_u32(record.get_remaining_ttl(now));
         }
 
-        let index = self.data.len();
-
-        // Adjust size for the short we will write before this record
-        self.size += 2;
+        // Placeholder for record size
+        self.write_short(0);
+        let record_offset = self.size();
         record_ext.write(self);
-        self.size -= 2;
+        self.insert_short(record_offset - 2, (self.size() - record_offset) as u16);
 
-        let length: usize = self.data[index..].iter().map(|x| x.len()).sum();
-        self.insert_short(index, length as u16);
-
-        if self.size > MAX_MSG_ABSOLUTE {
-            self.data.truncate(start_data_length);
-            self.size = start_size;
+        if self.size() > MAX_MSG_ABSOLUTE {
+            self.data.truncate(start_size);
             self.state = PacketState::Finished;
             return false;
         }
@@ -1505,8 +1495,7 @@ impl DnsOutPacket {
     }
 
     pub(crate) fn insert_short(&mut self, index: usize, value: u16) {
-        self.data.insert(index, value.to_be_bytes().to_vec());
-        self.size += 2;
+        self.data[index..index + 2].copy_from_slice(&value.to_be_bytes());
     }
 
     /// Parses a DNS name that may contain escaped characters according to RFC 6763 Section 4.3.
@@ -1613,7 +1602,7 @@ impl DnsOutPacket {
             }
 
             // Store this position for potential future compression
-            self.names.insert(remaining, self.size as u16);
+            self.names.insert(remaining, self.size() as u16);
 
             // Write the label
             self.write_utf8(label);
@@ -1623,30 +1612,26 @@ impl DnsOutPacket {
         self.write_byte(0);
     }
 
-    fn write_utf8(&mut self, utf: &str) {
-        assert!(utf.len() < 64);
-        self.write_byte(utf.len() as u8);
-        self.write_bytes(utf.as_bytes());
+    fn write_byte(&mut self, v: u8) {
+        self.data.push(v);
     }
 
     fn write_bytes(&mut self, s: &[u8]) {
-        self.data.push(s.to_vec());
-        self.size += s.len();
+        self.data.extend(s);
     }
 
-    fn write_u32(&mut self, int: u32) {
-        self.data.push(int.to_be_bytes().to_vec());
-        self.size += 4;
+    fn write_utf8(&mut self, s: &str) {
+        assert!(s.len() < 64);
+        self.write_byte(s.len() as u8);
+        self.write_bytes(s.as_bytes());
     }
 
-    fn write_short(&mut self, short: u16) {
-        self.data.push(short.to_be_bytes().to_vec());
-        self.size += 2;
+    fn write_u32(&mut self, v: u32) {
+        self.data.extend(&v.to_be_bytes());
     }
 
-    fn write_byte(&mut self, byte: u8) {
-        self.data.push(vec![byte]);
-        self.size += 1;
+    fn write_short(&mut self, v: u16) {
+        self.data.extend(&v.to_be_bytes());
     }
 
     /// Writes the header fields and finish the packet.
@@ -1680,15 +1665,12 @@ impl DnsOutPacket {
         auth_count: u16,
         addi_count: u16,
     ) {
-        self.insert_short(0, addi_count);
-        self.insert_short(0, auth_count);
-        self.insert_short(0, a_count);
-        self.insert_short(0, q_count);
-        self.insert_short(0, flags);
         self.insert_short(0, id);
-
-        // Adjust the size as it was already initialized to include the header.
-        self.size -= MSG_HEADER_LEN;
+        self.insert_short(2, flags);
+        self.insert_short(4, q_count);
+        self.insert_short(6, a_count);
+        self.insert_short(8, auth_count);
+        self.insert_short(10, addi_count);
 
         self.state = PacketState::Finished;
     }
@@ -1935,7 +1917,7 @@ impl DnsOutgoing {
     /// Returns a list of actual DNS packet data to be sent on the wire.
     pub fn to_data_on_wire(&self) -> Vec<Vec<u8>> {
         let packet_list = self.to_packets();
-        packet_list.iter().map(|p| p.data.concat()).collect()
+        packet_list.iter().map(|p| p.data.to_vec()).collect()
     }
 
     /// Encode self into one or more packets.
@@ -2619,7 +2601,7 @@ mod tests {
         let out = DnsOutgoing::new(0);
         let packets = out.to_packets();
         assert_eq!(packets.len(), 1);
-        assert_eq!(packets[0].to_bytes(), &[0; 12]);
+        assert_eq!(packets[0].as_bytes(), &[0; 12]);
         let expected_names = HashMap::new();
         assert_eq!(&packets[0].names, &expected_names);
     }
@@ -2631,7 +2613,7 @@ mod tests {
         let packets = out.to_packets();
         assert_eq!(packets.len(), 1);
         assert_eq!(
-            packets[0].to_bytes(),
+            packets[0].as_bytes(),
             &[
                 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, // Header
                 // Payload
@@ -2665,7 +2647,7 @@ mod tests {
         let packets = out.to_packets();
         assert_eq!(packets.len(), 1);
         assert_eq!(
-            packets[0].to_bytes(),
+            packets[0].as_bytes(),
             &[
                 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, // Header
                 // Payload
@@ -2695,7 +2677,7 @@ mod tests {
         let packets = out.to_packets();
         assert_eq!(packets.len(), 1);
         assert_eq!(
-            packets[0].to_bytes(),
+            packets[0].as_bytes(),
             &[
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, // Header
                 // Payload
@@ -2725,7 +2707,7 @@ mod tests {
         let packets = out.to_packets();
         assert_eq!(packets.len(), 1);
         assert_eq!(
-            packets[0].to_bytes(),
+            packets[0].as_bytes(),
             &[
                 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, // Header
                 // Payload
@@ -2758,7 +2740,7 @@ mod tests {
         let packets = out.to_packets();
         assert_eq!(packets.len(), 1);
         assert_eq!(
-            packets[0].to_bytes(),
+            packets[0].as_bytes(),
             &[
                 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, // Header
                 // Payload
