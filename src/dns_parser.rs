@@ -2585,7 +2585,7 @@ const fn u32_from_be_slice(s: &[u8]) -> u32 {
 const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
     // 'created' is in millis, 'ttl' is in seconds, hence:
     // ttl * 1000 * (percent / 100) => ttl * percent * 10
-    created + (ttl * percent * 10) as u64
+    created + (ttl as u64 * percent as u64 * 10)
 }
 
 #[cfg(test)]
