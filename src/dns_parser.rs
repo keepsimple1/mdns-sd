@@ -1696,6 +1696,7 @@ impl DnsOutPacket {
 }
 
 /// Representation of one outgoing DNS message that could be sent in one or more packet(s).
+#[derive(Debug)]
 pub struct DnsOutgoing {
     flags: u16,
     id: u16,
@@ -2009,6 +2010,9 @@ impl DnsOutgoing {
             addi_count,
         );
 
+        println!("+++ {self:?}");
+        println!("*** {:x?}, {}", packet.to_bytes(), packet.to_bytes().iter().sum::<u8>());
+        println!("@@@ {:?}", packet.names);
         packet_list.push(packet);
         packet_list
     }
@@ -2603,4 +2607,87 @@ const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
     // 'created' is in millis, 'ttl' is in seconds, hence:
     // ttl * 1000 * (percent / 100) => ttl * percent * 10
     created + (ttl * percent * 10) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use super::{DnsPointer, DnsOutPacket, DnsOutgoing, RRType, CLASS_IN};
+
+    #[test]
+    fn test_dns_packet_encode() {
+        let out = DnsOutgoing::new(0);
+        let packets = out.to_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].to_bytes(), &[0; 12]);
+
+        let mut out = DnsOutgoing::new(0);
+        out.add_question("123.test", RRType::A);
+        let packets = out.to_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(
+            packets[0].to_bytes(),
+            &[
+                // Header
+                0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+                // Payload
+                3, 49, 50, 51, 4, 116, 101, 115, 116, 0, 0, 1, 0, 1,
+            ]
+        );
+
+        let mut out = DnsOutgoing::new(0);
+        out.add_answer_at_time(
+            DnsPointer::new(
+                "test",
+                RRType::PTR,
+                CLASS_IN,
+                0xaaaa5555,
+                "test-service".to_string(),
+            ),
+            0,
+        );
+        let packets = out.to_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(
+            packets[0].to_bytes(),
+            &[
+                // Header
+                0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+                // Payload
+                4, 116, 101, 115, 116, 0, 0, 12, 0, 1, 170, 170, 85, 85,
+                0, 14, 12, 116, 101, 115, 116, 45, 115, 101, 114, 118, 105, 99, 101, 0,
+            ]
+        );
+
+        let mut out = DnsOutgoing::new(0);
+        out.add_answer_at_time(
+            DnsPointer::new(
+                "test",
+                RRType::PTR,
+                CLASS_IN,
+                0xaaaa5555,
+                "test-service.local".to_string(),
+            ),
+            0,
+        );
+        let packets = out.to_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(
+            packets[0].to_bytes(),
+            &[
+                // Header
+                0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+                // Payload
+                4, 116, 101, 115, 116, 0, 0, 12, 0, 1, 170, 170, 85, 85,
+                0, 20, 12, 116, 101, 115, 116, 45, 115, 101, 114, 118, 105, 99, 101, 5, 108, 111, 99, 97, 108, 0,
+            ]
+        );
+        let mut expected_names = HashMap::new();
+        expected_names.insert("test".to_string(), 12);
+        expected_names.insert("test-service.local".to_string(), 28);
+        expected_names.insert("local".to_string(), 41);
+        assert_eq!(
+            &packets[0].names, &expected_names
+        );
+    }
 }
