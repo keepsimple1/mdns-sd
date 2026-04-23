@@ -2603,3 +2603,174 @@ const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
     // ttl * 1000 * (percent / 100) => ttl * percent * 10
     created + (ttl * percent * 10) as u64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DnsAddress, DnsHostInfo, DnsOutgoing, DnsPointer, DnsTxt, RRType, CLASS_CACHE_FLUSH,
+        CLASS_IN,
+    };
+    use crate::InterfaceId;
+    use std::collections::HashMap;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn test_dns_outgoing_serialization_empty() {
+        let out = DnsOutgoing::new(0);
+        let packets = out.to_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].to_bytes(), &[0; 12]);
+        let expected_names = HashMap::new();
+        assert_eq!(&packets[0].names, &expected_names);
+    }
+
+    #[test]
+    fn test_dns_outgoing_serialization_question() {
+        let mut out = DnsOutgoing::new(0);
+        out.add_question("123.test", RRType::A);
+        let packets = out.to_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(
+            packets[0].to_bytes(),
+            &[
+                0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, // Header
+                // Payload
+                3, 49, 50, 51, 4, 116, 101, 115, 116, 0, 0, 1, 0, 1,
+            ]
+        );
+        let mut expected_names = HashMap::new();
+        expected_names.insert("123.test".to_string(), 12);
+        expected_names.insert("test".to_string(), 16);
+        assert_eq!(&packets[0].names, &expected_names);
+    }
+
+    #[test]
+    fn test_dns_outgoing_serialization_question_with_authority() {
+        let mut out = DnsOutgoing::new(0);
+        out.add_question("123.test", RRType::ANY);
+        out.add_authority(Box::new(DnsTxt::new(
+            "124.test",
+            CLASS_IN,
+            0x00112233,
+            b"help".to_vec(),
+        )));
+        out.add_authority(Box::new(DnsHostInfo::new(
+            "124.test",
+            RRType::CNAME,
+            CLASS_IN,
+            0x00112233,
+            "arm".to_string(),
+            "linux".to_string(),
+        )));
+        let packets = out.to_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(
+            packets[0].to_bytes(),
+            &[
+                0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, // Header
+                // Payload
+                3, 49, 50, 51, 4, 116, 101, 115, 116, 0, 0, 255, 0, 1, 3, 49, 50, 52, 192, 16, 0,
+                16, 0, 1, 0, 17, 34, 51, 0, 4, 104, 101, 108, 112, 192, 26, 0, 5, 0, 1, 0, 17, 34,
+                51, 0, 8, 97, 114, 109, 108, 105, 110, 117, 120,
+            ]
+        );
+        let mut expected_names = HashMap::new();
+        expected_names.insert("123.test".to_string(), 12);
+        expected_names.insert("test".to_string(), 16);
+        expected_names.insert("124.test".to_string(), 26);
+        assert_eq!(&packets[0].names, &expected_names);
+    }
+
+    #[test]
+    fn test_dns_outgoing_serialization_additional_answer() {
+        let mut out = DnsOutgoing::new(0);
+        out.add_additional_answer(DnsAddress::new(
+            "test.local",
+            RRType::A,
+            CLASS_IN | CLASS_CACHE_FLUSH,
+            0xdead_beef,
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            InterfaceId::default(),
+        ));
+        let packets = out.to_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(
+            packets[0].to_bytes(),
+            &[
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, // Header
+                // Payload
+                4, 116, 101, 115, 116, 5, 108, 111, 99, 97, 108, 0, 0, 1, 128, 1, 222, 173, 190,
+                239, 0, 4, 127, 0, 0, 1,
+            ]
+        );
+        let mut expected_names = HashMap::new();
+        expected_names.insert("test.local".to_string(), 12);
+        expected_names.insert("local".to_string(), 17);
+        assert_eq!(&packets[0].names, &expected_names);
+    }
+
+    #[test]
+    fn test_dns_outgoing_serialization_answer_at_time() {
+        let mut out = DnsOutgoing::new(0);
+        out.add_answer_at_time(
+            DnsPointer::new(
+                "test",
+                RRType::PTR,
+                CLASS_IN,
+                0xaaaa5555,
+                "test-service".to_string(),
+            ),
+            0,
+        );
+        let packets = out.to_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(
+            packets[0].to_bytes(),
+            &[
+                0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, // Header
+                // Payload
+                4, 116, 101, 115, 116, 0, 0, 12, 0, 1, 170, 170, 85, 85, 0, 14, 12, 116, 101, 115,
+                116, 45, 115, 101, 114, 118, 105, 99, 101, 0,
+            ]
+        );
+
+        let mut out = DnsOutgoing::new(0);
+        out.add_answer_at_time(
+            DnsPointer::new(
+                "test",
+                RRType::CNAME,
+                CLASS_IN,
+                0xaaaa5555,
+                "test-service.local".to_string(),
+            ),
+            0,
+        );
+        out.add_answer_at_time(
+            DnsPointer::new(
+                "test",
+                RRType::AAAA,
+                CLASS_IN,
+                0xffffffff,
+                "test-service.local".to_string(),
+            ),
+            0,
+        );
+        let packets = out.to_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(
+            packets[0].to_bytes(),
+            &[
+                0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, // Header
+                // Payload
+                4, 116, 101, 115, 116, 0, 0, 5, 0, 1, 170, 170, 85, 85, 0, 20, 12, 116, 101, 115,
+                116, 45, 115, 101, 114, 118, 105, 99, 101, 5, 108, 111, 99, 97, 108, 0, 192, 12, 0,
+                28, 0, 1, 255, 255, 255, 255, 0, 2, 192, 28,
+            ]
+        );
+        let mut expected_names = HashMap::new();
+        expected_names.insert("test".to_string(), 12);
+        expected_names.insert("test-service.local".to_string(), 28);
+        expected_names.insert("local".to_string(), 41);
+        assert_eq!(&packets[0].names, &expected_names);
+    }
+}
