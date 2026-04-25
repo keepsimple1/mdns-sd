@@ -254,11 +254,10 @@ impl ServiceDaemon {
     /// Returns [`Error::Msg`] if the daemon cannot be initialized. This wraps an
     /// underlying OS-level failure.
     ///
-    /// These failures are not expected during normal operation. Note that this
-    /// constructor does **not** open the mDNS multicast sockets — those are
-    /// opened lazily by the daemon thread once it starts, so platform issues
-    /// such as "multicast not permitted" are surfaced later via
-    /// `DaemonEvent` from `monitor` rather than here.
+    /// Note that this constructor does not open the mDNS multicast sockets — those
+    /// are opened lazily by the daemon thread once it starts, so platform issues
+    /// such as "multicast not permitted" are surfaced later via [`DaemonEvent`] from
+    /// [`monitor`](Self::monitor) rather than here.
     pub fn new() -> Result<Self> {
         Self::new_with_port(MDNS_PORT)
     }
@@ -538,6 +537,8 @@ impl ServiceDaemon {
     /// # Errors
     ///
     /// Returns [`Error::Again`] if the daemon's command queue is full.
+    ///
+    /// Returns [`Error::DaemonShutdown`] if the daemon thread has already exited.
     pub fn status(&self) -> Result<Receiver<DaemonStatus>> {
         let (resp_s, resp_r) = bounded(1);
 

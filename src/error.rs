@@ -6,8 +6,8 @@ use std::fmt;
 pub enum Error {
     /// Like a classic `EAGAIN`. Returned by [`ServiceDaemon`](crate::ServiceDaemon)
     /// methods when the daemon's bounded command queue is temporarily full,
-    /// so the command could not be enqueued. The caller should retry after a
-    /// short delay; this is not an indication that anything is broken.
+    /// so the command could not be enqueued. The caller can retry after a
+    /// short delay.
     Again,
 
     /// The daemon thread has exited and its command channel is closed, so the
