@@ -248,6 +248,17 @@ impl ServiceDaemon {
     /// Creates a new mDNS service daemon using the default port (5353).
     ///
     /// For development/testing with custom ports, use [`ServiceDaemon::new_with_port`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Msg`] if the daemon cannot be initialized. This wraps an
+    /// underlying OS-level failure.
+    ///
+    /// These failures are not expected during normal operation. Note that this
+    /// constructor does **not** open the mDNS multicast sockets — those are
+    /// opened lazily by the daemon thread once it starts, so platform issues
+    /// such as "multicast not permitted" are surfaced later via
+    /// `DaemonEvent` from `monitor` rather than here.
     pub fn new() -> Result<Self> {
         Self::new_with_port(MDNS_PORT)
     }
@@ -274,6 +285,15 @@ impl ServiceDaemon {
     /// let daemon_dev = ServiceDaemon::new_with_port(5454)?;
     /// # Ok::<(), mdns_sd::Error>(())
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// See [`new`](Self::new) for the set of OS-level failures that may surface
+    /// here. Note that `port` is *not* validated against the kernel until the
+    /// daemon thread tries to bind the mDNS sockets, so an unusable `port`
+    /// (e.g., already in use, requires elevated privileges) will not be
+    /// reported by this constructor — listen for such failures via
+    /// [`monitor`](Self::monitor).
     pub fn new_with_port(port: u16) -> Result<Self> {
         // Use port 0 to allow the system assign a random available port,
         // no need for a pre-defined port number.
@@ -320,7 +340,7 @@ impl ServiceDaemon {
         // First, send to the flume channel.
         self.sender.try_send(cmd).map_err(|e| match e {
             TrySendError::Full(_) => Error::Again,
-            e => e_fmt!("flume::channel::send failed: {}", e),
+            TrySendError::Disconnected(_) => Error::DaemonShutdown,
         })?;
 
         // Second, send a signal to notify the daemon.
@@ -351,6 +371,15 @@ impl ServiceDaemon {
     ///
     /// When a new instance is found, the daemon automatically tries to resolve, i.e.
     /// finding more details, i.e. SRV records and TXT records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Msg`] if `service_type` does not end with
+    /// `._tcp.local.` or `._udp.local.`.
+    ///
+    /// Returns [`Error::Again`] if the daemon's command queue is full.
+    ///
+    /// Returns [`Error::DaemonShutdown`] if the daemon thread has already exited.
     pub fn browse(&self, service_type: &str) -> Result<Receiver<ServiceEvent>> {
         check_domain_suffix(service_type)?;
 
@@ -367,6 +396,10 @@ impl ServiceDaemon {
     /// of the daemon's cache. No actual mDNS query is sent to the network.
     ///
     /// See [accept_unsolicited](Self::accept_unsolicited) if you want to do cache-only browsing.
+    ///
+    /// # Errors
+    ///
+    /// Same error conditions as [`browse`](Self::browse).
     pub fn browse_cache(&self, service_type: &str) -> Result<Receiver<ServiceEvent>> {
         check_domain_suffix(service_type)?;
 
@@ -377,8 +410,11 @@ impl ServiceDaemon {
 
     /// Stops searching for a specific service type.
     ///
-    /// When an error is returned, the caller should retry only when
-    /// the error is `Error::Again`, otherwise should log and move on.
+    /// # Errors
+    ///
+    /// Returns [`Error::Again`] if the daemon's command queue is full.
+    ///
+    /// Returns [`Error::DaemonShutdown`] if the daemon thread has already exited.
     pub fn stop_browse(&self, ty_domain: &str) -> Result<()> {
         self.send_cmd(Command::StopBrowse(ty_domain.to_string()))
     }
@@ -390,6 +426,18 @@ impl ServiceDaemon {
     /// async environment or call `.recv()` in a sync environment.
     ///
     /// The `timeout` is specified in milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Msg`] if:
+    ///
+    /// - `hostname` does not end with `.local.`;
+    /// - `hostname` is exactly `.local.` (the label before `.local.` is empty);
+    /// - `hostname` is longer than 255 bytes.
+    ///
+    /// Returns [`Error::Again`] if the daemon's command queue is full.
+    ///
+    /// Returns [`Error::DaemonShutdown`] if the daemon thread has already exited.
     pub fn resolve_hostname(
         &self,
         hostname: &str,
@@ -408,8 +456,9 @@ impl ServiceDaemon {
 
     /// Stops querying for the ip addresses of a hostname.
     ///
-    /// When an error is returned, the caller should retry only when
-    /// the error is `Error::Again`, otherwise should log and move on.
+    /// # Errors
+    ///
+    /// Same error conditions as [`stop_browse`](Self::stop_browse).
     pub fn stop_resolve_hostname(&self, hostname: &str) -> Result<()> {
         self.send_cmd(Command::StopResolveHostname(hostname.to_string()))
     }
@@ -421,6 +470,18 @@ impl ServiceDaemon {
     ///
     /// To re-announce a service with an updated `service_info`, just call
     /// this `register` function again. No need to call `unregister` first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Msg`] if the [`ServiceInfo`] is malformed, for example:
+    ///
+    /// - the fullname does not end with `._tcp.local.` or `._udp.local.`;
+    /// - the hostname does not end with `.local.`, is exactly `.local.`, or
+    ///   is longer than 255 bytes.
+    ///
+    /// Returns [`Error::Again`] if the daemon's command queue is full.
+    ///
+    /// Returns [`Error::DaemonShutdown`] if the daemon thread has already exited.
     pub fn register(&self, service_info: ServiceInfo) -> Result<()> {
         check_service_name(service_info.get_fullname())?;
         check_hostname(service_info.get_hostname())?;
@@ -433,8 +494,11 @@ impl ServiceDaemon {
     /// Returns a channel receiver that is used to receive the status code
     /// of the unregister.
     ///
-    /// When an error is returned, the caller should retry only when
-    /// the error is `Error::Again`, otherwise should log and move on.
+    /// # Errors
+    ///
+    /// Returns [`Error::Again`] if the daemon's command queue is full.
+    ///
+    /// Returns [`Error::DaemonShutdown`] if the daemon thread has already exited.
     pub fn unregister(&self, fullname: &str) -> Result<Receiver<UnregisterStatus>> {
         let (resp_s, resp_r) = bounded(1);
         self.send_cmd(Command::Unregister(fullname.to_lowercase(), resp_s))?;
@@ -444,6 +508,12 @@ impl ServiceDaemon {
     /// Starts to monitor events from the daemon.
     ///
     /// Returns a channel [`Receiver`] of [`DaemonEvent`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Again`] if the daemon's command queue is full.
+    ///
+    /// Returns [`Error::DaemonShutdown`] if the daemon thread has already exited.
     pub fn monitor(&self) -> Result<Receiver<DaemonEvent>> {
         let (resp_s, resp_r) = bounded(100);
         self.send_cmd(Command::Monitor(resp_s))?;
@@ -452,8 +522,11 @@ impl ServiceDaemon {
 
     /// Shuts down the daemon thread and returns a channel to receive the status.
     ///
-    /// When an error is returned, the caller should retry only when
-    /// the error is `Error::Again`, otherwise should log and move on.
+    /// # Errors
+    ///
+    /// Returns [`Error::Again`] if the daemon's command queue is full.
+    ///
+    /// Returns [`Error::DaemonShutdown`] if the daemon thread has already exited.
     pub fn shutdown(&self) -> Result<Receiver<DaemonStatus>> {
         let (resp_s, resp_r) = bounded(1);
         self.send_cmd(Command::Exit(resp_s))?;
@@ -462,9 +535,9 @@ impl ServiceDaemon {
 
     /// Returns the status of the daemon.
     ///
-    /// When an error is returned, the caller should retry only when
-    /// the error is `Error::Again`, otherwise should consider the daemon
-    /// stopped working and move on.
+    /// # Errors
+    ///
+    /// Returns [`Error::Again`] if the daemon's command queue is full.
     pub fn status(&self) -> Result<Receiver<DaemonStatus>> {
         let (resp_s, resp_r) = bounded(1);
 
@@ -483,6 +556,12 @@ impl ServiceDaemon {
     ///
     /// The metrics returned is a snapshot. Hence the caller should call
     /// this method repeatedly if they want to monitor the metrics continuously.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Again`] if the daemon's command queue is full.
+    ///
+    /// Returns [`Error::DaemonShutdown`] if the daemon thread has already exited.
     pub fn get_metrics(&self) -> Result<Receiver<Metrics>> {
         let (resp_s, resp_r) = bounded(1);
         self.send_cmd(Command::GetMetrics(resp_s))?;
@@ -495,6 +574,14 @@ impl ServiceDaemon {
     /// this method unless they have to. See [`SERVICE_NAME_LEN_MAX_DEFAULT`].
     ///
     /// `len_max` is capped at an internal limit, which is currently 30.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Msg`] if `len_max` exceeds the internal cap (30).
+    ///
+    /// Returns [`Error::Again`] if the daemon's command queue is full.
+    ///
+    /// Returns [`Error::DaemonShutdown`] if the daemon thread has already exited.
     pub fn set_service_name_len_max(&self, len_max: u8) -> Result<()> {
         const SERVICE_NAME_LEN_MAX_LIMIT: u8 = 30; // Double the default length max.
 
@@ -641,6 +728,12 @@ impl ServiceDaemon {
     /// sent to active queriers.
     ///
     /// Reference: [RFC 6762](https://datatracker.ietf.org/doc/html/rfc6762#section-10.4)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Again`] if the daemon's command queue is full.
+    ///
+    /// Returns [`Error::DaemonShutdown`] if the daemon thread has already exited.
     pub fn verify(&self, instance_fullname: String, timeout: Duration) -> Result<()> {
         self.send_cmd(Command::Verify(instance_fullname, timeout))
     }
@@ -1156,7 +1249,7 @@ impl Zeroconf {
 
         self.cmd_sender.try_send(cmd).map_err(|e| match e {
             TrySendError::Full(_) => Error::Again,
-            e => e_fmt!("flume::channel::send failed: {}", e),
+            TrySendError::Disconnected(_) => Error::DaemonShutdown,
         })?;
 
         let addr = SocketAddrV4::new(LOOPBACK_V4, 0);
