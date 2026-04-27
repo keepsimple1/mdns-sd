@@ -1695,6 +1695,7 @@ impl DnsOutPacket {
 }
 
 /// Representation of one outgoing DNS message that could be sent in one or more packet(s).
+#[derive(Debug)]
 pub struct DnsOutgoing {
     flags: u16,
     id: u16,
