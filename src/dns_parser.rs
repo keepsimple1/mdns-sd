@@ -5,7 +5,7 @@
 //! [DnsOutPacket] is the encoded one packet for [DnsOutgoing].
 
 #[cfg(feature = "logging")]
-use crate::log::trace;
+use crate::log::{debug, trace};
 
 use crate::current_time_millis;
 use crate::error::{e_fmt, Error, Result};
@@ -1247,7 +1247,7 @@ impl DnsRecordExt for DnsHostInfo {
     }
 
     fn write(&self, packet: &mut DnsOutPacket) {
-        println!("writing HInfo: cpu {} os {}", &self.cpu, &self.os);
+        debug!("Writing HInfo: cpu {} os {}", &self.cpu, &self.os);
         packet.write_bytes(self.cpu.as_bytes());
         packet.write_bytes(self.os.as_bytes());
     }
