@@ -65,7 +65,8 @@
 //! mdns.shutdown().unwrap();
 //! ```
 //!
-//! ## Example: a server publishs a service and responds to queries.
+//! ## Example: a server publishs a service and responds to queries. Use `monitor()` to
+//! receive events from the daemon, especially errors.
 //!
 //! ```rust
 //! use mdns_sd::{ServiceDaemon, ServiceInfo};
