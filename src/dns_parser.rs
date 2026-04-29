@@ -1918,7 +1918,7 @@ impl DnsOutgoing {
     /// Returns a list of actual DNS packet data to be sent on the wire.
     pub fn to_data_on_wire(&self) -> Vec<Vec<u8>> {
         let packet_list = self.to_packets();
-        packet_list.iter().map(|p| p.data.to_vec()).collect()
+        packet_list.into_iter().map(|p| p.data).collect()
     }
 
     /// Encode self into one or more packets.
