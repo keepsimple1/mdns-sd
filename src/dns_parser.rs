@@ -1416,13 +1416,14 @@ impl DnsRecordExt for DnsNSec {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 enum PacketState {
     Init = 0,
     Finished = 1,
 }
 
 /// A single packet for outgoing DNS message.
+#[derive(Debug)]
 pub struct DnsOutPacket {
     /// All bytes in `data` is the actual packet on the wire.
     data: Vec<u8>,
@@ -1916,7 +1917,7 @@ impl DnsOutgoing {
     }
 
     /// Returns a list of actual DNS packet data to be sent on the wire.
-    pub fn to_data_on_wire(&self) -> Vec<Vec<u8>> {
+    pub(crate) fn _to_data_on_wire(&self) -> Vec<Vec<u8>> {
         let packet_list = self.to_packets();
         packet_list.into_iter().map(|p| p.data).collect()
     }
