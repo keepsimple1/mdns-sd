@@ -3295,9 +3295,14 @@ impl Zeroconf {
                 out.clear_cache_flush_bits();
             }
 
-            if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, matched_source, unicast_dest)
-            {
+            if let Err(InternalError::IntfAddrInvalid(intf_addr)) = send_dns_outgoing(
+                &out,
+                intf,
+                &sock.pktinfo,
+                self.port,
+                matched_source,
+                unicast_dest,
+            ) {
                 let invalid_intf_addr = HashSet::from([intf_addr]);
                 let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addr));
             }
@@ -4295,7 +4300,15 @@ fn send_dns_outgoing(
         }
     };
 
-    send_dns_outgoing_impl(out, if_name, my_intf.index, if_addr, sock, port, unicast_dest)
+    send_dns_outgoing_impl(
+        out,
+        if_name,
+        my_intf.index,
+        if_addr,
+        sock,
+        port,
+        unicast_dest,
+    )
 }
 
 /// Send an outgoing mDNS query or response, and returns the packet bytes.
@@ -4384,12 +4397,7 @@ fn send_dns_outgoing_impl(
 
 /// Sends a unicast packet directly to `dest` (used for RFC 6762 §6.7
 /// legacy unicast responses).
-fn unicast_on_intf(
-    packet: &[u8],
-    if_name: &str,
-    dest: SocketAddr,
-    socket: &PktInfoUdpSocket,
-) {
+fn unicast_on_intf(packet: &[u8], if_name: &str, dest: SocketAddr, socket: &PktInfoUdpSocket) {
     if packet.len() > MAX_MSG_ABSOLUTE {
         debug!("Drop over-sized packet ({})", packet.len());
         return;
@@ -4399,11 +4407,15 @@ fn unicast_on_intf(
     match socket.send_to(packet, &sock_addr) {
         Ok(sz) => trace!(
             "sent unicast {} bytes on interface {} to {}",
-            sz, if_name, dest
+            sz,
+            if_name,
+            dest
         ),
         Err(e) => trace!(
             "Failed to send unicast to {} via {:?}: {}",
-            dest, &if_name, e
+            dest,
+            &if_name,
+            e
         ),
     }
 }
