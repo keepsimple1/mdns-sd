@@ -2144,14 +2144,14 @@ impl Zeroconf {
                 trace!("sending out probing of questions: {:?}", out.questions());
                 if let Some(sock) = self.ipv4_sock.as_mut() {
                     if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                        send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None)
+                        send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None, None)
                     {
                         invalid_intf_addrs.insert(intf_addr);
                     }
                 }
                 if let Some(sock) = self.ipv6_sock.as_mut() {
                     if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                        send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None)
+                        send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None, None)
                     {
                         invalid_intf_addrs.insert(intf_addr);
                     }
@@ -2314,7 +2314,7 @@ impl Zeroconf {
         }
 
         // Only (at most) one packet is expected to be sent out.
-        let sent_vec = match send_dns_outgoing(&out, intf, sock, self.port, None) {
+        let sent_vec = match send_dns_outgoing(&out, intf, sock, self.port, None, None) {
             Ok(sent_vec) => sent_vec,
             Err(InternalError::IntfAddrInvalid(intf_addr)) => {
                 let invalid_intf_addrs = HashSet::from([intf_addr]);
@@ -2358,14 +2358,14 @@ impl Zeroconf {
         let mut invalid_intf_addrs = HashSet::new();
         if let Some(sock) = self.ipv4_sock.as_ref() {
             if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None)
+                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None, None)
             {
                 invalid_intf_addrs.insert(intf_addr);
             }
         }
         if let Some(sock) = self.ipv6_sock.as_ref() {
             if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None)
+                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None, None)
             {
                 invalid_intf_addrs.insert(intf_addr);
             }
@@ -2402,14 +2402,14 @@ impl Zeroconf {
         for (_, intf) in self.my_intfs.iter() {
             if let Some(sock) = self.ipv4_sock.as_ref() {
                 if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None)
+                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None, None)
                 {
                     invalid_intf_addrs.insert(intf_addr);
                 }
             }
             if let Some(sock) = self.ipv6_sock.as_ref() {
                 if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None)
+                    send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None, None)
                 {
                     invalid_intf_addrs.insert(intf_addr);
                 }
@@ -2487,8 +2487,8 @@ impl Zeroconf {
         match DnsIncoming::new(buf, my_intf.into()) {
             Ok(msg) => {
                 if msg.is_query() {
-                    let querier_ip = pktinfo.addr_src.ip();
-                    self.handle_query(msg, pkt_if_index, querier_ip);
+                    let querier_addr = pktinfo.addr_src;
+                    self.handle_query(msg, pkt_if_index, querier_addr);
                 } else if msg.is_response() {
                     self.handle_response(msg, pkt_if_index);
                 } else {
@@ -3114,7 +3114,8 @@ impl Zeroconf {
     }
 
     /// Handle incoming query packets, figure out whether and what to respond.
-    fn handle_query(&mut self, msg: DnsIncoming, if_index: u32, querier_ip: IpAddr) {
+    fn handle_query(&mut self, msg: DnsIncoming, if_index: u32, querier_addr: SocketAddr) {
+        let querier_ip = querier_addr.ip();
         let is_ipv4 = querier_ip.is_ipv4();
         let sock_opt = if is_ipv4 {
             &self.ipv4_sock
@@ -3179,11 +3180,19 @@ impl Zeroconf {
                         let service_hostname = dns_registry.resolve_name(service.get_hostname());
 
                         if service_hostname.to_lowercase() == question.entry_name().to_lowercase() {
-                            let intf_addrs = if is_ipv4 {
-                                service.get_addrs_on_my_intf_v4(intf)
-                            } else {
-                                service.get_addrs_on_my_intf_v6(intf)
-                            };
+                            // Pick addresses based on the question type, not the
+                            // socket family. RFC 6762 doesn't require A queries
+                            // to come over IPv4 transport — Android's getaddrinfo
+                            // routinely sends both A and AAAA queries over its
+                            // preferred IPv6 mDNS socket and expects A records
+                            // to be answered with v4 addresses.
+                            let mut intf_addrs: Vec<IpAddr> = Vec::new();
+                            if qtype == RRType::A || qtype == RRType::ANY {
+                                intf_addrs.extend(service.get_addrs_on_my_intf_v4(intf));
+                            }
+                            if qtype == RRType::AAAA || qtype == RRType::ANY {
+                                intf_addrs.extend(service.get_addrs_on_my_intf_v6(intf));
+                            }
                             if intf_addrs.is_empty()
                                 && (qtype == RRType::A || qtype == RRType::AAAA)
                             {
@@ -3197,7 +3206,7 @@ impl Zeroconf {
                                     t,
                                     &intf
                                 );
-                                return;
+                                continue;
                             }
                             for address in intf_addrs {
                                 out.add_answer(
@@ -3266,8 +3275,28 @@ impl Zeroconf {
                 .iter()
                 .find(|if_addr| valid_ip_on_intf(&querier_ip, if_addr));
 
+            // RFC 6762 §6.7 (Legacy Unicast Responses): if the querier's source
+            // port is not 5353, it's a one-shot legacy querier (e.g. Android's
+            // getaddrinfo, iOS resolver fallback). The response MUST be unicast
+            // back to the querier's source IP and port; multicast replies will
+            // never reach the querier's ephemeral socket. Legacy unicast
+            // responses must also echo the question section and clear the
+            // cache-flush bit, since legacy resolvers don't understand it.
+            let unicast_dest = if querier_addr.port() != MDNS_PORT {
+                Some(querier_addr)
+            } else {
+                None
+            };
+
+            if unicast_dest.is_some() {
+                for q in msg.questions() {
+                    out.add_question(q.entry_name(), q.entry_type());
+                }
+                out.clear_cache_flush_bits();
+            }
+
             if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
-                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, matched_source)
+                send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, matched_source, unicast_dest)
             {
                 let invalid_intf_addr = HashSet::from([intf_addr]);
                 let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addr));
@@ -4245,6 +4274,7 @@ fn send_dns_outgoing(
     sock: &PktInfoUdpSocket,
     port: u16,
     source: Option<&IfAddr>,
+    unicast_dest: Option<SocketAddr>,
 ) -> MyResult<Vec<Vec<u8>>> {
     let if_name = &my_intf.name;
 
@@ -4265,7 +4295,7 @@ fn send_dns_outgoing(
         }
     };
 
-    send_dns_outgoing_impl(out, if_name, my_intf.index, if_addr, sock, port)
+    send_dns_outgoing_impl(out, if_name, my_intf.index, if_addr, sock, port, unicast_dest)
 }
 
 /// Send an outgoing mDNS query or response, and returns the packet bytes.
@@ -4276,6 +4306,7 @@ fn send_dns_outgoing_impl(
     if_addr: &IfAddr,
     sock: &PktInfoUdpSocket,
     port: u16,
+    unicast_dest: Option<SocketAddr>,
 ) -> MyResult<Vec<Vec<u8>>> {
     let qtype = if out.is_query() {
         "query"
@@ -4343,9 +4374,38 @@ fn send_dns_outgoing_impl(
 
     let packet_list = out.to_data_on_wire();
     for packet in packet_list.iter() {
-        multicast_on_intf(packet, if_name, if_index, if_addr, sock, port);
+        match unicast_dest {
+            Some(dest) => unicast_on_intf(packet, if_name, dest, sock),
+            None => multicast_on_intf(packet, if_name, if_index, if_addr, sock, port),
+        }
     }
     Ok(packet_list)
+}
+
+/// Sends a unicast packet directly to `dest` (used for RFC 6762 §6.7
+/// legacy unicast responses).
+fn unicast_on_intf(
+    packet: &[u8],
+    if_name: &str,
+    dest: SocketAddr,
+    socket: &PktInfoUdpSocket,
+) {
+    if packet.len() > MAX_MSG_ABSOLUTE {
+        debug!("Drop over-sized packet ({})", packet.len());
+        return;
+    }
+
+    let sock_addr = dest.into();
+    match socket.send_to(packet, &sock_addr) {
+        Ok(sz) => trace!(
+            "sent unicast {} bytes on interface {} to {}",
+            sz, if_name, dest
+        ),
+        Err(e) => trace!(
+            "Failed to send unicast to {} via {:?}: {}",
+            dest, &if_name, e
+        ),
+    }
 }
 
 /// Sends a multicast packet, and returns the packet bytes.
@@ -4553,7 +4613,7 @@ fn announce_service_on_intf(
 ) -> MyResult<bool> {
     let is_ipv4 = sock.domain() == Domain::IPV4;
     if let Some(out) = prepare_announce(info, intf, dns_registry, is_ipv4) {
-        let _ = send_dns_outgoing(&out, intf, sock, port, None)?;
+        let _ = send_dns_outgoing(&out, intf, sock, port, None, None)?;
         return Ok(true);
     }
 
@@ -4942,6 +5002,7 @@ mod tests {
                 &intf.addr,
                 &sock.pktinfo,
                 MDNS_PORT,
+                None,
             )
             .unwrap();
         }
