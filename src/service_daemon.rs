@@ -4965,24 +4965,21 @@ mod tests {
                 .send_to(&query_packet, (GROUP_ADDR_V4, MDNS_PORT))
                 .expect("send query");
 
+            // Drain whatever has arrived; on read timeout the loop ends and
+            // we re-send the query.
             let mut buf = [0u8; 1500];
-            loop {
-                match querier.recv_from(&mut buf) {
-                    Ok((len, from)) => {
-                        let Ok(msg) = DnsIncoming::new(buf[..len].to_vec(), if_id.clone()) else {
-                            continue;
-                        };
-                        if msg.is_response()
-                            && msg
-                                .answers()
-                                .iter()
-                                .any(|a| a.get_name().eq_ignore_ascii_case(&hostname))
-                        {
-                            response = Some((msg, from));
-                            break 'outer;
-                        }
-                    }
-                    Err(_) => break, // read timeout: re-send the query
+            while let Ok((len, from)) = querier.recv_from(&mut buf) {
+                let Ok(msg) = DnsIncoming::new(buf[..len].to_vec(), if_id.clone()) else {
+                    continue;
+                };
+                if msg.is_response()
+                    && msg
+                        .answers()
+                        .iter()
+                        .any(|a| a.get_name().eq_ignore_ascii_case(&hostname))
+                {
+                    response = Some((msg, from));
+                    break 'outer;
                 }
             }
         }
