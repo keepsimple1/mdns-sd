@@ -4817,20 +4817,20 @@ mod tests {
         _new_socket_bind, check_domain_suffix, check_service_name_length, hostname_change,
         my_ip_interfaces, name_change, send_dns_outgoing_impl, valid_instance_name,
         valid_ip_on_intf, HostnameResolutionEvent, MyIntf, ServiceDaemon, ServiceEvent,
-        ServiceInfo, MDNS_PORT,
+        ServiceInfo, GROUP_ADDR_V4, MDNS_PORT,
     };
     use crate::{
         dns_parser::{
-            DnsIncoming, DnsOutgoing, DnsPointer, InterfaceId, RRType, ScopedIp, CLASS_IN,
-            FLAGS_AA, FLAGS_QR_RESPONSE,
+            DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer, InterfaceId, RRType, ScopedIp,
+            CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
         },
         service_daemon::{add_answer_of_service, check_hostname},
     };
     use if_addrs::{IfAddr, Ifv4Addr};
     use std::{
         collections::HashSet,
-        net::{IpAddr, Ipv4Addr},
-        time::{Duration, SystemTime},
+        net::{IpAddr, Ipv4Addr, UdpSocket},
+        time::{Duration, Instant, SystemTime},
     };
     use test_log::test;
 
@@ -4882,6 +4882,149 @@ mod tests {
         assert!(valid_instance_name("my-laser._printer._tcp.local."));
         assert!(valid_instance_name("my-laser.._printer._tcp.local."));
         assert!(!valid_instance_name("_printer._tcp.local."));
+    }
+
+    #[test]
+    fn test_legacy_unicast_response() {
+        // RFC 6762 §6.7: a query whose UDP source port is not 5353 (a
+        // "legacy" / "one-shot" querier, e.g. Android's getaddrinfo) must
+        // get its response via unicast, sent back to the querier's source
+        // address, with the question echoed and the cache-flush bit cleared.
+        //
+        // This test sends such a query from an ephemeral port and asserts
+        // the response arrives on that same socket. The socket is not joined
+        // to the mDNS multicast group, so a multicast-only reply would never
+        // reach it — simply receiving the response proves it was unicast.
+
+        let intf_ip = match my_ip_interfaces(false)
+            .into_iter()
+            .find_map(|intf| match intf.ip() {
+                IpAddr::V4(ip) => Some(ip),
+                IpAddr::V6(_) => None,
+            }) {
+            Some(ip) => ip,
+            None => {
+                println!("No IPv4 interface available; skipping test.");
+                return;
+            }
+        };
+
+        // Register a service with a unique hostname on this host.
+        let daemon = ServiceDaemon::new().expect("Failed to create daemon");
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+        let hostname = format!("legacy-unicast-test-{unique}.local.");
+        let service_info = ServiceInfo::new(
+            "_legacy-uni._udp.local.",
+            "test_instance",
+            &hostname,
+            &[IpAddr::V4(intf_ip)] as &[IpAddr],
+            5353, // arbitrary; the test only resolves the hostname
+            None,
+        )
+        .expect("invalid service info");
+        daemon.register(service_info).expect("register service");
+
+        // A one-shot querier: ephemeral source port, not 5353. Binding to
+        // `intf_ip` directs the multicast query out that interface, which is
+        // one the daemon is listening on.
+        let querier = UdpSocket::bind((intf_ip, 0)).expect("bind querier socket");
+        querier
+            .set_multicast_loop_v4(true)
+            .expect("enable multicast loopback");
+        querier
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .expect("set read timeout");
+        assert_ne!(
+            querier.local_addr().unwrap().port(),
+            MDNS_PORT,
+            "querier must use an ephemeral (non-5353) source port"
+        );
+
+        // Build a one-question A-record query for our hostname.
+        let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        query.add_question(&hostname, RRType::A);
+        let query_packet = query
+            .to_data_on_wire()
+            .pop()
+            .expect("query serialized to one packet");
+
+        let if_id = InterfaceId {
+            name: "test".to_string(),
+            index: 0,
+        };
+
+        // The service is announced asynchronously after register(), so retry
+        // the query until our answer comes back or the deadline passes.
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut response = None;
+        'outer: while Instant::now() < deadline {
+            querier
+                .send_to(&query_packet, (GROUP_ADDR_V4, MDNS_PORT))
+                .expect("send query");
+
+            let mut buf = [0u8; 1500];
+            loop {
+                match querier.recv_from(&mut buf) {
+                    Ok((len, from)) => {
+                        let Ok(msg) = DnsIncoming::new(buf[..len].to_vec(), if_id.clone()) else {
+                            continue;
+                        };
+                        if msg.is_response()
+                            && msg
+                                .answers()
+                                .iter()
+                                .any(|a| a.get_name().eq_ignore_ascii_case(&hostname))
+                        {
+                            response = Some((msg, from));
+                            break 'outer;
+                        }
+                    }
+                    Err(_) => break, // read timeout: re-send the query
+                }
+            }
+        }
+
+        let (msg, from) = response.expect(
+            "expected a unicast response to the legacy query; \
+             a multicast-only reply would never reach this un-joined socket",
+        );
+
+        // The reply came back to our ephemeral socket, from the mDNS port.
+        assert_eq!(
+            from.port(),
+            MDNS_PORT,
+            "response should originate from the mDNS port"
+        );
+
+        // RFC 6762 §6.7: the original question must be echoed.
+        assert!(
+            msg.questions()
+                .iter()
+                .any(|q| q.entry_name().eq_ignore_ascii_case(&hostname)),
+            "legacy unicast response must echo the question section"
+        );
+
+        // RFC 6762 §6.7 / §10.2: the answer must be the A record we asked
+        // for, with the cache-flush bit cleared.
+        let answer = msg
+            .answers()
+            .iter()
+            .find(|a| a.get_name().eq_ignore_ascii_case(&hostname))
+            .expect("response contains an answer for our hostname");
+        assert_eq!(
+            answer.get_type(),
+            RRType::A,
+            "an A query should be answered with an A record"
+        );
+        assert!(
+            !answer.get_cache_flush(),
+            "legacy unicast responses must clear the cache-flush bit"
+        );
+
+        daemon.shutdown().unwrap();
     }
 
     #[test]
