@@ -1915,6 +1915,22 @@ impl DnsOutgoing {
         self.questions.push(q);
     }
 
+    /// Clear the cache-flush (unique) bit on every answer and additional
+    /// record. Required for RFC 6762 §6.7 (Legacy Unicast Responses) and
+    /// §10.2 — a legacy resolver doesn't know about the cache-flush bit
+    /// and may misinterpret responses where it is set.
+    pub fn clear_cache_flush_bits(&mut self) {
+        for (rec, _) in &mut self.answers {
+            rec.get_record_mut().entry.cache_flush = false;
+        }
+        for rec in &mut self.additionals {
+            rec.get_record_mut().entry.cache_flush = false;
+        }
+        for rec in &mut self.authorities {
+            rec.get_record_mut().entry.cache_flush = false;
+        }
+    }
+
     /// Returns a list of actual DNS packet data to be sent on the wire.
     pub fn to_data_on_wire(&self) -> Vec<Vec<u8>> {
         let packet_list = self.to_packets();
