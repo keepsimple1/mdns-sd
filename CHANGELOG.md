@@ -1,3 +1,27 @@
+# Version 0.19.2 (2026-05-17)
+
+This is a bugfix and small-feature release.
+
+## New features
+
+- Support RFC 6762 legacy unicast responses: when a query arrives from a source port other than `5353`, the daemon now replies directly to the querier's address/port instead of multicasting. This enables interoperability with one-shot / legacy mDNS queriers. (#469, commit `933bdbe`)
+- Added a new `Error::DaemonShutdown` variant, returned by `ServiceDaemon` methods after the daemon thread has exited (previously surfaced as a generic `Error::Msg`). The `Error` enum is `#[non_exhaustive]`, so this is additive. (commit `a457193`)
+
+## Bug fixes / improvements
+
+- Optimize outgoing DNS serialization to reduce allocations on the send path. (#467, commit `fb26d7f`)
+- Replace a stray `println!` in `DnsHostInfo::write` with `debug!`, so the library no longer writes to stdout. (#465, commit `96008a4`)
+- Expanded `# Errors` doc sections on the major `ServiceDaemon` APIs (`new`, `new_with_port`, `browse`, `stop_browse`, `resolve_hostname`, `stop_resolve_hostname`, `register`, `unregister`), documenting when `Error::Again` vs. `Error::DaemonShutdown` is returned. (#464, commit `a457193`)
+
+## All changes
+
+* `933bdbe 2026-05-15` Add support for RFC 6762 legacy unicast responses (#469) (Luqmaan)
+* `fb26d7f 2026-04-30` Optimize dns outgoing serialization (#467) (Alexander)
+* `a457193 2026-04-28` docs: add doc comments for error handling on major APIs (#464) (keepsimple1)
+* `96008a4 2026-04-28` Replace println with debug log (#465) (Alexander)
+
+Thanks and welcome our new contributors @luqs1 and @anti-social !
+
 # Version 0.19.1 (2026-04-19)
 
 This is a bugfix release.
