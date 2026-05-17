@@ -798,9 +798,9 @@ fn _new_socket_bind(intf: &Interface, should_loop: bool) -> Result<MyUdpSocket> 
 
             // Test if we can send packets successfully.
             let multicast_addr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
-            let test_packets = DnsOutgoing::new(0)._to_data_on_wire();
-            for packet in test_packets {
-                sock.send_to(&packet, &multicast_addr)
+            let packets = DnsOutgoing::new(0).to_packets();
+            for packet_data in packets.iter().map(DnsOutPacket::as_bytes) {
+                sock.send_to(&packet_data, &multicast_addr)
                     .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
             }
             MyUdpSocket::new(sock)
@@ -2307,7 +2307,9 @@ impl Zeroconf {
         }
 
         let (sent_packets, invalid_intf_addrs) = send_dns_outgoing(&out, intf, sock, self.port);
-        let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
+        if !invalid_intf_addrs.is_empty() {
+            let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addrs));
+        }
         sent_packets
     }
 
@@ -4266,15 +4268,20 @@ fn send_dns_outgoing(
             .collect()
     };
     let mut invalid_interfaces = HashSet::new();
+    let mut is_sent = false;
     let packets = out.to_packets();
     for if_addr in if_addrs {
-        if let Err(InternalError::IntfAddrInvalid(intf)) =
-            send_dns_outgoing_impl(out, &packets, if_name, my_intf.index, if_addr, sock, port)
-        {
-            invalid_interfaces.insert(intf);
+        match send_dns_outgoing_impl(out, &packets, if_name, my_intf.index, if_addr, sock, port) {
+            Ok(()) => {
+                is_sent = true;
+            }
+            Err(InternalError::IntfAddrInvalid(intf)) => {
+                invalid_interfaces.insert(intf);
+            }
         }
     }
-    (packets, invalid_interfaces)
+    let sent_packets = if is_sent { packets } else { vec![] };
+    (sent_packets, invalid_interfaces)
 }
 
 /// Send an outgoing mDNS query or response, and returns the packet bytes.
@@ -5220,9 +5227,13 @@ mod tests {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
 
         // Construct a dummy DnsIncoming message
-        let mut dummy_data = out._to_data_on_wire();
+        let dummy_packets = out.to_packets();
         let interface_id = InterfaceId::from(&service_intf);
-        let incoming = DnsIncoming::new(dummy_data.pop().unwrap(), interface_id).unwrap();
+        let incoming = DnsIncoming::new(
+            dummy_packets.iter().next().unwrap().as_bytes().to_vec(),
+            interface_id,
+        )
+        .unwrap();
 
         // Add an answer of TXT type for the service.
         let if_addrs = vec![service_intf.ip()];

@@ -1916,12 +1916,6 @@ impl DnsOutgoing {
         self.questions.push(q);
     }
 
-    /// Returns a list of actual DNS packet data to be sent on the wire.
-    pub(crate) fn _to_data_on_wire(&self) -> Vec<Vec<u8>> {
-        let packet_list = self.to_packets();
-        packet_list.into_iter().map(|p| p.data).collect()
-    }
-
     /// Encode self into one or more packets.
     pub fn to_packets(&self) -> Vec<DnsOutPacket> {
         let mut packet_list = Vec::new();
