@@ -32,7 +32,7 @@ The following table shows how much this implementation is compliant with RFCs re
 
 | Feature | RFC section | Compliance | Notes |
 | ------- | ----------- | ---------- | ----- |
-| One-Shot Multicast DNS Queries (i.e. Legacy Unicast Responses) | RFC 6762 [section 5.1][ref1] [section 6.7][ref9] | ❌ | because we don't support Unicast yet. |
+| One-Shot Multicast DNS Queries (i.e. Legacy Unicast Responses) | RFC 6762 [section 5.1][ref1] [section 6.7][ref9] | ✅ | Reply unicast to the querier when the source port is not 5353, regardless of whether the query was multicast or unicast |
 | Unicast Responses | RFC 6762 [section 5.4][ref2] | ❌ |
 | Known-Answer Suppression | RFC 6762 [section 7.1][ref3] | ✅ |
 | Multipacket Known Answer Suppression querier | RFC 6762 [section 7.2][ref4] | ✅ |
