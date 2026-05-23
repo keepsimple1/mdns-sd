@@ -124,7 +124,6 @@ impl ScopedIpV6 {
 /// An IP address, either IPv4 or IPv6, that supports scope_id for IPv6.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
-#[cfg_attr(feature = "serde", serde(untagged))]
 #[non_exhaustive]
 pub enum ScopedIp {
     V4(ScopedIpV4),
