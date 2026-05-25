@@ -1,3 +1,22 @@
+# Version 0.20.0 (2026-05-24)
+
+This release contains a small breaking change in the optional `serde` feature, hence the minor version bump.
+
+## Breaking changes
+
+- Remove `#[serde(untagged)]` from `ScopedIp`. The serialized form of `ScopedIp` now includes its enum variant tag (`V4` / `V6`), which improves compatibility with binary serde formats (e.g. MessagePack). Only affects users of the optional `serde` feature. (#472, commit `5fa4b92`)
+
+## Other changes
+
+- tests: remove explicit random port assignments.
+- chore: remove an unused dev-dependency.
+
+## All changes
+
+* `fee8ab7 2026-05-24` remove unused dev-dependency (keepsimple1)
+* `e745a2f 2026-05-23` tests: remove explicit port random assignments (#455) (CosminPerRam)
+* `5fa4b92 2026-05-22` Remove untagged attribute from ScopedIp (#472) (Rascal)
+
 # Version 0.19.2 (2026-05-17)
 
 This is a bugfix and small-feature release.
