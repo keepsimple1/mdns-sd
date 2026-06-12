@@ -2572,6 +2572,7 @@ fn test_interface_id_get_addrs() {
 
 /// A helper function to include a timestamp for println.
 fn timed_println(msg: String) {
-    let formatted_time = jiff::Timestamp::now().to_string();
+    let now = SystemTime::now();
+    let formatted_time = humantime::format_rfc3339(now);
     println!("[{}] {}", formatted_time, msg);
 }
