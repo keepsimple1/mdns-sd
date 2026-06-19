@@ -905,6 +905,9 @@ pub enum IfKind {
 
     /// By interface index, IPv6 only.
     IndexV6(u32),
+
+    /// By a custom rule
+    Predicate(IfPredicate),
 }
 
 impl IfKind {
@@ -920,6 +923,7 @@ impl IfKind {
             Self::LoopbackV6 => intf.is_loopback() && intf.ip().is_ipv6(),
             Self::IndexV4(idx) => intf.index == Some(*idx) && intf.ip().is_ipv4(),
             Self::IndexV6(idx) => intf.index == Some(*idx) && intf.ip().is_ipv6(),
+            Self::Predicate(p) => p.matches(intf),
         }
     }
 }
@@ -968,6 +972,35 @@ impl<T: Into<IfKind>> IntoIfKindVec for Vec<T> {
     fn into_vec(self) -> IfKindVec {
         let kinds: Vec<IfKind> = self.into_iter().map(|x| x.into()).collect();
         IfKindVec { kinds }
+    }
+}
+
+/// A predicate function for matching against interfaces.
+#[derive(Clone)]
+pub struct IfPredicate(std::sync::Arc<dyn Fn(&Interface) -> bool + Send + Sync>);
+
+impl IfPredicate {
+    /// Wraps the given predicate function.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mdns_sd::IfPredicate;
+    /// // Match any interface that doesn't look like a virtual bridge
+    /// IfPredicate::new(|intf| !intf.name.starts_with("virbr"));
+    /// ```
+    pub fn new(predicate: impl Fn(&Interface) -> bool + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(predicate))
+    }
+
+    pub(crate) fn matches(&self, intf: &Interface) -> bool {
+        self.0(intf)
+    }
+}
+
+impl std::fmt::Debug for IfPredicate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "IfPredicate(...)")
     }
 }
 
