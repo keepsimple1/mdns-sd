@@ -909,7 +909,7 @@ pub enum IfKind {
 
 impl IfKind {
     /// Checks if `intf` matches with this interface kind.
-    fn matches(&self, intf: &Interface) -> bool {
+    pub(crate) fn matches(&self, intf: &Interface) -> bool {
         match self {
             Self::All => true,
             Self::IPv4 => intf.ip().is_ipv4(),

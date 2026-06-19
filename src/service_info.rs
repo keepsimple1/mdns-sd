@@ -506,19 +506,8 @@ impl ServiceInfo {
     }
 
     fn is_address_supported(&self, intf: &Interface) -> bool {
+        let interface_supported = self.supported_intfs.iter().any(|i| i.matches(intf));
         let addr = intf.ip();
-        let interface_supported = self.supported_intfs.iter().any(|i| match i {
-            IfKind::Name(name) => *name == intf.name,
-            IfKind::IPv4 => addr.is_ipv4(),
-            IfKind::IPv6 => addr.is_ipv6(),
-            IfKind::Addr(a) => *a == addr,
-            IfKind::LoopbackV4 => matches!(addr, IpAddr::V4(ipv4) if ipv4.is_loopback()),
-            IfKind::LoopbackV6 => matches!(addr, IpAddr::V6(ipv6) if ipv6.is_loopback()),
-            IfKind::IndexV4(idx) => intf.index == Some(*idx) && addr.is_ipv4(),
-            IfKind::IndexV6(idx) => intf.index == Some(*idx) && addr.is_ipv6(),
-            IfKind::All => true,
-        });
-
         let passes_link_local = !self.is_link_local_only
             || match &addr {
                 IpAddr::V4(ipv4) => ipv4.is_link_local(),
