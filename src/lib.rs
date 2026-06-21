@@ -180,9 +180,9 @@ mod service_info;
 pub use dns_parser::{InterfaceId, RRType, ScopedIp, ScopedIpV4, ScopedIpV6};
 pub use error::{Error, Result};
 pub use service_daemon::{
-    DaemonEvent, DaemonStatus, DnsNameChange, HostnameResolutionEvent, IfKind, Metrics,
-    ServiceDaemon, ServiceEvent, UnregisterStatus, IP_CHECK_INTERVAL_IN_SECS_DEFAULT, MDNS_PORT,
-    SERVICE_NAME_LEN_MAX_DEFAULT, VERIFY_TIMEOUT_DEFAULT,
+    DaemonEvent, DaemonStatus, DnsNameChange, HostnameResolutionEvent, IfKind, IfPredicate,
+    Metrics, ServiceDaemon, ServiceEvent, UnregisterStatus, IP_CHECK_INTERVAL_IN_SECS_DEFAULT,
+    MDNS_PORT, SERVICE_NAME_LEN_MAX_DEFAULT, VERIFY_TIMEOUT_DEFAULT,
 };
 pub use service_info::{
     AsIpAddrs, IntoTxtProperties, ResolvedService, ServiceInfo, TxtProperties, TxtProperty,

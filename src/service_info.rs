@@ -506,19 +506,8 @@ impl ServiceInfo {
     }
 
     fn is_address_supported(&self, intf: &Interface) -> bool {
+        let interface_supported = self.supported_intfs.iter().any(|i| i.matches(intf));
         let addr = intf.ip();
-        let interface_supported = self.supported_intfs.iter().any(|i| match i {
-            IfKind::Name(name) => *name == intf.name,
-            IfKind::IPv4 => addr.is_ipv4(),
-            IfKind::IPv6 => addr.is_ipv6(),
-            IfKind::Addr(a) => *a == addr,
-            IfKind::LoopbackV4 => matches!(addr, IpAddr::V4(ipv4) if ipv4.is_loopback()),
-            IfKind::LoopbackV6 => matches!(addr, IpAddr::V6(ipv6) if ipv6.is_loopback()),
-            IfKind::IndexV4(idx) => intf.index == Some(*idx) && addr.is_ipv4(),
-            IfKind::IndexV6(idx) => intf.index == Some(*idx) && addr.is_ipv6(),
-            IfKind::All => true,
-        });
-
         let passes_link_local = !self.is_link_local_only
             || match &addr {
                 IpAddr::V4(ipv4) => ipv4.is_link_local(),
@@ -1416,7 +1405,7 @@ impl ResolvedService {
 #[cfg(test)]
 mod tests {
     use super::{decode_txt, encode_txt, u8_slice_to_hex, ServiceInfo, TxtProperty};
-    use crate::IfKind;
+    use crate::{IfKind, IfPredicate};
     use if_addrs::{IfAddr, IfOperStatus, Ifv4Addr, Ifv6Addr, Interface};
     use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -1768,6 +1757,14 @@ mod tests {
         service_info.set_interfaces(vec![IfKind::LoopbackV6]);
         assert!(!service_info.is_address_supported(&intf_loopback_v4));
         assert!(service_info.is_address_supported(&intf_loopback_v6));
+
+        // supported interfaces: IPv4 and name = "foo"
+        service_info.set_interfaces(vec![IfKind::Predicate(IfPredicate::new(|intf| {
+            intf.ip().is_ipv4() && intf.name == "foo"
+        }))]);
+        assert!(service_info.is_address_supported(&intf_loopback_v4));
+        assert!(!service_info.is_address_supported(&intf_v4));
+        assert!(!service_info.is_address_supported(&intf_loopback_v6));
     }
 
     #[test]
