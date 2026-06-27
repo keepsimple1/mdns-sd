@@ -1,3 +1,22 @@
+# Version 0.20.1 (2026-06-28)
+
+This is a small feature and maintenance release.
+
+## New features
+
+- Add `IfKind::Predicate` and a new `IfPredicate` type, allowing interfaces to be selected with a custom predicate function (e.g. matching by interface name pattern). (#474, commit `fd72146`)
+
+## Other changes
+
+- chore(deps): update dependencies. (#454, commit `06bdad1`)
+
+## All changes
+
+* `fd72146 2026-06-22` Add `IfPredicate` for more flexible interface filtering (#474) (MAlba124)
+* `06bdad1 2026-06-16` chore(deps): update (#454) (CosminPerRam)
+
+Thanks and welcome our new contributor @MAlba124 !
+
 # Version 0.20.0 (2026-05-24)
 
 This release contains a small breaking change in the optional `serde` feature, hence the minor version bump.

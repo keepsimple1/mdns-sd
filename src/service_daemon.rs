@@ -906,7 +906,7 @@ pub enum IfKind {
     /// By interface index, IPv6 only.
     IndexV6(u32),
 
-    /// By a custom rule
+    /// By a user-supplied predicate function.
     Predicate(IfPredicate),
 }
 
@@ -980,7 +980,8 @@ impl<T: Into<IfKind>> IntoIfKindVec for Vec<T> {
 pub struct IfPredicate(std::sync::Arc<dyn Fn(&Interface) -> bool + Send + Sync>);
 
 impl IfPredicate {
-    /// Wraps the given predicate function.
+    /// Creates a predicate from a closure that decides whether an interface
+    /// matches.
     ///
     /// # Example
     ///
