@@ -1786,6 +1786,22 @@ impl DnsOutgoing {
         self.authorities.push(record);
     }
 
+    /// Retains only the answers for which `keep` returns true.
+    pub(crate) fn retain_answers<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(&DnsRecordBox) -> bool,
+    {
+        self.answers.retain(|(record, _)| keep(record));
+    }
+
+    /// Retains only the additional records for which `keep` returns true.
+    pub(crate) fn retain_additionals<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(&DnsRecordBox) -> bool,
+    {
+        self.additionals.retain(|record| keep(record));
+    }
+
     /// Returns true if `answer` is added to the outgoing msg.
     /// Returns false if `answer` was not added as it expired or suppressed by the incoming `msg`.
     pub fn add_answer(

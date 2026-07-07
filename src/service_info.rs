@@ -3,7 +3,7 @@
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace};
 use crate::{
-    dns_parser::{DnsIncoming, DnsRecordBox, DnsRecordExt, DnsSrv, RRType, ScopedIp},
+    dns_parser::{DnsIncoming, DnsOutgoing, DnsRecordBox, DnsRecordExt, DnsSrv, RRType, ScopedIp},
     Error, IfKind, InterfaceId, Result,
 };
 use if_addrs::{IfAddr, Interface};
@@ -1141,6 +1141,11 @@ pub(crate) struct DnsRegistry {
 
     /// Mapping from original names to new names.
     pub(crate) name_changes: HashMap<String, String>,
+
+    /// RFC 6762 section 6: the last time (in millis) each record was multicast
+    /// on this interface, keyed by the record's identity (name + type + rdata).
+    /// Used to enforce the per-record, per-interface one-second rate limit.
+    pub(crate) last_multicast: HashMap<String, u64>,
 }
 
 impl DnsRegistry {
@@ -1150,6 +1155,33 @@ impl DnsRegistry {
             active: HashMap::new(),
             new_timers: Vec::new(),
             name_changes: HashMap::new(),
+            last_multicast: HashMap::new(),
+        }
+    }
+
+    /// Enforces the RFC 6762 section 6 multicast rate limit on `out`.
+    ///
+    /// A responder MUST NOT multicast a record on a given interface until at
+    /// least one second has elapsed since the last time that record was
+    /// multicast on that particular interface.
+    ///
+    /// Drops from `out` any answer or additional record that was multicast within the
+    /// last second, and records `now` as the last-multicast time for the records kept.
+    ///
+    /// This must NOT be applied to probe queries, legacy unicast responses, or
+    /// goodbye packets, which are exempt from the rate limit.
+    pub(crate) fn apply_multicast_rate_limit(&mut self, out: &mut DnsOutgoing, now: u64) {
+        // Prune stale entries so the map stays bounded across name changes;
+        // any record older than the one-second window is irrelevant now.
+        self.last_multicast
+            .retain(|_, last| now.saturating_sub(*last) < 1000);
+
+        let last_multicast = &mut self.last_multicast;
+        out.retain_answers(|record| keep_after_rate_limit(last_multicast, record, now));
+
+        // Only touch additionals if an answer survived.
+        if out.answers_count() > 0 {
+            out.retain_additionals(|record| keep_after_rate_limit(last_multicast, record, now));
         }
     }
 
@@ -1288,6 +1320,36 @@ impl DnsRegistry {
     }
 }
 
+/// Returns whether `record` may still be multicast under the RFC 6762 section 6
+/// rate limit, updating `last_multicast` to `now` when it is kept.
+fn keep_after_rate_limit(
+    last_multicast: &mut HashMap<String, u64>,
+    record: &DnsRecordBox,
+    now: u64,
+) -> bool {
+    let key = rate_limit_key(record);
+    match last_multicast.get(&key) {
+        Some(last) if now.saturating_sub(*last) < 1000 => false,
+        _ => {
+            last_multicast.insert(key, now);
+            true
+        }
+    }
+}
+
+/// Builds the identity key for a record used by the RFC 6762 section 6
+/// multicast rate limit: name (case-insensitive) + type + rdata. TTL and the
+/// cache-flush bit are intentionally excluded, so the same logical record maps
+/// to a single key regardless of the TTL it is sent with.
+fn rate_limit_key(record: &DnsRecordBox) -> String {
+    format!(
+        "{}-{}-{}",
+        record.get_name().to_lowercase(),
+        record.get_type(),
+        record.rdata_print(),
+    )
+}
+
 /// Returns a tuple of (service_type_domain, optional_sub_domain)
 pub(crate) fn split_sub_domain(domain: &str) -> (&str, Option<&str>) {
     if let Some((_, ty_domain)) = domain.rsplit_once("._sub.") {
@@ -1404,10 +1466,103 @@ impl ResolvedService {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_txt, encode_txt, u8_slice_to_hex, ServiceInfo, TxtProperty};
+    use super::{decode_txt, encode_txt, u8_slice_to_hex, DnsRegistry, ServiceInfo, TxtProperty};
+    use crate::dns_parser::{DnsOutgoing, DnsPointer, RRType, CLASS_IN, FLAGS_QR_RESPONSE};
     use crate::{IfKind, IfPredicate};
     use if_addrs::{IfAddr, IfOperStatus, Ifv4Addr, Ifv6Addr, Interface};
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// RFC 6762 section 6: the same record must not be multicast on an
+    /// interface more than once per second, but is allowed again after a
+    /// second has elapsed.
+    #[test]
+    fn test_multicast_rate_limit() {
+        let mut registry = DnsRegistry::new();
+
+        let build_out = || {
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+            out.add_answer_at_time(
+                DnsPointer::new(
+                    "_test._tcp.local.",
+                    RRType::PTR,
+                    CLASS_IN,
+                    4500,
+                    "inst._test._tcp.local.".to_string(),
+                ),
+                0,
+            );
+            out
+        };
+
+        let now = 1_000_000;
+
+        // First multicast at `now`: the record passes through.
+        let mut out = build_out();
+        registry.apply_multicast_rate_limit(&mut out, now);
+        assert_eq!(out.answers_count(), 1);
+
+        // Again 500ms later: the record is throttled (dropped).
+        let mut out = build_out();
+        registry.apply_multicast_rate_limit(&mut out, now + 500);
+        assert_eq!(out.answers_count(), 0);
+
+        // Exactly 1 second after the first send: allowed again.
+        let mut out = build_out();
+        registry.apply_multicast_rate_limit(&mut out, now + 1000);
+        assert_eq!(out.answers_count(), 1);
+    }
+
+    /// When every answer is throttled the packet is not sent, so any surviving
+    /// additional record must NOT be stamped as multicast — otherwise a later
+    /// answer for that same record would be wrongly throttled even though it was
+    /// never put on the wire.
+    #[test]
+    fn test_multicast_rate_limit_additionals_not_stamped_without_answer() {
+        let mut registry = DnsRegistry::new();
+
+        let ptr_answer = || {
+            DnsPointer::new(
+                "_test._tcp.local.",
+                RRType::PTR,
+                CLASS_IN,
+                4500,
+                "inst._test._tcp.local.".to_string(),
+            )
+        };
+        let extra = || {
+            DnsPointer::new(
+                "_other._tcp.local.",
+                RRType::PTR,
+                CLASS_IN,
+                4500,
+                "inst._other._tcp.local.".to_string(),
+            )
+        };
+
+        let now = 1_000_000;
+
+        // Send the PTR answer once so it is throttled going forward.
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+        out.add_answer_at_time(ptr_answer(), 0);
+        registry.apply_multicast_rate_limit(&mut out, now);
+        assert_eq!(out.answers_count(), 1);
+
+        // 100ms later: PTR answer is throttled, and `extra` rides along as an
+        // additional. With no answer surviving, nothing is sent.
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+        out.add_answer_at_time(ptr_answer(), 0);
+        out.add_additional_answer(extra());
+        registry.apply_multicast_rate_limit(&mut out, now + 100);
+        assert_eq!(out.answers_count(), 0);
+
+        // 200ms later: `extra` is now requested as a real answer. It must pass,
+        // because it was never actually multicast above (only carried as an
+        // unsent additional), so the 1-second limit does not apply to it.
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+        out.add_answer_at_time(extra(), 0);
+        registry.apply_multicast_rate_limit(&mut out, now + 200);
+        assert_eq!(out.answers_count(), 1);
+    }
 
     #[test]
     fn test_txt_encode_decode() {

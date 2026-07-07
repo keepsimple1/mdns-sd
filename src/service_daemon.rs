@@ -3299,7 +3299,6 @@ impl Zeroconf {
         }
 
         if out.answers_count() > 0 {
-            debug!("sending response on intf {}", &intf.name);
             out.set_id(msg.id());
 
             // Pick a source IfAddr on `intf` whose subnet contains the querier's IP.
@@ -3327,24 +3326,35 @@ impl Zeroconf {
                     out.add_question(q.entry_name(), q.entry_type());
                 }
                 out.clear_cache_flush_bits();
+            } else if msg.num_authorities() == 0 {
+                // RFC 6762 §6: a record MUST NOT be multicast on an interface
+                // more than once per second. Two exceptions skip the limit here:
+                //   - Unicast responses (handled above).
+                //   - Answering probe queries: a probe carries the proposed
+                //     records in its Authority Section, and we MUST defend our
+                //     records immediately so the prober detects the conflict.
+                dns_registry.apply_multicast_rate_limit(&mut out, current_time_millis());
             }
 
-            if let Err(InternalError::IntfAddrInvalid(intf_addr)) = send_dns_outgoing(
-                &out,
-                intf,
-                &sock.pktinfo,
-                self.port,
-                matched_source,
-                unicast_dest,
-            ) {
-                let invalid_intf_addr = HashSet::from([intf_addr]);
-                let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addr));
+            if out.answers_count() > 0 {
+                debug!("sending response on intf {}", &intf.name);
+                if let Err(InternalError::IntfAddrInvalid(intf_addr)) = send_dns_outgoing(
+                    &out,
+                    intf,
+                    &sock.pktinfo,
+                    self.port,
+                    matched_source,
+                    unicast_dest,
+                ) {
+                    let invalid_intf_addr = HashSet::from([intf_addr]);
+                    let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addr));
+                }
+
+                let if_name = intf.name.clone();
+
+                self.increase_counter(Counter::Respond, 1);
+                self.notify_monitors(DaemonEvent::Respond(if_name));
             }
-
-            let if_name = intf.name.clone();
-
-            self.increase_counter(Counter::Respond, 1);
-            self.notify_monitors(DaemonEvent::Respond(if_name));
         }
 
         self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count());
@@ -4658,8 +4668,13 @@ fn announce_service_on_intf(
     port: u16,
 ) -> MyResult<bool> {
     let is_ipv4 = sock.domain() == Domain::IPV4;
-    if let Some(out) = prepare_announce(info, intf, dns_registry, is_ipv4) {
-        let _ = send_dns_outgoing(&out, intf, sock, port, None, None)?;
+    if let Some(mut out) = prepare_announce(info, intf, dns_registry, is_ipv4) {
+        // RFC 6762 §6: a record MUST NOT be multicast on an interface more than
+        // once per second. Announcements are unsolicited multicast responses.
+        dns_registry.apply_multicast_rate_limit(&mut out, current_time_millis());
+        if out.answers_count() > 0 {
+            let _ = send_dns_outgoing(&out, intf, sock, port, None, None)?;
+        }
         return Ok(true);
     }
 
