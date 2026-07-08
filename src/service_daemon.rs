@@ -97,6 +97,7 @@ const ANNOUNCE_SECOND_JITTER_MILLIS: u64 = 50;
 // The §8.3 announcement spacing MUST stay strictly wider than the §6 rate-limit
 // window, or the rate limit throttles the second announcement away (leaving only
 // one unsolicited response). Enforced at compile time so the two can't drift.
+#[allow(clippy::assertions_on_constants)]
 const _: () = assert!(ANNOUNCE_SECOND_DELAY_MILLIS > MULTICAST_RATE_LIMIT_MILLIS);
 
 /// Response status code for the service `unregister` call.
