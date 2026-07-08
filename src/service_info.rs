@@ -1197,7 +1197,7 @@ impl DnsRegistry {
 
         // Prune stale entries so the map stays bounded across name changes;
         // any record older than the one-second window is irrelevant now.
-        last_multicast.retain(|_, last| now.saturating_sub(*last) < 1000);
+        last_multicast.retain(|_, last| now.saturating_sub(*last) < MULTICAST_RATE_LIMIT_MILLIS);
 
         out.retain_answers(|record| keep_after_rate_limit(last_multicast, record, now));
 
@@ -1342,6 +1342,11 @@ impl DnsRegistry {
     }
 }
 
+/// RFC 6762 section 6 per-record, per-interface multicast rate-limit window:
+/// a record must not be re-multicast until at least this many millis have
+/// elapsed since it was last multicast on that interface.
+pub(crate) const MULTICAST_RATE_LIMIT_MILLIS: u64 = 1000;
+
 /// Returns whether `record` may still be multicast under the RFC 6762 section 6
 /// rate limit, updating `last_multicast` to `now` when it is kept.
 fn keep_after_rate_limit(
@@ -1351,7 +1356,7 @@ fn keep_after_rate_limit(
 ) -> bool {
     let key = rate_limit_key(record);
     match last_multicast.get(&key) {
-        Some(last) if now.saturating_sub(*last) < 1000 => false,
+        Some(last) if now.saturating_sub(*last) < MULTICAST_RATE_LIMIT_MILLIS => false,
         _ => {
             last_multicast.insert(key, now);
             true

@@ -39,7 +39,10 @@ use crate::{
         CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
     },
     error::{e_fmt, Error, Result},
-    service_info::{valid_ip_on_intf, DnsRegistry, MyIntf, Probe, ServiceInfo, ServiceStatus},
+    service_info::{
+        valid_ip_on_intf, DnsRegistry, MyIntf, Probe, ServiceInfo, ServiceStatus,
+        MULTICAST_RATE_LIMIT_MILLIS,
+    },
     Receiver, ResolvedService, TxtProperties,
 };
 use flume::{bounded, Sender, TrySendError};
@@ -77,6 +80,24 @@ const GROUP_ADDR_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
 const LOOPBACK_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
 const RESOLVE_WAIT_IN_MILLIS: u64 = 500;
+
+/// RFC 6762 §8.3: the two unsolicited announcements are sent "one second apart".
+/// We schedule the second one strictly wider than the §6 multicast rate-limit
+/// window ([`MULTICAST_RATE_LIMIT_MILLIS`]) so that scheduling skew — the few
+/// millis between capturing this base time and actually stamping the records as
+/// multicast — can never make the rate limit throttle the second announcement
+/// away. A small random jitter is added on top (see `ANNOUNCE_SECOND_JITTER_MILLIS`)
+/// to de-synchronize announcements across hosts and services.
+const ANNOUNCE_SECOND_DELAY_MILLIS: u64 = MULTICAST_RATE_LIMIT_MILLIS + 100;
+
+/// Upper bound (exclusive) of the random jitter added to the second announcement
+/// delay. Kept small so the spacing stays close to the RFC's "one second".
+const ANNOUNCE_SECOND_JITTER_MILLIS: u64 = 50;
+
+// The §8.3 announcement spacing MUST stay strictly wider than the §6 rate-limit
+// window, or the rate limit throttles the second announcement away (leaving only
+// one unsolicited response). Enforced at compile time so the two can't drift.
+const _: () = assert!(ANNOUNCE_SECOND_DELAY_MILLIS > MULTICAST_RATE_LIMIT_MILLIS);
 
 /// Response status code for the service `unregister` call.
 #[derive(Debug)]
@@ -2150,7 +2171,9 @@ impl Zeroconf {
         // RFC 6762 section 8.3.
         // ..The Multicast DNS responder MUST send at least two unsolicited
         //    responses, one second apart.
-        let next_time = current_time_millis() + 1000;
+        let next_time = current_time_millis()
+            + ANNOUNCE_SECOND_DELAY_MILLIS
+            + fastrand::u64(0..ANNOUNCE_SECOND_JITTER_MILLIS);
         for if_index in outgoing_intfs {
             self.add_retransmission(
                 next_time,
@@ -2240,7 +2263,9 @@ impl Zeroconf {
                     };
 
                     if announced_v4 || announced_v6 {
-                        let next_time = now + 1000;
+                        let next_time = now
+                            + ANNOUNCE_SECOND_DELAY_MILLIS
+                            + fastrand::u64(0..ANNOUNCE_SECOND_JITTER_MILLIS);
                         let command =
                             Command::RegisterResend(info.get_fullname().to_string(), *if_index);
                         self.retransmissions.push(ReRun { next_time, command });
