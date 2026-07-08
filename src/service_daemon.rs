@@ -3333,7 +3333,7 @@ impl Zeroconf {
                 //   - Answering probe queries: a probe carries the proposed
                 //     records in its Authority Section, and we MUST defend our
                 //     records immediately so the prober detects the conflict.
-                dns_registry.apply_multicast_rate_limit(&mut out, current_time_millis());
+                dns_registry.apply_multicast_rate_limit(&mut out, current_time_millis(), is_ipv4);
             }
 
             if out.answers_count() > 0 {
@@ -4671,7 +4671,7 @@ fn announce_service_on_intf(
     if let Some(mut out) = prepare_announce(info, intf, dns_registry, is_ipv4) {
         // RFC 6762 §6: a record MUST NOT be multicast on an interface more than
         // once per second. Announcements are unsolicited multicast responses.
-        dns_registry.apply_multicast_rate_limit(&mut out, current_time_millis());
+        dns_registry.apply_multicast_rate_limit(&mut out, current_time_millis(), is_ipv4);
         if out.answers_count() > 0 {
             let _ = send_dns_outgoing(&out, intf, sock, port, None, None)?;
         }

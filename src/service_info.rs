@@ -1143,9 +1143,18 @@ pub(crate) struct DnsRegistry {
     pub(crate) name_changes: HashMap<String, String>,
 
     /// RFC 6762 section 6: the last time (in millis) each record was multicast
-    /// on this interface, keyed by the record's identity (name + type + rdata).
-    /// Used to enforce the per-record, per-interface one-second rate limit.
-    pub(crate) last_multicast: HashMap<String, u64>,
+    /// on this interface's IPv4 group, keyed by the record's identity
+    /// (name + type + rdata). Used to enforce the per-record, per-interface
+    /// one-second rate limit.
+    ///
+    /// IPv4 and IPv6 are tracked separately: a single interface (`if_index`)
+    /// carries both address families, but they are distinct multicast groups
+    /// (`224.0.0.251` and `ff02::fb`) reaching potentially different listeners,
+    /// so sending a record on one group must not throttle it on the other.
+    pub(crate) last_multicast_v4: HashMap<String, u64>,
+
+    /// Same as [`Self::last_multicast_v4`] but for this interface's IPv6 group.
+    pub(crate) last_multicast_v6: HashMap<String, u64>,
 }
 
 impl DnsRegistry {
@@ -1155,7 +1164,8 @@ impl DnsRegistry {
             active: HashMap::new(),
             new_timers: Vec::new(),
             name_changes: HashMap::new(),
-            last_multicast: HashMap::new(),
+            last_multicast_v4: HashMap::new(),
+            last_multicast_v6: HashMap::new(),
         }
     }
 
@@ -1165,18 +1175,30 @@ impl DnsRegistry {
     /// least one second has elapsed since the last time that record was
     /// multicast on that particular interface.
     ///
+    /// `is_ipv4` selects the per-family bucket: the IPv4 and IPv6 groups on one
+    /// interface are throttled independently (see [`Self::last_multicast_v4`]).
+    ///
     /// Drops from `out` any answer or additional record that was multicast within the
     /// last second, and records `now` as the last-multicast time for the records kept.
     ///
     /// This must NOT be applied to probe queries, legacy unicast responses, or
     /// goodbye packets, which are exempt from the rate limit.
-    pub(crate) fn apply_multicast_rate_limit(&mut self, out: &mut DnsOutgoing, now: u64) {
+    pub(crate) fn apply_multicast_rate_limit(
+        &mut self,
+        out: &mut DnsOutgoing,
+        now: u64,
+        is_ipv4: bool,
+    ) {
+        let last_multicast = if is_ipv4 {
+            &mut self.last_multicast_v4
+        } else {
+            &mut self.last_multicast_v6
+        };
+
         // Prune stale entries so the map stays bounded across name changes;
         // any record older than the one-second window is irrelevant now.
-        self.last_multicast
-            .retain(|_, last| now.saturating_sub(*last) < 1000);
+        last_multicast.retain(|_, last| now.saturating_sub(*last) < 1000);
 
-        let last_multicast = &mut self.last_multicast;
         out.retain_answers(|record| keep_after_rate_limit(last_multicast, record, now));
 
         // Only touch additionals if an answer survived.
@@ -1498,18 +1520,67 @@ mod tests {
 
         // First multicast at `now`: the record passes through.
         let mut out = build_out();
-        registry.apply_multicast_rate_limit(&mut out, now);
+        registry.apply_multicast_rate_limit(&mut out, now, true);
         assert_eq!(out.answers_count(), 1);
 
         // Again 500ms later: the record is throttled (dropped).
         let mut out = build_out();
-        registry.apply_multicast_rate_limit(&mut out, now + 500);
+        registry.apply_multicast_rate_limit(&mut out, now + 500, true);
         assert_eq!(out.answers_count(), 0);
 
         // Exactly 1 second after the first send: allowed again.
         let mut out = build_out();
-        registry.apply_multicast_rate_limit(&mut out, now + 1000);
+        registry.apply_multicast_rate_limit(&mut out, now + 1000, true);
         assert_eq!(out.answers_count(), 1);
+    }
+
+    /// A single interface carries both IPv4 and IPv6, but they are distinct
+    /// multicast groups reaching different listeners, so the one-second limit
+    /// is tracked per family: multicasting a record on IPv4 must NOT throttle
+    /// the same record on IPv6 (and vice versa). Otherwise the shared PTR/SRV/
+    /// TXT records would be stripped from whichever family is sent second.
+    #[test]
+    fn test_multicast_rate_limit_per_family() {
+        let mut registry = DnsRegistry::new();
+
+        let build_out = || {
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+            out.add_answer_at_time(
+                DnsPointer::new(
+                    "_test._tcp.local.",
+                    RRType::PTR,
+                    CLASS_IN,
+                    4500,
+                    "inst._test._tcp.local.".to_string(),
+                ),
+                0,
+            );
+            out
+        };
+
+        let now = 1_000_000;
+
+        // Multicast the record on IPv4: passes through.
+        let mut out = build_out();
+        registry.apply_multicast_rate_limit(&mut out, now, true);
+        assert_eq!(out.answers_count(), 1);
+
+        // The same record on IPv6 immediately after: must still pass, because
+        // the IPv6 group has its own bucket.
+        let mut out = build_out();
+        registry.apply_multicast_rate_limit(&mut out, now, false);
+        assert_eq!(out.answers_count(), 1);
+
+        // A second IPv4 send within the window is still throttled, confirming
+        // the IPv6 send did not reset (or get charged to) the IPv4 bucket.
+        let mut out = build_out();
+        registry.apply_multicast_rate_limit(&mut out, now + 500, true);
+        assert_eq!(out.answers_count(), 0);
+
+        // Likewise a second IPv6 send within the window is throttled.
+        let mut out = build_out();
+        registry.apply_multicast_rate_limit(&mut out, now + 500, false);
+        assert_eq!(out.answers_count(), 0);
     }
 
     /// When every answer is throttled the packet is not sent, so any surviving
@@ -1544,7 +1615,7 @@ mod tests {
         // Send the PTR answer once so it is throttled going forward.
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
         out.add_answer_at_time(ptr_answer(), 0);
-        registry.apply_multicast_rate_limit(&mut out, now);
+        registry.apply_multicast_rate_limit(&mut out, now, true);
         assert_eq!(out.answers_count(), 1);
 
         // 100ms later: PTR answer is throttled, and `extra` rides along as an
@@ -1552,7 +1623,7 @@ mod tests {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
         out.add_answer_at_time(ptr_answer(), 0);
         out.add_additional_answer(extra());
-        registry.apply_multicast_rate_limit(&mut out, now + 100);
+        registry.apply_multicast_rate_limit(&mut out, now + 100, true);
         assert_eq!(out.answers_count(), 0);
 
         // 200ms later: `extra` is now requested as a real answer. It must pass,
@@ -1560,7 +1631,7 @@ mod tests {
         // unsent additional), so the 1-second limit does not apply to it.
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
         out.add_answer_at_time(extra(), 0);
-        registry.apply_multicast_rate_limit(&mut out, now + 200);
+        registry.apply_multicast_rate_limit(&mut out, now + 200, true);
         assert_eq!(out.answers_count(), 1);
     }
 
