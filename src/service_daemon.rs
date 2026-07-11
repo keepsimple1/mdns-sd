@@ -106,7 +106,7 @@ const _: () = assert!(ANNOUNCE_SECOND_DELAY_MILLIS > MULTICAST_RATE_LIMIT_MILLIS
 /// responder SHOULD delay its response by a random amount of time
 /// selected with uniform random distribution in the range 20-120 ms.
 /// a multicast response whose answer is a member of a *shared*
-/// 
+///
 /// I think the min of 20s is a bit too long. Use 10ms instead.
 const SHARED_RESPONSE_DELAY_MIN_MILLIS: u64 = 10;
 
@@ -3391,9 +3391,8 @@ impl Zeroconf {
         if delayed && out.answers_count() > 0 {
             out.set_id(msg.id());
             self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count());
-            let delay = fastrand::u64(
-                SHARED_RESPONSE_DELAY_MIN_MILLIS..SHARED_RESPONSE_DELAY_MAX_MILLIS,
-            );
+            let delay =
+                fastrand::u64(SHARED_RESPONSE_DELAY_MIN_MILLIS..SHARED_RESPONSE_DELAY_MAX_MILLIS);
             let next_time = current_time_millis() + delay;
             self.delayed_responses.push(DelayedResponse {
                 next_time,
@@ -5240,9 +5239,8 @@ mod tests {
         assert_eq!(SHARED_RESPONSE_DELAY_MIN_MILLIS, 20);
         assert_eq!(SHARED_RESPONSE_DELAY_MAX_MILLIS, 121); // 120 inclusive
         for _ in 0..10_000 {
-            let d = fastrand::u64(
-                SHARED_RESPONSE_DELAY_MIN_MILLIS..SHARED_RESPONSE_DELAY_MAX_MILLIS,
-            );
+            let d =
+                fastrand::u64(SHARED_RESPONSE_DELAY_MIN_MILLIS..SHARED_RESPONSE_DELAY_MAX_MILLIS);
             assert!(
                 (20..=120).contains(&d),
                 "delay {} ms is outside the RFC 6762 §6 range of 20-120 ms",
@@ -5302,7 +5300,8 @@ mod tests {
             .unwrap();
         sock.join_multicast_v4(&GROUP_ADDR_V4, &intf_ip).unwrap();
         sock.set_multicast_loop_v4(true).unwrap();
-        sock.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        sock.set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
         let sock: UdpSocket = sock.into();
 
         let if_id = InterfaceId {
