@@ -105,9 +105,8 @@ const _: () = assert!(ANNOUNCE_SECOND_DELAY_MILLIS > MULTICAST_RATE_LIMIT_MILLIS
 /// where the answer is a member of a shared resource record set, each
 /// responder SHOULD delay its response by a random amount of time
 /// selected with uniform random distribution in the range 20-120 ms.
-/// a multicast response whose answer is a member of a *shared*
 ///
-/// I think the min of 20s is a bit too long. Use 10ms instead.
+/// I think the min of 20ms is a bit too long. Use 10ms instead.
 const SHARED_RESPONSE_DELAY_MIN_MILLIS: u64 = 10;
 
 /// 120ms suggested in the RFC is too long, use 50ms instead.
@@ -905,8 +904,6 @@ struct ReRun {
 }
 
 /// A query response deferred per RFC 6762 §6 (shared response).
-/// Held on the daemon thread rather than in [`Command`] because
-/// [`DnsOutgoing`] holds boxed records that are not `Send`.
 struct DelayedResponse {
     /// UNIX timestamp in millis at which to send `out`.
     next_time: u64,
