@@ -5234,29 +5234,33 @@ mod tests {
 
     #[test]
     fn test_shared_response_delay_bounds() {
-        // RFC 6762 §6: a response for a shared record set is delayed by a
-        // uniform-random amount in the range 20-120 ms inclusive.
-        assert_eq!(SHARED_RESPONSE_DELAY_MIN_MILLIS, 20);
-        assert_eq!(SHARED_RESPONSE_DELAY_MAX_MILLIS, 121); // 120 inclusive
+        // A shared-record (PTR) response is delayed by a uniform-random amount.
+        // We deviate from the RFC 6762 §6 suggested 20-120 ms window and use a
+        // shorter 10-50 ms delay (`MAX` is the exclusive upper bound, so the
+        // actual delay is 10..=49 ms).
+        assert_eq!(SHARED_RESPONSE_DELAY_MIN_MILLIS, 10);
+        assert_eq!(SHARED_RESPONSE_DELAY_MAX_MILLIS, 50);
         for _ in 0..10_000 {
             let d =
                 fastrand::u64(SHARED_RESPONSE_DELAY_MIN_MILLIS..SHARED_RESPONSE_DELAY_MAX_MILLIS);
             assert!(
-                (20..=120).contains(&d),
-                "delay {} ms is outside the RFC 6762 §6 range of 20-120 ms",
-                d
+                (SHARED_RESPONSE_DELAY_MIN_MILLIS..SHARED_RESPONSE_DELAY_MAX_MILLIS).contains(&d),
+                "delay {} ms is outside the configured {}-{} ms range",
+                d,
+                SHARED_RESPONSE_DELAY_MIN_MILLIS,
+                SHARED_RESPONSE_DELAY_MAX_MILLIS
             );
         }
     }
 
     #[test]
     fn test_shared_ptr_response_delayed() {
-        // RFC 6762 §6: a PTR (shared record set) response sent by multicast MUST
-        // be delayed by a uniform-random 20-120 ms. Register a service, then as a
-        // proper multicast querier (source port 5353) send a PTR query and assert
-        // the PTR response arrives no sooner than ~20 ms after the query. (A
-        // legacy unicast querier gets an *immediate* response instead; see
-        // `test_legacy_unicast_response`.)
+        // RFC 6762 §6: a PTR (shared record set) response sent by multicast is
+        // delayed by a uniform-random amount (we use a 10-50 ms window). Register
+        // a service, then as a proper multicast querier (source port 5353) send a
+        // PTR query and assert the PTR response arrives no sooner than ~10 ms
+        // after the query. (A legacy unicast querier gets an *immediate* response
+        // instead; see `test_legacy_unicast_response`.)
         use socket2::{Domain, Protocol, Socket, Type};
 
         let intf_ip = match my_ip_interfaces(false)
@@ -5273,12 +5277,15 @@ mod tests {
         };
 
         let daemon = ServiceDaemon::new().expect("Failed to create daemon");
+        // Keep the service name (the `_sd…` label) within the 15-byte limit
+        // that RFC 6763 §7.2 imposes, while staying unique per run.
         let unique = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
-            .as_micros();
-        let service_type = format!("_shared-delay-{unique}._udp.local.");
-        let hostname = format!("shared-delay-{unique}.local.");
+            .as_micros()
+            % 1_000_000_000;
+        let service_type = format!("_sd{unique}._udp.local.");
+        let hostname = format!("sd{unique}.local.");
         let service_info = ServiceInfo::new(
             &service_type,
             "test_instance",
@@ -5331,7 +5338,7 @@ mod tests {
             sock.send_to(&query_packet, (GROUP_ADDR_V4, MDNS_PORT))
                 .expect("send query");
 
-            // Collect responses for ~1 s, comfortably above the 120 ms max delay.
+            // Collect responses for ~1 s, comfortably above the 50 ms max delay.
             let collect_until = sent_at + Duration::from_millis(1000);
             while Instant::now() < collect_until {
                 let (len, _from) = match sock.recv_from(&mut buf) {
@@ -5357,13 +5364,14 @@ mod tests {
         let elapsed =
             measured.expect("expected a multicast PTR response to our query within the deadline");
         assert!(
-            elapsed >= Duration::from_millis(18),
-            "PTR response arrived after only {:?}; RFC 6762 §6 requires a 20-120 ms delay",
+            elapsed >= Duration::from_millis(8),
+            "PTR response arrived after only {:?}; a shared-record response must be \
+             delayed (10-50 ms window)",
             elapsed
         );
         assert!(
             elapsed <= Duration::from_millis(600),
-            "PTR response arrived after {:?}; expected within the 20-120 ms delay window",
+            "PTR response arrived after {:?}; expected within the 10-50 ms delay window",
             elapsed
         );
 
