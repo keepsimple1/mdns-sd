@@ -1543,7 +1543,7 @@ impl Zeroconf {
                 }
             }
 
-            // Send delayed shared-record responses whose time is up (RFC 6762 §6).
+            // Send delayed responses whose time is up (RFC 6762 §6).
             let mut i = 0;
             while i < self.delayed_responses.len() {
                 if now >= self.delayed_responses[i].next_time {
@@ -3227,14 +3227,6 @@ impl Zeroconf {
             return;
         };
 
-        // RFC 6762 §6: a response whose answer is a member of a *shared* record
-        // set (PTR records for DNS-SD) SHOULD be delayed 20-120 ms, while a
-        // response containing only *unique* records (A/AAAA/SRV with cache-flush)
-        // may be sent without delay. If a PTR (shared) answer is added below and
-        // the query is a normal multicast (not legacy-unicast or probe-defense),
-        // `delayed` is set and the whole response is deferred onto the timer;
-        // otherwise it is sent immediately. Delaying the occasional unique record
-        // that shares a packet with a PTR question is harmless and RFC-compliant.
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         let mut delayed = false;
 
@@ -3380,11 +3372,7 @@ impl Zeroconf {
             }
         }
 
-        // Defer shared PTR responses (RFC 6762 §6): if a PTR (shared) answer was
-        // added and this is a normal multicast query, schedule the whole response
-        // 20-120 ms out instead of sending it now. The querier is gone by send
-        // time, so a delayed response is always a plain rate-limited multicast —
-        // see `send_delayed_response`.
+        // Defer PTR responses (RFC 6762 §6).
         if delayed && out.answers_count() > 0 {
             out.set_id(msg.id());
             self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count());
@@ -3463,8 +3451,7 @@ impl Zeroconf {
         self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count());
     }
 
-    /// Multicasts a shared-record (PTR) query response that was deferred per
-    /// RFC 6762 §6.
+    /// Multicasts a PTR query response that was deferred per RFC 6762 §6.
     ///
     /// Re-resolves the socket and interface from `if_index`, so it is safe to
     /// call from the timer loop after the borrows taken while building the
