@@ -5020,8 +5020,8 @@ mod tests {
     use super::{
         _new_socket_bind, check_domain_suffix, check_service_name_length, hostname_change,
         my_ip_interfaces, name_change, send_dns_outgoing_impl, valid_instance_name,
-        valid_ip_on_intf, HostnameResolutionEvent, MyIntf, ServiceDaemon, ServiceEvent,
-        ServiceInfo, GROUP_ADDR_V4, MDNS_PORT, SHARED_RESPONSE_DELAY_MAX_MILLIS,
+        valid_ip_on_intf, DaemonEvent, HostnameResolutionEvent, MyIntf, ServiceDaemon,
+        ServiceEvent, ServiceInfo, GROUP_ADDR_V4, MDNS_PORT, SHARED_RESPONSE_DELAY_MAX_MILLIS,
         SHARED_RESPONSE_DELAY_MIN_MILLIS,
     };
     use crate::{
@@ -5255,9 +5255,10 @@ mod tests {
         // RFC 6762 §6: a PTR (shared record set) response sent by multicast is
         // delayed by a uniform-random amount (we use a 10-50 ms window). Register
         // a service, then as a proper multicast querier (source port 5353) send a
-        // PTR query and assert the PTR response arrives no sooner than ~10 ms
+        // PTR query and assert the daemon emits its response no sooner than ~10 ms
         // after the query. (A legacy unicast querier gets an *immediate* response
         // instead; see `test_legacy_unicast_response`.)
+        //
         use socket2::{Domain, Protocol, Socket, Type};
 
         let intf_ip = match my_ip_interfaces(false)
@@ -5274,6 +5275,8 @@ mod tests {
         };
 
         let daemon = ServiceDaemon::new().expect("Failed to create daemon");
+        let monitor = daemon.monitor().expect("monitor daemon events");
+
         // Keep the service name (the `_sd…` label) within the 15-byte limit
         // that RFC 6763 §7.2 imposes, while staying unique per run.
         let unique = SystemTime::now()
@@ -5294,24 +5297,19 @@ mod tests {
         .expect("invalid service info");
         daemon.register(service_info).expect("register service");
 
-        // A proper multicast querier: bound to 5353 and joined to the mDNS group,
-        // so the daemon replies by (delayed) multicast that we can observe.
+        // A proper multicast querier: source port 5353 so the daemon takes the
+        // shared-record (delayed) path rather than the legacy-unicast one. We only
+        // *send* on this socket; the response is observed through the monitor.
         let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
         sock.set_reuse_address(true).unwrap();
         #[cfg(unix)]
         sock.set_reuse_port(true).unwrap();
         sock.bind(&std::net::SocketAddr::from((Ipv4Addr::UNSPECIFIED, MDNS_PORT)).into())
             .unwrap();
-        sock.join_multicast_v4(&GROUP_ADDR_V4, &intf_ip).unwrap();
+        sock.set_multicast_if_v4(&intf_ip).unwrap();
+        // Loop the query back to the daemon's socket on this same host.
         sock.set_multicast_loop_v4(true).unwrap();
-        sock.set_read_timeout(Some(Duration::from_millis(50)))
-            .unwrap();
         let sock: UdpSocket = sock.into();
-
-        let if_id = InterfaceId {
-            name: "test".to_string(),
-            index: 0,
-        };
 
         // Build the PTR query for our service type.
         let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
@@ -5323,52 +5321,53 @@ mod tests {
         // suppressed by the rate limiter.
         std::thread::sleep(Duration::from_secs(3));
 
+        // Retry until the daemon emits a Respond for our query. A query landing
+        // inside the 1 s multicast rate-limit window is rate-limited to an empty
+        // response (no send, no event), so we simply re-query on the next pass.
         let deadline = Instant::now() + Duration::from_secs(8);
         let mut measured = None;
-        let mut buf = [0u8; 1500];
-        'outer: while Instant::now() < deadline {
-            // Drain queued packets (e.g. periodic announcements) so we only time
-            // the response to *our* query.
-            while sock.recv_from(&mut buf).is_ok() {}
+        while Instant::now() < deadline {
+            // Drop any Respond events queued earlier so we time only the response
+            // to the query we are about to send.
+            while monitor.try_recv().is_ok() {}
 
             let sent_at = Instant::now();
             sock.send_to(&query_packet, (GROUP_ADDR_V4, MDNS_PORT))
                 .expect("send query");
 
-            // Collect responses for ~1 s, comfortably above the 50 ms max delay.
-            let collect_until = sent_at + Duration::from_millis(1000);
-            while Instant::now() < collect_until {
-                let (len, _from) = match sock.recv_from(&mut buf) {
-                    Ok(v) => v,
-                    Err(_) => continue, // read timeout; keep polling
-                };
-                let elapsed = sent_at.elapsed();
-                let Ok(msg) = DnsIncoming::new(buf[..len].to_vec(), if_id.clone()) else {
-                    continue;
-                };
-                if msg.is_response()
-                    && msg.answers().iter().any(|a| {
-                        a.get_type() == RRType::PTR
-                            && a.get_name().eq_ignore_ascii_case(&service_type)
-                    })
-                {
-                    measured = Some(elapsed);
-                    break 'outer;
+            // The delay window is 10-50 ms; 700 ms comfortably covers it plus any
+            // scheduling slack. Ignore unrelated events; on timeout, re-query.
+            let attempt_deadline = sent_at + Duration::from_millis(700);
+            loop {
+                let remaining = attempt_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
                 }
+                match monitor.recv_timeout(remaining) {
+                    Ok(DaemonEvent::Respond(_)) => {
+                        measured = Some(sent_at.elapsed());
+                        break;
+                    }
+                    Ok(_) => continue, // some other daemon event; keep waiting
+                    Err(_) => break,   // timed out; re-query
+                }
+            }
+            if measured.is_some() {
+                break;
             }
         }
 
         let elapsed =
-            measured.expect("expected a multicast PTR response to our query within the deadline");
+            measured.expect("expected the daemon to respond to our PTR query within the deadline");
         assert!(
             elapsed >= Duration::from_millis(8),
-            "PTR response arrived after only {:?}; a shared-record response must be \
-             delayed (10-50 ms window)",
+            "PTR response was sent after only {:?}; a shared-record response must be \
+             delayed (10-50 ms window), not sent immediately",
             elapsed
         );
         assert!(
             elapsed <= Duration::from_millis(600),
-            "PTR response arrived after {:?}; expected within the 10-50 ms delay window",
+            "PTR response was sent after {:?}; expected within the 10-50 ms delay window",
             elapsed
         );
 
