@@ -106,10 +106,10 @@ const _: () = assert!(ANNOUNCE_SECOND_DELAY_MILLIS > MULTICAST_RATE_LIMIT_MILLIS
 /// responder SHOULD delay its response by a random amount of time
 /// selected with uniform random distribution in the range 20-120 ms.
 ///
-/// I think the min of 20ms is a bit too long. Use 10ms instead.
+/// 20ms suggested in the RFC is a bit too long for min. Use 10ms instead.
 const SHARED_RESPONSE_DELAY_MIN_MILLIS: u64 = 10;
 
-/// 120ms suggested in the RFC is too long, use 50ms instead.
+/// 120ms suggested in the RFC is too long for max, use 50ms instead.
 const SHARED_RESPONSE_DELAY_MAX_MILLIS: u64 = 50;
 
 /// Response status code for the service `unregister` call.
@@ -5245,7 +5245,6 @@ mod tests {
         // PTR query and assert the daemon emits its response no sooner than ~10 ms
         // after the query. (A legacy unicast querier gets an *immediate* response
         // instead; see `test_legacy_unicast_response`.)
-        //
         use socket2::{Domain, Protocol, Socket, Type};
 
         let intf_ip = match my_ip_interfaces(false)
