@@ -112,6 +112,16 @@ const SHARED_RESPONSE_DELAY_MIN_MILLIS: u64 = 10;
 /// 120ms suggested in the RFC is too long for max, use 50ms instead.
 const SHARED_RESPONSE_DELAY_MAX_MILLIS: u64 = 50;
 
+/// RFC 6762 §5.2: to avoid accidental synchronization when multiple clients
+/// begin querying at exactly the same moment (e.g. because of some common
+/// external trigger event), a querier SHOULD delay the first query of a
+/// continuous-monitoring series by a randomly chosen amount in the range
+/// 20-120 ms.
+/// 
+/// Like the responder delay above, we use a shorter 10-50 ms window.
+const INITIAL_QUERY_DELAY_MIN_MILLIS: u64 = 10;
+const INITIAL_QUERY_DELAY_MAX_MILLIS: u64 = 50;
+
 /// Response status code for the service `unregister` call.
 #[derive(Debug)]
 pub enum UnregisterStatus {
@@ -3738,6 +3748,14 @@ impl Zeroconf {
             return;
         }
 
+        if !repeating {
+            // RFC 6762 §5.2: delay the first query by a random jitter.
+            let jitter =
+                fastrand::u64(INITIAL_QUERY_DELAY_MIN_MILLIS..INITIAL_QUERY_DELAY_MAX_MILLIS);
+            self.add_retransmission(now + jitter, Command::Browse(ty, 1, cache_only, listener));
+            return;
+        }
+
         self.send_query(&ty, RRType::PTR);
         self.increase_counter(Counter::Browse, 1);
 
@@ -3766,16 +3784,25 @@ impl Zeroconf {
             );
             return;
         }
+        let now = current_time_millis();
         if !repeating {
             self.add_hostname_resolver(hostname.to_owned(), listener.clone(), timeout);
             // if we already have the records in our cache, just send them
             self.query_cache_for_hostname(&hostname, listener.clone());
+
+            // RFC 6762 §5.2: delay the first query by a random jitter.
+            let jitter =
+                fastrand::u64(INITIAL_QUERY_DELAY_MIN_MILLIS..INITIAL_QUERY_DELAY_MAX_MILLIS);
+            self.add_retransmission(
+                now + jitter,
+                Command::ResolveHostname(hostname, 1, listener, None),
+            );
+            return;
         }
 
         self.send_query_vec(&[(&hostname, RRType::A), (&hostname, RRType::AAAA)]);
         self.increase_counter(Counter::ResolveHostname, 1);
 
-        let now = current_time_millis();
         let next_time = now + u64::from(next_delay) * 1000;
         let max_delay = 60 * 60;
         let delay = cmp::min(next_delay * 2, max_delay);
@@ -5008,7 +5035,8 @@ mod tests {
         _new_socket_bind, check_domain_suffix, check_service_name_length, hostname_change,
         my_ip_interfaces, name_change, send_dns_outgoing_impl, valid_instance_name,
         valid_ip_on_intf, DaemonEvent, HostnameResolutionEvent, MyIntf, ServiceDaemon,
-        ServiceEvent, ServiceInfo, GROUP_ADDR_V4, MDNS_PORT, SHARED_RESPONSE_DELAY_MAX_MILLIS,
+        ServiceEvent, ServiceInfo, GROUP_ADDR_V4, INITIAL_QUERY_DELAY_MAX_MILLIS,
+        INITIAL_QUERY_DELAY_MIN_MILLIS, MDNS_PORT, SHARED_RESPONSE_DELAY_MAX_MILLIS,
         SHARED_RESPONSE_DELAY_MIN_MILLIS,
     };
     use crate::{
@@ -5235,6 +5263,112 @@ mod tests {
                 SHARED_RESPONSE_DELAY_MAX_MILLIS
             );
         }
+    }
+
+    #[test]
+    fn test_initial_query_delay_bounds() {
+        // RFC 6762 §5.2: the first query of a continuous-monitoring series is
+        // delayed by a uniform-random amount. We deviate from the RFC's
+        // suggested 20-120 ms window and use the same shorter 10-50 ms delay as
+        // the responder (`MAX` is the exclusive upper bound, so the actual delay
+        // is 10..=49 ms).
+        assert_eq!(INITIAL_QUERY_DELAY_MIN_MILLIS, 10);
+        assert_eq!(INITIAL_QUERY_DELAY_MAX_MILLIS, 50);
+        for _ in 0..10_000 {
+            let d = fastrand::u64(INITIAL_QUERY_DELAY_MIN_MILLIS..INITIAL_QUERY_DELAY_MAX_MILLIS);
+            assert!(
+                (INITIAL_QUERY_DELAY_MIN_MILLIS..INITIAL_QUERY_DELAY_MAX_MILLIS).contains(&d),
+                "delay {} ms is outside the configured {}-{} ms range",
+                d,
+                INITIAL_QUERY_DELAY_MIN_MILLIS,
+                INITIAL_QUERY_DELAY_MAX_MILLIS
+            );
+        }
+    }
+
+    #[test]
+    fn test_initial_query_delayed() {
+        // RFC 6762 §5.2: a querier delays the first query of a continuous
+        // monitoring series by a random amount (we use a 10-50 ms window).
+        // Start a browse and observe, on a socket joined to the mDNS group, the
+        // daemon's first PTR query for our (unique) service type. Assert it
+        // arrives no sooner than ~10 ms after `browse()` — i.e. it is not sent
+        // immediately.
+        use socket2::{Domain, Protocol, Socket, Type};
+
+        let (intf, intf_ip) = match my_ip_interfaces(false)
+            .into_iter()
+            .find_map(|intf| match intf.ip() {
+                IpAddr::V4(ip) if !ip.is_loopback() => Some((intf, ip)),
+                _ => None,
+            }) {
+            Some(pair) => pair,
+            None => {
+                println!("No IPv4 interface available; skipping test.");
+                return;
+            }
+        };
+        let interface_id = InterfaceId::from(&intf);
+
+        // A receiver socket joined to the mDNS group on this interface. The
+        // daemon loops back its multicast by default, so its outgoing query is
+        // delivered here on the same host.
+        let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+        sock.set_reuse_address(true).unwrap();
+        #[cfg(unix)]
+        sock.set_reuse_port(true).unwrap();
+        sock.bind(&std::net::SocketAddr::from((Ipv4Addr::UNSPECIFIED, MDNS_PORT)).into())
+            .unwrap();
+        sock.join_multicast_v4(&GROUP_ADDR_V4, &intf_ip).unwrap();
+        sock.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        let sock: UdpSocket = sock.into();
+
+        // Unique service type, kept within the RFC 6763 §7.2 15-byte label limit.
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_micros()
+            % 1_000_000_000;
+        let service_type = format!("_qd{unique}._udp.local.");
+
+        let daemon = ServiceDaemon::new().expect("Failed to create daemon");
+
+        let sent_at = Instant::now();
+        let _browse = daemon.browse(&service_type).expect("browse");
+
+        // Read packets until we see our own PTR query or time out. The 10-50 ms
+        // jitter plus command/scheduling latency comfortably fits in 2 s.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut buf = [0u8; 2048];
+        let mut measured = None;
+        while Instant::now() < deadline {
+            let n = match sock.recv_from(&mut buf) {
+                Ok((n, _)) => n,
+                Err(_) => continue, // read timeout; keep polling until the deadline
+            };
+            let Ok(msg) = DnsIncoming::new(buf[..n].to_vec(), interface_id.clone()) else {
+                continue;
+            };
+            if msg.is_query()
+                && msg
+                    .questions()
+                    .iter()
+                    .any(|q| q.entry_name() == service_type)
+            {
+                measured = Some(sent_at.elapsed());
+                break;
+            }
+        }
+
+        daemon.shutdown().unwrap();
+
+        let elapsed = measured.expect("expected the daemon to send a PTR query for our browse");
+        assert!(
+            elapsed >= Duration::from_millis(8),
+            "first browse query was sent after only {:?}; the first query of a series must be \
+             delayed (10-50 ms window), not sent immediately",
+            elapsed
+        );
     }
 
     #[test]
