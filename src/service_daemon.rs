@@ -117,7 +117,7 @@ const SHARED_RESPONSE_DELAY_MAX_MILLIS: u64 = 50;
 /// external trigger event), a querier SHOULD delay the first query of a
 /// continuous-monitoring series by a randomly chosen amount in the range
 /// 20-120 ms.
-/// 
+///
 /// Like the responder delay above, we use a shorter 10-50 ms window.
 const INITIAL_QUERY_DELAY_MIN_MILLIS: u64 = 10;
 const INITIAL_QUERY_DELAY_MAX_MILLIS: u64 = 50;
@@ -5320,7 +5320,8 @@ mod tests {
         sock.bind(&std::net::SocketAddr::from((Ipv4Addr::UNSPECIFIED, MDNS_PORT)).into())
             .unwrap();
         sock.join_multicast_v4(&GROUP_ADDR_V4, &intf_ip).unwrap();
-        sock.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        sock.set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
         let sock: UdpSocket = sock.into();
 
         // Unique service type, kept within the RFC 6763 §7.2 15-byte label limit.
