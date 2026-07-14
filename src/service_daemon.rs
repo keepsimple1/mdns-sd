@@ -5266,27 +5266,6 @@ mod tests {
     }
 
     #[test]
-    fn test_initial_query_delay_bounds() {
-        // RFC 6762 §5.2: the first query of a continuous-monitoring series is
-        // delayed by a uniform-random amount. We deviate from the RFC's
-        // suggested 20-120 ms window and use the same shorter 10-50 ms delay as
-        // the responder (`MAX` is the exclusive upper bound, so the actual delay
-        // is 10..=49 ms).
-        assert_eq!(INITIAL_QUERY_DELAY_MIN_MILLIS, 10);
-        assert_eq!(INITIAL_QUERY_DELAY_MAX_MILLIS, 50);
-        for _ in 0..10_000 {
-            let d = fastrand::u64(INITIAL_QUERY_DELAY_MIN_MILLIS..INITIAL_QUERY_DELAY_MAX_MILLIS);
-            assert!(
-                (INITIAL_QUERY_DELAY_MIN_MILLIS..INITIAL_QUERY_DELAY_MAX_MILLIS).contains(&d),
-                "delay {} ms is outside the configured {}-{} ms range",
-                d,
-                INITIAL_QUERY_DELAY_MIN_MILLIS,
-                INITIAL_QUERY_DELAY_MAX_MILLIS
-            );
-        }
-    }
-
-    #[test]
     fn test_initial_query_delayed() {
         // RFC 6762 §5.2: a querier delays the first query of a continuous
         // monitoring series by a random amount (we use a 10-50 ms window).
@@ -5364,11 +5343,25 @@ mod tests {
         daemon.shutdown().unwrap();
 
         let elapsed = measured.expect("expected the daemon to send a PTR query for our browse");
+        let tolerance = Duration::from_millis(2);
         assert!(
-            elapsed >= Duration::from_millis(8),
+            elapsed + tolerance >= Duration::from_millis(INITIAL_QUERY_DELAY_MIN_MILLIS),
             "first browse query was sent after only {:?}; the first query of a series must be \
              delayed (10-50 ms window), not sent immediately",
             elapsed
+        );
+
+        // Upper bound: the query must fall within the jitter window. Allow
+        // generous slack above INITIAL_QUERY_DELAY_MAX_MILLIS for command
+        // handoff, event-loop wakeup, and loopback latency, while still catching
+        // a regression to a much larger delay (e.g. the RFC's 120 ms window).
+        let scheduling_slack = Duration::from_millis(50);
+        assert!(
+            elapsed <= Duration::from_millis(INITIAL_QUERY_DELAY_MAX_MILLIS) + scheduling_slack,
+            "first browse query was sent after {:?}, beyond the {}-{} ms jitter window (plus slack)",
+            elapsed,
+            INITIAL_QUERY_DELAY_MIN_MILLIS,
+            INITIAL_QUERY_DELAY_MAX_MILLIS
         );
     }
 
