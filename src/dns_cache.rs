@@ -246,8 +246,26 @@ impl DnsCache {
             }
         }
 
-        // get the existing records for the type.
+        // Look up the existing records without creating an entry yet.
         let entry_name_lower = entry_name.to_lowercase();
+        let empty_records = match incoming.get_type() {
+            RRType::PTR => self.ptr.get(&entry_name),
+            RRType::SRV => self.srv.get(&entry_name),
+            RRType::TXT => self.txt.get(&entry_name),
+            RRType::A | RRType::AAAA => self.addr.get(&entry_name_lower),
+            RRType::NSEC => self.nsec.get(&entry_name),
+            _ => return None,
+        }
+        .map_or(true, |records| records.is_empty());
+
+        // No existing records for this name and type, and not for us.
+        if empty_records && !is_for_us {
+            trace!("add_or_update: not for us: {}", incoming.get_name());
+            return None;
+        }
+
+        // We want to process this `incoming`. For convenience, repeats the lookup
+        // above but doing `entry().or_default()` to create an empty Vec as needed.
         let record_vec = match incoming.get_type() {
             RRType::PTR => self.ptr.entry(entry_name).or_default(),
             RRType::SRV => self.srv.entry(entry_name).or_default(),
@@ -256,12 +274,6 @@ impl DnsCache {
             RRType::NSEC => self.nsec.entry(entry_name).or_default(),
             _ => return None,
         };
-
-        // No existing records for this name and type, and not for us.
-        if record_vec.is_empty() && !is_for_us {
-            trace!("add_or_update: not for us: {}", incoming.get_name());
-            return None;
-        }
 
         if incoming.get_cache_flush() {
             let now = current_time_millis();
@@ -946,5 +958,67 @@ mod tests {
             .map(|scoped| scoped.to_ip_addr())
             .collect();
         assert_eq!(all_ips, HashSet::from([addr_b]));
+    }
+
+    /// A response record that is not for us (no querier) and has no existing
+    /// cache entry must be dropped *without* leaving an empty `Vec` behind in
+    /// the cache map. Otherwise the cache grows by one entry per distinct name
+    /// seen on the network, driven by other hosts' unsolicited traffic.
+    #[test]
+    fn test_not_for_us_record_leaves_no_empty_entry() {
+        let ty_domain = "_other._tcp.local.";
+        let instance = "someone-else._other._tcp.local.";
+        let host = "otherhost.local.";
+        let addr: IpAddr = "192.168.1.9".parse().unwrap();
+
+        let intf = make_intf("en0", 1);
+        let intf_id = InterfaceId {
+            name: "en0".to_string(),
+            index: 1,
+        };
+
+        let mut cache = DnsCache::new();
+        let mut timers = Vec::new();
+
+        // Feed PTR / SRV / TXT / ADDR records with `is_for_us = false` and no
+        // pre-existing entries. Each must be dropped.
+        macro_rules! add_not_for_us {
+            ($record:expr) => {{
+                let result = cache.add_or_update(&intf, $record.boxed(), &mut timers, false);
+                assert!(
+                    result.is_none(),
+                    "a not-for-us record should be dropped, got {:?}",
+                    result.map(|(r, _)| r.record.get_name().to_string())
+                );
+            }};
+        }
+
+        add_not_for_us!(DnsPointer::new(
+            ty_domain,
+            RRType::PTR,
+            CLASS_IN,
+            4500,
+            instance.to_string()
+        ));
+        add_not_for_us!(DnsSrv::new(instance, CLASS_IN, 4500, 0, 0, 80, host.to_string()));
+        add_not_for_us!(DnsTxt::new(instance, CLASS_IN, 4500, vec![]));
+        add_not_for_us!(DnsAddress::new(
+            host,
+            RRType::A,
+            CLASS_IN,
+            4500,
+            addr,
+            intf_id
+        ));
+
+        // None of these should have created an entry (empty or otherwise).
+        assert!(cache.ptr.is_empty(), "ptr map leaked: {:?}", cache.ptr.keys());
+        assert!(cache.srv.is_empty(), "srv map leaked: {:?}", cache.srv.keys());
+        assert!(cache.txt.is_empty(), "txt map leaked: {:?}", cache.txt.keys());
+        assert!(
+            cache.addr.is_empty(),
+            "addr map leaked: {:?}",
+            cache.addr.keys()
+        );
     }
 }
