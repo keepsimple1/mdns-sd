@@ -1000,7 +1000,15 @@ mod tests {
             4500,
             instance.to_string()
         ));
-        add_not_for_us!(DnsSrv::new(instance, CLASS_IN, 4500, 0, 0, 80, host.to_string()));
+        add_not_for_us!(DnsSrv::new(
+            instance,
+            CLASS_IN,
+            4500,
+            0,
+            0,
+            80,
+            host.to_string()
+        ));
         add_not_for_us!(DnsTxt::new(instance, CLASS_IN, 4500, vec![]));
         add_not_for_us!(DnsAddress::new(
             host,
@@ -1012,9 +1020,21 @@ mod tests {
         ));
 
         // None of these should have created an entry (empty or otherwise).
-        assert!(cache.ptr.is_empty(), "ptr map leaked: {:?}", cache.ptr.keys());
-        assert!(cache.srv.is_empty(), "srv map leaked: {:?}", cache.srv.keys());
-        assert!(cache.txt.is_empty(), "txt map leaked: {:?}", cache.txt.keys());
+        assert!(
+            cache.ptr.is_empty(),
+            "ptr map leaked: {:?}",
+            cache.ptr.keys()
+        );
+        assert!(
+            cache.srv.is_empty(),
+            "srv map leaked: {:?}",
+            cache.srv.keys()
+        );
+        assert!(
+            cache.txt.is_empty(),
+            "txt map leaked: {:?}",
+            cache.txt.keys()
+        );
         assert!(
             cache.addr.is_empty(),
             "addr map leaked: {:?}",
