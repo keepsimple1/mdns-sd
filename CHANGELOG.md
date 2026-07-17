@@ -1,3 +1,26 @@
+# Version 0.20.2 (2026-07-16)
+
+This is a feature and bugfix release focused on improved RFC 6762 compliance.
+
+## New features
+
+- Implement RFC 6762 section 6 multicast rate limiting: responses to the same record are rate-limited to no more than once per second on a given interface. (#476, commit `76f42bd`)
+- Delay responses to PTR queries per RFC 6762 section 6, spreading responses over a random 10-50ms (instead of 20-120ms) window to reduce collisions. (#479, commit `a37e959`)
+- Add a random jitter 10-50ms (instead of 20-120ms) before sending the initial query per RFC 6762 section 5.2. (#480, commit `7c55c75`)
+
+## Bug fixes / improvements
+
+- Space announcement retransmissions wider than the rate-limit window so that repeated announcements are not dropped. (#477, commit `6f39a46`)
+- Avoid leaking empty cache entries for records that are not for us. (#481, commit `5cfa13a`)
+
+## All changes
+
+* `5cfa13a 2026-07-15` fix: avoid leaking empty cache entries for records not for us (#481) (keepsimple1)
+* `7c55c75 2026-07-14` feat: add a jitter for initial query per RFC 6762 section 5.2 (#480) (keepsimple1)
+* `a37e959 2026-07-12` feat: delay PTR query responses per RFC 6762 section 6 (#479) (keepsimple1)
+* `6f39a46 2026-07-08` fix: space announcement retransmissions wider than the rate-limit window (#477) (keepsimple1)
+* `76f42bd 2026-07-07` feat: Implement RFC 6762 section 6 multicast rate limiting (#476) (keepsimple1)
+
 # Version 0.20.1 (2026-06-28)
 
 This is a small feature and maintenance release.
