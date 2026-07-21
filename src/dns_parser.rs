@@ -301,15 +301,14 @@ const MAX_LABEL_BYTES: usize = 63;
 /// whatever was written and skips the item.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WriteError {
-    /// A label in a name is longer than [`MAX_LABEL_BYTES`] and hence cannot
-    /// be encoded.
+    /// A label in a name is longer than [`MAX_LABEL_BYTES`].
     NameTooLong,
 
     /// The packet would exceed [`MAX_MSG_ABSOLUTE`] with this record.
     PacketFull,
 }
 
-// Note: `crate::error::Result` shadows the std alias here, hence the full path.
+/// `crate::error::Result` shadows the std alias here, hence the full path.
 type WriteResult = core::result::Result<(), WriteError>;
 
 // Definitions for DNS message header "flags" field
@@ -1477,10 +1476,6 @@ impl DnsOutPacket {
         &self.data
     }
 
-    /// Writes a question.
-    ///
-    /// Returns [`WriteError::NameTooLong`] if the question name cannot be
-    /// encoded, in which case nothing is written to the packet.
     fn write_question(&mut self, question: &DnsQuestion) -> WriteResult {
         self.write_name(&question.entry.name)?;
         self.write_short(question.entry.ty as u16);
@@ -1498,10 +1493,7 @@ impl DnsOutPacket {
 
     /// Writes a record (answer, authoritative answer, additional).
     ///
-    /// Returns [`WriteError::PacketFull`] if the packet would exceed the max
-    /// size with this record, or [`WriteError::NameTooLong`] if a name in the
-    /// record cannot be encoded. In both cases nothing is written to the
-    /// packet.
+    /// In error cases nothing is written to the packet.
     fn write_record(&mut self, record_ext: &dyn DnsRecordExt, now: u64) -> WriteResult {
         let start_size = self.size();
 
@@ -1525,8 +1517,6 @@ impl DnsOutPacket {
         self.write_short(0);
         let record_offset = self.size();
 
-        // A name in the rdata (such as a PTR alias or an SRV host) could not
-        // be encoded: drop the whole record.
         if let Err(e) = record_ext.write(self) {
             self.rollback(start_size);
             return Err(e);
@@ -1637,8 +1627,7 @@ impl DnsOutPacket {
             return Ok(());
         }
 
-        // Validate before writing anything, so that this method is atomic:
-        // either the whole name is encoded, or the packet is untouched.
+        // Validate before writing anything.
         if labels.iter().any(|label| label.len() > MAX_LABEL_BYTES) {
             return Err(WriteError::NameTooLong);
         }
@@ -1659,8 +1648,7 @@ impl DnsOutPacket {
             // Store this position for potential future compression
             self.names.insert(remaining, self.size() as u16);
 
-            // Write the label. On error the caller rolls back whatever was
-            // written for this question or record.
+            // Write the label
             self.write_utf8(label)?;
         }
 
@@ -1679,11 +1667,6 @@ impl DnsOutPacket {
 
     /// Writes a single label. Nothing is written if the label is too long to
     /// be encoded.
-    ///
-    /// A label longer than 63 octets is malformed per RFC1035 section 2.3.4,
-    /// but it can still reach here: for instance a peer on the network can
-    /// send a name whose labels merge into an over-long one once unescaped.
-    /// Such a name must not take the daemon down.
     fn write_utf8(&mut self, s: &str) -> WriteResult {
         if s.len() > MAX_LABEL_BYTES {
             return Err(WriteError::NameTooLong);
