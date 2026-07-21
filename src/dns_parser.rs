@@ -290,6 +290,28 @@ pub const MAX_MSG_ABSOLUTE: usize = 8972;
 
 const MSG_HEADER_LEN: usize = 12;
 
+/// Max size of a single DNS label, in bytes.
+///
+/// Reference: [RFC1035 section 2.3.4](https://datatracker.ietf.org/doc/html/rfc1035#section-2.3.4)
+const MAX_LABEL_BYTES: usize = 63;
+
+/// Why a question or a record could not be written into a packet.
+///
+/// In either case nothing is left behind in the packet: the caller rolls back
+/// whatever was written and skips the item.
+#[derive(Debug, PartialEq, Eq)]
+pub enum WriteError {
+    /// A label in a name is longer than [`MAX_LABEL_BYTES`] and hence cannot
+    /// be encoded.
+    NameTooLong,
+
+    /// The packet would exceed [`MAX_MSG_ABSOLUTE`] with this record.
+    PacketFull,
+}
+
+// Note: `crate::error::Result` shadows the std alias here, hence the full path.
+type WriteResult = core::result::Result<(), WriteError>;
+
 // Definitions for DNS message header "flags" field
 //
 // The "flags" field is 16-bit long, in this format:
@@ -565,7 +587,8 @@ impl PartialEq for DnsRecord {
 pub trait DnsRecordExt: fmt::Debug {
     fn get_record(&self) -> &DnsRecord;
     fn get_record_mut(&mut self) -> &mut DnsRecord;
-    fn write(&self, packet: &mut DnsOutPacket);
+    /// Writes the rdata of this record into `packet`.
+    fn write(&self, packet: &mut DnsOutPacket) -> WriteResult;
     fn any(&self) -> &dyn Any;
 
     /// Returns whether `other` record is considered the same except TTL.
@@ -732,11 +755,12 @@ impl DnsRecordExt for DnsAddress {
         &mut self.record
     }
 
-    fn write(&self, packet: &mut DnsOutPacket) {
+    fn write(&self, packet: &mut DnsOutPacket) -> WriteResult {
         match self.address {
             IpAddr::V4(addr) => packet.write_bytes(addr.octets().as_ref()),
             IpAddr::V6(addr) => packet.write_bytes(addr.octets().as_ref()),
         };
+        Ok(())
     }
 
     fn any(&self) -> &dyn Any {
@@ -807,8 +831,8 @@ impl DnsRecordExt for DnsPointer {
         &mut self.record
     }
 
-    fn write(&self, packet: &mut DnsOutPacket) {
-        packet.write_name(&self.alias);
+    fn write(&self, packet: &mut DnsOutPacket) -> WriteResult {
+        packet.write_name(&self.alias)
     }
 
     fn any(&self) -> &dyn Any {
@@ -902,11 +926,11 @@ impl DnsRecordExt for DnsSrv {
         &mut self.record
     }
 
-    fn write(&self, packet: &mut DnsOutPacket) {
+    fn write(&self, packet: &mut DnsOutPacket) -> WriteResult {
         packet.write_short(self.priority);
         packet.write_short(self.weight);
         packet.write_short(self.port);
-        packet.write_name(&self.host);
+        packet.write_name(&self.host)
     }
 
     fn any(&self) -> &dyn Any {
@@ -1022,8 +1046,9 @@ impl DnsRecordExt for DnsTxt {
         &mut self.record
     }
 
-    fn write(&self, packet: &mut DnsOutPacket) {
+    fn write(&self, packet: &mut DnsOutPacket) -> WriteResult {
         packet.write_bytes(&self.text);
+        Ok(())
     }
 
     fn any(&self) -> &dyn Any {
@@ -1245,10 +1270,11 @@ impl DnsRecordExt for DnsHostInfo {
         &mut self.record
     }
 
-    fn write(&self, packet: &mut DnsOutPacket) {
+    fn write(&self, packet: &mut DnsOutPacket) -> WriteResult {
         debug!("Writing HInfo: cpu {} os {}", &self.cpu, &self.os);
         packet.write_bytes(self.cpu.as_bytes());
         packet.write_bytes(self.os.as_bytes());
+        Ok(())
     }
 
     fn any(&self) -> &dyn Any {
@@ -1361,9 +1387,10 @@ impl DnsRecordExt for DnsNSec {
         &mut self.record
     }
 
-    fn write(&self, packet: &mut DnsOutPacket) {
+    fn write(&self, packet: &mut DnsOutPacket) -> WriteResult {
         packet.write_bytes(self.next_domain.as_bytes());
         packet.write_bytes(&self.type_bitmap);
+        Ok(())
     }
 
     fn any(&self) -> &dyn Any {
@@ -1450,20 +1477,35 @@ impl DnsOutPacket {
         &self.data
     }
 
-    fn write_question(&mut self, question: &DnsQuestion) {
-        self.write_name(&question.entry.name);
+    /// Writes a question.
+    ///
+    /// Returns [`WriteError::NameTooLong`] if the question name cannot be
+    /// encoded, in which case nothing is written to the packet.
+    fn write_question(&mut self, question: &DnsQuestion) -> WriteResult {
+        self.write_name(&question.entry.name)?;
         self.write_short(question.entry.ty as u16);
         self.write_short(question.entry.class);
+        Ok(())
     }
 
-    /// Writes a record (answer, authoritative answer, additional)
-    /// Returns false if the packet exceeds the max size with this record, nothing is written to the packet.
-    /// otherwise returns true.
-    fn write_record(&mut self, record_ext: &dyn DnsRecordExt, now: u64) -> bool {
+    /// Discards everything written since `start_size`, including the name
+    /// compression offsets that point into the discarded bytes.
+    fn rollback(&mut self, start_size: usize) {
+        self.data.truncate(start_size);
+        self.names.retain(|_, offset| (*offset as usize) < start_size);
+    }
+
+    /// Writes a record (answer, authoritative answer, additional).
+    ///
+    /// Returns [`WriteError::PacketFull`] if the packet would exceed the max
+    /// size with this record, or [`WriteError::NameTooLong`] if a name in the
+    /// record cannot be encoded. In both cases nothing is written to the
+    /// packet.
+    fn write_record(&mut self, record_ext: &dyn DnsRecordExt, now: u64) -> WriteResult {
         let start_size = self.size();
 
         let record = record_ext.get_record();
-        self.write_name(record.get_name());
+        self.write_name(record.get_name())?;
         self.write_short(record.entry.ty as u16);
         if record.entry.cache_flush {
             // check "multicast"
@@ -1481,16 +1523,23 @@ impl DnsOutPacket {
         // Placeholder for record size
         self.write_short(0);
         let record_offset = self.size();
-        record_ext.write(self);
+
+        // A name in the rdata (such as a PTR alias or an SRV host) could not
+        // be encoded: drop the whole record.
+        if let Err(e) = record_ext.write(self) {
+            self.rollback(start_size);
+            return Err(e);
+        }
+
         self.insert_short(record_offset - 2, (self.size() - record_offset) as u16);
 
         if self.size() > MAX_MSG_ABSOLUTE {
-            self.data.truncate(start_size);
+            self.rollback(start_size);
             self.state = PacketState::Finished;
-            return false;
+            return Err(WriteError::PacketFull);
         }
 
-        true
+        Ok(())
     }
 
     pub(crate) fn insert_short(&mut self, index: usize, value: u16) {
@@ -1575,7 +1624,7 @@ impl DnsOutPacket {
     // This function also handles RFC 6763 Section 4.3 escaping where dots and backslashes
     // in instance names are escaped (e.g., "My\\.Service" represents a single label "My.Service").
     // The actual name sent over the wire is the unescaped version.
-    fn write_name(&mut self, name: &str) {
+    fn write_name(&mut self, name: &str) -> WriteResult {
         // Remove trailing dot if present
         let name_to_parse = name.strip_suffix('.').unwrap_or(name);
 
@@ -1584,7 +1633,13 @@ impl DnsOutPacket {
 
         if labels.is_empty() {
             self.write_byte(0);
-            return;
+            return Ok(());
+        }
+
+        // Validate before writing anything, so that this method is atomic:
+        // either the whole name is encoded, or the packet is untouched.
+        if labels.iter().any(|label| label.len() > MAX_LABEL_BYTES) {
+            return Err(WriteError::NameTooLong);
         }
 
         // Write each label
@@ -1597,18 +1652,20 @@ impl DnsOutPacket {
             if let Some(&offset) = self.names.get(&remaining) {
                 let pointer = offset | POINTER_MASK;
                 self.write_short(pointer);
-                return;
+                return Ok(());
             }
 
             // Store this position for potential future compression
             self.names.insert(remaining, self.size() as u16);
 
-            // Write the label
-            self.write_utf8(label);
+            // Write the label. On error the caller rolls back whatever was
+            // written for this question or record.
+            self.write_utf8(label)?;
         }
 
         // Write terminating zero byte
         self.write_byte(0);
+        Ok(())
     }
 
     fn write_byte(&mut self, v: u8) {
@@ -1619,10 +1676,20 @@ impl DnsOutPacket {
         self.data.extend(s);
     }
 
-    fn write_utf8(&mut self, s: &str) {
-        assert!(s.len() < 64);
+    /// Writes a single label. Nothing is written if the label is too long to
+    /// be encoded.
+    ///
+    /// A label longer than 63 octets is malformed per RFC1035 section 2.3.4,
+    /// but it can still reach here: for instance a peer on the network can
+    /// send a name whose labels merge into an over-long one once unescaped.
+    /// Such a name must not take the daemon down.
+    fn write_utf8(&mut self, s: &str) -> WriteResult {
+        if s.len() > MAX_LABEL_BYTES {
+            return Err(WriteError::NameTooLong);
+        }
         self.write_byte(s.len() as u8);
         self.write_bytes(s.as_bytes());
+        Ok(())
     }
 
     fn write_u32(&mut self, v: u32) {
@@ -1957,30 +2024,33 @@ impl DnsOutgoing {
         let mut packet_list = Vec::new();
         let mut packet = DnsOutPacket::new();
 
-        let mut question_count = self.questions.len() as u16;
+        let mut question_count = 0;
         let mut answer_count = 0;
         let mut auth_count = 0;
         let mut addi_count = 0;
         let id = if self.multicast { 0 } else { self.id };
 
         for question in self.questions.iter() {
-            packet.write_question(question);
+            question_count += u16::from(packet.write_question(question).is_ok());
         }
 
         for (answer, time) in self.answers.iter() {
-            if packet.write_record(answer.as_ref(), *time) {
-                answer_count += 1;
-            }
+            answer_count += u16::from(packet.write_record(answer.as_ref(), *time).is_ok());
         }
 
         for auth in self.authorities.iter() {
-            auth_count += u16::from(packet.write_record(auth.as_ref(), 0));
+            auth_count += u16::from(packet.write_record(auth.as_ref(), 0).is_ok());
         }
 
         for addi in self.additionals.iter() {
-            if packet.write_record(addi.as_ref(), 0) {
-                addi_count += 1;
-                continue;
+            match packet.write_record(addi.as_ref(), 0) {
+                Ok(()) => {
+                    addi_count += 1;
+                    continue;
+                }
+                // The record itself is unusable: skip it and keep the packet.
+                Err(WriteError::NameTooLong) => continue,
+                Err(WriteError::PacketFull) => {}
             }
 
             // No more processing for response packets.
@@ -2005,12 +2075,11 @@ impl DnsOutgoing {
 
             // create a new packet and reset counts.
             packet = DnsOutPacket::new();
-            packet.write_record(addi.as_ref(), 0);
+            addi_count = u16::from(packet.write_record(addi.as_ref(), 0).is_ok());
 
             question_count = 0;
             answer_count = 0;
             auth_count = 0;
-            addi_count = 1;
         }
 
         packet.write_header(
@@ -2621,8 +2690,8 @@ const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DnsAddress, DnsHostInfo, DnsOutgoing, DnsPointer, DnsTxt, RRType, CLASS_CACHE_FLUSH,
-        CLASS_IN,
+        DnsAddress, DnsHostInfo, DnsIncoming, DnsOutgoing, DnsPointer, DnsTxt, RRType,
+        CLASS_CACHE_FLUSH, CLASS_IN, MSG_HEADER_LEN,
     };
     use crate::InterfaceId;
     use std::collections::HashMap;
@@ -2786,5 +2855,116 @@ mod tests {
         expected_names.insert("test-service.local".to_string(), 28);
         expected_names.insert("local".to_string(), 41);
         assert_eq!(&packets[0].names, &expected_names);
+    }
+
+    /// A question whose name has a label longer than 63 bytes cannot be
+    /// encoded. It must be skipped, not panic. (Note the question count in the
+    /// header must reflect the questions actually written.)
+    #[test]
+    fn test_dns_outgoing_question_label_too_long() {
+        let long_label = "a".repeat(64);
+        let mut out = DnsOutgoing::new(0);
+        out.add_question(&format!("{long_label}.local"), RRType::PTR);
+        out.add_question("123.test", RRType::A);
+
+        let packets = out.to_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(
+            packets[0].as_bytes(),
+            &[
+                0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, // Header: 1 question
+                // Payload: only "123.test" made it in.
+                3, 49, 50, 51, 4, 116, 101, 115, 116, 0, 0, 1, 0, 1,
+            ]
+        );
+
+        // The rolled back name must not leave a stale compression offset behind.
+        let mut expected_names = HashMap::new();
+        expected_names.insert("123.test".to_string(), 12);
+        expected_names.insert("test".to_string(), 16);
+        assert_eq!(&packets[0].names, &expected_names);
+    }
+
+    /// A record whose rdata carries an unencodable name (here a PTR alias) is
+    /// dropped as a whole, leaving the rest of the packet intact.
+    #[test]
+    fn test_dns_outgoing_record_label_too_long() {
+        let long_label = "a".repeat(64);
+        let mut out = DnsOutgoing::new(0);
+        out.add_answer_at_time(
+            DnsPointer::new(
+                "_test._tcp.local.",
+                RRType::PTR,
+                CLASS_IN,
+                0,
+                format!("{long_label}._test._tcp.local."),
+            ),
+            0,
+        );
+        out.add_answer_at_time(
+            DnsPointer::new(
+                "_test._tcp.local.",
+                RRType::PTR,
+                CLASS_IN,
+                0,
+                "ok._test._tcp.local.".to_string(),
+            ),
+            0,
+        );
+
+        let packets = out.to_packets();
+        assert_eq!(packets.len(), 1);
+
+        // Header answer count is 1: the first answer was dropped.
+        assert_eq!(&packets[0].as_bytes()[6..8], &[0, 1]);
+
+        // Re-parsing must succeed and yield only the good answer.
+        let incoming = DnsIncoming::new(
+            packets[0].as_bytes().to_vec(),
+            InterfaceId {
+                name: "test".to_string(),
+                index: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(incoming.answers().len(), 1);
+    }
+
+    /// A name learned from the network can hold a label that ends with a
+    /// backslash, which escapes the following label separator. Unescaping such
+    /// a name on the way out merges two 63-byte labels into a 127-byte one.
+    /// This used to panic the daemon thread. See issue #483.
+    #[test]
+    fn test_incoming_name_with_merged_labels_does_not_panic() {
+        // A query with one question: "aa..a\" + "bb..b", 63 bytes each.
+        let mut data: Vec<u8> = vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        data.push(63);
+        data.extend(vec![b'a'; 62]);
+        data.push(b'\\');
+        data.push(63);
+        data.extend(vec![b'b'; 63]);
+        data.push(0);
+        data.extend([0, 12, 0, 1]); // PTR, IN
+
+        let incoming = DnsIncoming::new(
+            data,
+            InterfaceId {
+                name: "test".to_string(),
+                index: 1,
+            },
+        )
+        .unwrap();
+        let name = incoming.questions()[0].entry.name.clone();
+
+        // The two labels merged: the trailing backslash escaped the separator.
+        assert!(name.starts_with("aaa"));
+        assert!(name.contains("\\.bbb"));
+
+        // Re-emitting it must drop the question rather than panic.
+        let mut out = DnsOutgoing::new(0);
+        out.add_question(&name, RRType::PTR);
+        let packets = out.to_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].as_bytes(), &[0; MSG_HEADER_LEN]);
     }
 }
