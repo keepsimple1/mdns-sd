@@ -1492,7 +1492,8 @@ impl DnsOutPacket {
     /// compression offsets that point into the discarded bytes.
     fn rollback(&mut self, start_size: usize) {
         self.data.truncate(start_size);
-        self.names.retain(|_, offset| (*offset as usize) < start_size);
+        self.names
+            .retain(|_, offset| (*offset as usize) < start_size);
     }
 
     /// Writes a record (answer, authoritative answer, additional).
