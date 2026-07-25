@@ -33,7 +33,10 @@ The following table shows how much this implementation is compliant with RFCs re
 | Feature | RFC section | Compliance | Notes |
 | ------- | ----------- | ---------- | ----- |
 | One-Shot Multicast DNS Queries (i.e. Legacy Unicast Responses) | RFC 6762 [section 5.1][ref1] [section 6.7][ref9] | ✅ | Reply unicast to the querier when the source port is not 5353, regardless of whether the query was multicast or unicast |
+| Randomized Initial Query Delay | RFC 6762 [section 5.2][ref12] | ✅ | jitter the first query of a continuous-monitoring series by a random delay to avoid synchronization across queriers. ℹ️ we use a shorter 10-50 ms window instead of the RFC's 20-120 ms |
 | Unicast Responses | RFC 6762 [section 5.4][ref2] | ❌ |
+| Multicast Rate Limiting | RFC 6762 [section 6][ref13] | ✅ | a given record is not re-multicast on an interface until at least one second has elapsed. ℹ️ probe queries and legacy unicast responses (§6.7) are exempt per the RFC; the separate 250 ms probe-query interval is not yet implemented |
+| Response Delay for Shared Records | RFC 6762 [section 6][ref13] | ✅ | delay responses to shared (e.g. PTR) queries by a random amount to allow aggregation and reduce collisions. ℹ️ we use a shorter window than the RFC's 20-120 ms |
 | Known-Answer Suppression | RFC 6762 [section 7.1][ref3] | ✅ |
 | Multipacket Known Answer Suppression querier | RFC 6762 [section 7.2][ref4] | ✅ |
 | Multipacket Known Answer Suppression responder | RFC 6762 [section 7.2][ref4] | ❌ | because we don't support Unicast yet. |
@@ -55,6 +58,8 @@ The following table shows how much this implementation is compliant with RFCs re
 [ref9]: https://datatracker.ietf.org/doc/html/rfc6762#section-6.7
 [ref10]: https://datatracker.ietf.org/doc/html/rfc6762#section-10.1
 [ref11]: https://datatracker.ietf.org/doc/html/rfc6762#section-10.2
+[ref12]: https://datatracker.ietf.org/doc/html/rfc6762#section-5.2
+[ref13]: https://datatracker.ietf.org/doc/html/rfc6762#section-6
 
 ## License
 
