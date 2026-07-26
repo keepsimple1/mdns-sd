@@ -282,11 +282,47 @@ pub const CLASS_MASK: u16 = 0x7FFF;
 /// Cache-flush bit: the most significant bit of the rrclass field of the resource record.  
 pub const CLASS_CACHE_FLUSH: u16 = 0x8000;
 
-/// Max size of UDP datagram payload.
+/// Absolute max size of UDP datagram payload for an mDNS packet over IPv4.
 ///
-/// It is calculated as: 9000 bytes - IP header 20 bytes - UDP header 8 bytes.
-/// Reference: [RFC6762 section 17](https://datatracker.ietf.org/doc/html/rfc6762#section-17)
-pub const MAX_MSG_ABSOLUTE: usize = 8972;
+/// RFC 6762 section 17:
+/// "Even when fragmentation is used, a Multicast DNS packet, including IP and UDP
+/// headers, MUST NOT exceed 9000 bytes."
+///
+/// It is calculated as: 9000 bytes - IPv4 header 20 bytes - UDP header 8 bytes.
+pub const MAX_PKT_ABSOLUTE_IPV4: usize = 8972;
+
+/// Absolute max size of UDP datagram payload for an mDNS packet over IPv6.
+///
+/// Same 9000-byte ceiling as [`MAX_PKT_ABSOLUTE_IPV4`], less the bigger IPv6 header:
+/// 9000 bytes - IPv6 header 40 bytes - UDP header 8 bytes.
+///
+/// Being the smaller of the two, it is legal over either IP version, and is therefore
+/// the ceiling used when generating packets, at the cost of 20 unused bytes for IPv4.
+/// The IPv4 value is for packets we receive, which others may legally send that big.
+pub const MAX_PKT_ABSOLUTE_IPV6: usize = 8952;
+
+/// Absolute max size of an mDNS packet for the given IP version.
+pub const fn max_pkt_absolute(is_ipv4: bool) -> usize {
+    if is_ipv4 {
+        MAX_PKT_ABSOLUTE_IPV4
+    } else {
+        MAX_PKT_ABSOLUTE_IPV6
+    }
+}
+
+/// Default max size of a generated (i.e. outgoing) packet, i.e. the default of
+/// [`ServiceDaemon::set_max_packet_size`](crate::ServiceDaemon::set_max_packet_size).
+///
+/// The limit is per packet, not per message: a message too big for one packet is
+/// split across several rather than truncated.
+///
+/// Calculated as: 1500 bytes Ethernet MTU - IPv6 header 40 bytes - UDP header 8 bytes.
+/// It is safe on both IPv4 and IPv6, at the cost of 20 unused bytes for IPv4.
+///
+/// The idea is to keep generated packets unfragmented. See RFC 6762 section 17 for details.
+/// This is a conservative constant rather than the real MTU of the outgoing interface: use
+/// the API above to raise it on links known to support bigger packets.
+pub const MAX_PKT_DEFAULT: usize = 1452;
 
 const MSG_HEADER_LEN: usize = 12;
 
@@ -304,7 +340,8 @@ pub enum WriteError {
     /// A label in a name is longer than [`MAX_LABEL_BYTES`].
     NameTooLong,
 
-    /// The packet would exceed [`MAX_MSG_ABSOLUTE`] with this record.
+    /// The packet would exceed its max size with this record. The caller can
+    /// retry the record in a new packet.
     PacketFull,
 }
 
@@ -1457,14 +1494,19 @@ pub struct DnsOutPacket {
 
     /// k: name, v: offset
     names: HashMap<String, u16>,
+
+    /// Max byte size of `data`. A question or record that would push `data`
+    /// past it is rejected with [`WriteError::PacketFull`].
+    max_size: usize,
 }
 
 impl DnsOutPacket {
-    fn new() -> Self {
+    fn new(max_size: usize) -> Self {
         Self {
             data: vec![0; MSG_HEADER_LEN],
             state: PacketState::Init,
             names: HashMap::new(),
+            max_size,
         }
     }
 
@@ -1477,9 +1519,20 @@ impl DnsOutPacket {
     }
 
     fn write_question(&mut self, question: &DnsQuestion) -> WriteResult {
-        self.write_name(&question.entry.name)?;
+        let start_size = self.size();
+
+        self.write_name(&question.entry.name).map_err(|e| {
+            self.rollback(start_size);
+            e
+        })?;
         self.write_short(question.entry.ty as u16);
         self.write_short(question.entry.class);
+
+        if self.size() > self.max_size {
+            self.rollback(start_size);
+            return Err(WriteError::PacketFull);
+        }
+
         Ok(())
     }
 
@@ -1524,9 +1577,8 @@ impl DnsOutPacket {
 
         self.insert_short(record_offset - 2, (self.size() - record_offset) as u16);
 
-        if self.size() > MAX_MSG_ABSOLUTE {
+        if self.size() > self.max_size {
             self.rollback(start_size);
-            self.state = PacketState::Finished;
             return Err(WriteError::PacketFull);
         }
 
@@ -1684,6 +1736,13 @@ impl DnsOutPacket {
         self.data.extend(&v.to_be_bytes());
     }
 
+    /// Marks this finished packet as truncated, i.e. the message continues in
+    /// the next packet.
+    fn set_truncated(&mut self) {
+        let flags = u16::from_be_bytes([self.data[2], self.data[3]]);
+        self.insert_short(2, flags | FLAGS_TC);
+    }
+
     /// Writes the header fields and finish the packet.
     /// This function should be only called when finishing a packet.
     ///
@@ -1723,6 +1782,178 @@ impl DnsOutPacket {
         self.insert_short(10, addi_count);
 
         self.state = PacketState::Finished;
+    }
+}
+
+/// Which section of a DNS message an item belongs to.
+#[derive(Clone, Copy)]
+enum Section {
+    Question,
+    Answer,
+    Authority,
+    Additional,
+}
+
+/// Encodes a [`DnsOutgoing`] into one or more [`DnsOutPacket`], starting a new
+/// packet whenever the current one runs out of room.
+struct PacketBuilder<'a> {
+    out: &'a DnsOutgoing,
+
+    /// Max size of a packet that holds more than one record.
+    max_size: usize,
+
+    /// The message id, always 0 for multicast.
+    id: u16,
+
+    finished: Vec<DnsOutPacket>,
+    current: DnsOutPacket,
+
+    /// Section counts for `current`.
+    question_count: u16,
+    answer_count: u16,
+    auth_count: u16,
+    addi_count: u16,
+}
+
+impl<'a> PacketBuilder<'a> {
+    fn new(out: &'a DnsOutgoing, max_size: usize) -> Self {
+        Self {
+            out,
+            max_size,
+            id: if out.multicast { 0 } else { out.id },
+            finished: Vec::new(),
+            current: DnsOutPacket::new(max_size),
+            question_count: 0,
+            answer_count: 0,
+            auth_count: 0,
+            addi_count: 0,
+        }
+    }
+
+    /// True if nothing has been written into the current packet yet.
+    fn current_is_empty(&self) -> bool {
+        self.question_count == 0
+            && self.answer_count == 0
+            && self.auth_count == 0
+            && self.addi_count == 0
+    }
+
+    fn bump(&mut self, section: Section) {
+        match section {
+            Section::Question => self.question_count += 1,
+            Section::Answer => self.answer_count += 1,
+            Section::Authority => self.auth_count += 1,
+            Section::Additional => self.addi_count += 1,
+        }
+    }
+
+    /// Writes one question or record into the current packet, starting a new
+    /// packet if it does not fit in the current one.
+    ///
+    /// An item that cannot be encoded at all is skipped, leaving the packet as
+    /// it was. Sections are written in message order, so an item that spills
+    /// never lands ahead of one already written.
+    fn add<F>(&mut self, section: Section, write: F)
+    where
+        F: Fn(&mut DnsOutPacket) -> WriteResult,
+    {
+        match write(&mut self.current) {
+            Ok(()) => {
+                self.bump(section);
+                return;
+            }
+            // The item can never be encoded: skip it.
+            Err(WriteError::NameTooLong) => return,
+            Err(WriteError::PacketFull) => {}
+        }
+
+        // Finish the current packet and retry in a new one. If the current packet
+        // is already empty, a new one would be no roomier, so don't bother.
+        if !self.current_is_empty() {
+            self.flush();
+
+            match write(&mut self.current) {
+                Ok(()) => {
+                    self.bump(section);
+                    return;
+                }
+                Err(WriteError::NameTooLong) => return,
+                Err(WriteError::PacketFull) => {}
+            }
+        }
+
+        // A question too big for an empty packet is malformed rather than merely
+        // oversized: there is no legitimate question of this size.
+        if matches!(section, Section::Question) {
+            return;
+        }
+
+        // The record does not fit in a packet of its own either. RFC 6762 section 17:
+        // a record too large for one MTU-sized packet SHOULD be sent alone, in a
+        // single IP datagram, using multiple IP fragments. Sending it alone is not
+        // optional -- such a packet "MUST NOT contain more than one resource record"
+        // -- so this packet is flushed immediately.
+        //
+        // No ceiling is applied here: whether such a packet may go out on the wire
+        // is for the send path to decide, which drops one bigger than section 17
+        // allows for its IP version.
+        self.current.max_size = usize::MAX;
+
+        if write(&mut self.current).is_ok() {
+            self.bump(section);
+            self.flush();
+        } else {
+            // Too big even for the hard ceiling: skip the record and carry on.
+            self.current.max_size = self.max_size;
+        }
+    }
+
+    /// Finishes the current packet and starts a new empty one.
+    fn flush(&mut self) {
+        self.current.write_header(
+            self.id,
+            self.out.flags,
+            self.question_count,
+            self.answer_count,
+            self.auth_count,
+            self.addi_count,
+        );
+
+        let next = DnsOutPacket::new(self.max_size);
+        self.finished
+            .push(std::mem::replace(&mut self.current, next));
+
+        self.question_count = 0;
+        self.answer_count = 0;
+        self.auth_count = 0;
+        self.addi_count = 0;
+    }
+
+    fn finish(mut self) -> Vec<DnsOutPacket> {
+        // Always produce at least one packet, even an empty one, but never leave a
+        // trailing empty packet behind a full one.
+        if !self.current_is_empty() || self.finished.is_empty() {
+            self.flush();
+        }
+
+        let mut packets = self.finished;
+
+        /*
+        RFC 6762 section 7.2: https://datatracker.ietf.org/doc/html/rfc6762#section-7.2
+        ...
+            When a Multicast DNS querier sends a query to which it already knows some
+            answers, it ... sets the TC (Truncated) bit in the header ... [so that the
+            responder knows] to wait for the remaining known answers before responding.
+         */
+        if self.out.is_query() {
+            if let Some((_last, rest)) = packets.split_last_mut() {
+                for packet in rest {
+                    packet.set_truncated();
+                }
+            }
+        }
+
+        packets
     }
 }
 
@@ -1784,10 +2015,6 @@ impl DnsOutgoing {
 
     pub const fn is_query(&self) -> bool {
         (self.flags & FLAGS_QR_MASK) == FLAGS_QR_QUERY
-    }
-
-    const fn is_response(&self) -> bool {
-        (self.flags & FLAGS_QR_MASK) == FLAGS_QR_RESPONSE
     }
 
     // Adds an additional answer
@@ -1997,86 +2224,58 @@ impl DnsOutgoing {
         }
     }
 
-    /// Returns a list of actual DNS packet data to be sent on the wire.
-    pub fn to_data_on_wire(&self) -> Vec<Vec<u8>> {
-        let packet_list = self.to_packets();
+    /// Returns a list of actual DNS packet data to be sent on the wire, each no
+    /// bigger than `max_size`.
+    ///
+    /// Most callers want [`MAX_PKT_DEFAULT`] for `max_size`.
+    pub fn to_data_on_wire(&self, max_size: usize) -> Vec<Vec<u8>> {
+        let packet_list = self.to_packets(max_size);
         packet_list.into_iter().map(|p| p.data).collect()
     }
 
-    /// Encode self into one or more packets.
-    pub fn to_packets(&self) -> Vec<DnsOutPacket> {
-        let mut packet_list = Vec::new();
-        let mut packet = DnsOutPacket::new();
-
-        let mut question_count = 0;
-        let mut answer_count = 0;
-        let mut auth_count = 0;
-        let mut addi_count = 0;
-        let id = if self.multicast { 0 } else { self.id };
+    /// Encode self into one or more packets, each no bigger than `max_size`.
+    ///
+    /// Questions and records are written in message order and spill into a new
+    /// packet whenever the current one is full, so none is dropped for lack of
+    /// room. The one exception is a single record too big to fit in an otherwise
+    /// empty packet: it is sent alone in an oversized packet, per RFC 6762
+    /// section 17.
+    ///
+    /// `max_size` must be no bigger than [`MAX_PKT_ABSOLUTE_IPV6`], the RFC 6762
+    /// section 17 ceiling that is legal over either IP version;
+    /// [`ServiceDaemon::set_max_packet_size`](crate::ServiceDaemon::set_max_packet_size)
+    /// caps what it accepts. Most callers want [`MAX_PKT_DEFAULT`].
+    pub fn to_packets(&self, max_size: usize) -> Vec<DnsOutPacket> {
+        debug_assert!(
+            max_size <= MAX_PKT_ABSOLUTE_IPV6,
+            "max_size {} exceeds the RFC 6762 section 17 ceiling",
+            max_size
+        );
+        let mut builder = PacketBuilder::new(self, max_size);
 
         for question in self.questions.iter() {
-            question_count += u16::from(packet.write_question(question).is_ok());
+            builder.add(Section::Question, |packet| packet.write_question(question));
         }
 
         for (answer, time) in self.answers.iter() {
-            answer_count += u16::from(packet.write_record(answer.as_ref(), *time).is_ok());
+            builder.add(Section::Answer, |packet| {
+                packet.write_record(answer.as_ref(), *time)
+            });
         }
 
         for auth in self.authorities.iter() {
-            auth_count += u16::from(packet.write_record(auth.as_ref(), 0).is_ok());
+            builder.add(Section::Authority, |packet| {
+                packet.write_record(auth.as_ref(), 0)
+            });
         }
 
         for addi in self.additionals.iter() {
-            match packet.write_record(addi.as_ref(), 0) {
-                Ok(()) => {
-                    addi_count += 1;
-                    continue;
-                }
-                // The record itself is unusable: skip it and keep the packet.
-                Err(WriteError::NameTooLong) => continue,
-                Err(WriteError::PacketFull) => {}
-            }
-
-            // No more processing for response packets.
-            if self.is_response() {
-                break;
-            }
-
-            // For query, the current packet exceeds its max size due to known answers,
-            // need to truncate.
-
-            // finish the current packet first.
-            packet.write_header(
-                id,
-                self.flags | FLAGS_TC,
-                question_count,
-                answer_count,
-                auth_count,
-                addi_count,
-            );
-
-            packet_list.push(packet);
-
-            // create a new packet and reset counts.
-            packet = DnsOutPacket::new();
-            addi_count = u16::from(packet.write_record(addi.as_ref(), 0).is_ok());
-
-            question_count = 0;
-            answer_count = 0;
-            auth_count = 0;
+            builder.add(Section::Additional, |packet| {
+                packet.write_record(addi.as_ref(), 0)
+            });
         }
 
-        packet.write_header(
-            id,
-            self.flags,
-            question_count,
-            answer_count,
-            auth_count,
-            addi_count,
-        );
-
-        packet_list.push(packet);
-        packet_list
+        builder.finish()
     }
 }
 
@@ -2674,8 +2873,9 @@ const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DnsAddress, DnsHostInfo, DnsIncoming, DnsOutgoing, DnsPointer, DnsTxt, RRType,
-        CLASS_CACHE_FLUSH, CLASS_IN, MSG_HEADER_LEN,
+        DnsAddress, DnsHostInfo, DnsIncoming, DnsOutPacket, DnsOutgoing, DnsPointer, DnsTxt,
+        RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, FLAGS_TC,
+        MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MSG_HEADER_LEN,
     };
     use crate::InterfaceId;
     use std::collections::HashMap;
@@ -2684,7 +2884,7 @@ mod tests {
     #[test]
     fn test_dns_outgoing_serialization_empty() {
         let out = DnsOutgoing::new(0);
-        let packets = out.to_packets();
+        let packets = out.to_packets(MAX_PKT_DEFAULT);
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].as_bytes(), &[0; 12]);
         let expected_names = HashMap::new();
@@ -2695,7 +2895,7 @@ mod tests {
     fn test_dns_outgoing_serialization_question() {
         let mut out = DnsOutgoing::new(0);
         out.add_question("123.test", RRType::A);
-        let packets = out.to_packets();
+        let packets = out.to_packets(MAX_PKT_DEFAULT);
         assert_eq!(packets.len(), 1);
         assert_eq!(
             packets[0].as_bytes(),
@@ -2729,7 +2929,7 @@ mod tests {
             "arm".to_string(),
             "linux".to_string(),
         )));
-        let packets = out.to_packets();
+        let packets = out.to_packets(MAX_PKT_DEFAULT);
         assert_eq!(packets.len(), 1);
         assert_eq!(
             packets[0].as_bytes(),
@@ -2759,7 +2959,7 @@ mod tests {
             IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             InterfaceId::default(),
         ));
-        let packets = out.to_packets();
+        let packets = out.to_packets(MAX_PKT_DEFAULT);
         assert_eq!(packets.len(), 1);
         assert_eq!(
             packets[0].as_bytes(),
@@ -2789,7 +2989,7 @@ mod tests {
             ),
             0,
         );
-        let packets = out.to_packets();
+        let packets = out.to_packets(MAX_PKT_DEFAULT);
         assert_eq!(packets.len(), 1);
         assert_eq!(
             packets[0].as_bytes(),
@@ -2822,7 +3022,7 @@ mod tests {
             ),
             0,
         );
-        let packets = out.to_packets();
+        let packets = out.to_packets(MAX_PKT_DEFAULT);
         assert_eq!(packets.len(), 1);
         assert_eq!(
             packets[0].as_bytes(),
@@ -2851,7 +3051,7 @@ mod tests {
         out.add_question(&format!("{long_label}.local"), RRType::PTR);
         out.add_question("123.test", RRType::A);
 
-        let packets = out.to_packets();
+        let packets = out.to_packets(MAX_PKT_DEFAULT);
         assert_eq!(packets.len(), 1);
         assert_eq!(
             packets[0].as_bytes(),
@@ -2896,7 +3096,7 @@ mod tests {
             0,
         );
 
-        let packets = out.to_packets();
+        let packets = out.to_packets(MAX_PKT_DEFAULT);
         assert_eq!(packets.len(), 1);
 
         // Header answer count is 1: the first answer was dropped.
@@ -2947,8 +3147,184 @@ mod tests {
         // Re-emitting it must drop the question rather than panic.
         let mut out = DnsOutgoing::new(0);
         out.add_question(&name, RRType::PTR);
-        let packets = out.to_packets();
+        let packets = out.to_packets(MAX_PKT_DEFAULT);
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].as_bytes(), &[0; MSG_HEADER_LEN]);
+    }
+
+    fn test_interface_id() -> InterfaceId {
+        InterfaceId {
+            name: "test".to_string(),
+            index: 1,
+        }
+    }
+
+    /// The "flags" field of a finished packet.
+    fn packet_flags(packet: &DnsOutPacket) -> u16 {
+        let bytes = packet.as_bytes();
+        u16::from_be_bytes([bytes[2], bytes[3]])
+    }
+
+    fn ptr_answer(index: usize) -> DnsPointer {
+        DnsPointer::new(
+            "_spill._tcp.local.",
+            RRType::PTR,
+            CLASS_IN,
+            4500,
+            format!("instance-{index:04}._spill._tcp.local."),
+        )
+    }
+
+    /// Re-parses each packet and returns the total number of answers found, which
+    /// checks the header counts against what each packet actually holds.
+    fn parsed_answer_count(packets: &[DnsOutPacket]) -> usize {
+        packets
+            .iter()
+            .map(|packet: &DnsOutPacket| {
+                let parsed = DnsIncoming::new(packet.as_bytes().to_vec(), test_interface_id())
+                    .expect("each packet must parse on its own");
+                assert!(
+                    !parsed.answers().is_empty(),
+                    "a spilled packet must not be empty"
+                );
+                parsed.answers().len()
+            })
+            .sum()
+    }
+
+    /// A response too big for one packet spills into more packets. Every record
+    /// must survive: before, records that did not fit were silently dropped.
+    #[test]
+    fn test_dns_outgoing_response_spills_into_packets() {
+        const ANSWER_COUNT: usize = 100;
+
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+        for i in 0..ANSWER_COUNT {
+            out.add_answer_at_time(ptr_answer(i), 0);
+        }
+
+        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        assert!(
+            packets.len() > 1,
+            "{} answers should not fit in one packet",
+            ANSWER_COUNT
+        );
+
+        for packet in &packets {
+            assert!(
+                packet.size() <= MAX_PKT_DEFAULT,
+                "packet of {} bytes exceeds the limit",
+                packet.size()
+            );
+
+            // A multi-packet response is a series of independent responses: unlike
+            // a query's known answers, it does not use the TC bit.
+            assert_eq!(packet_flags(packet) & FLAGS_TC, 0);
+        }
+
+        assert_eq!(parsed_answer_count(&packets), ANSWER_COUNT);
+    }
+
+    /// RFC 6762 section 7.2: a querier sending known answers in more than one
+    /// packet sets the TC bit in every packet but the last.
+    #[test]
+    fn test_dns_outgoing_query_truncation_bit() {
+        let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
+        out.add_question("_spill._tcp.local.", RRType::PTR);
+        for i in 0..100 {
+            out.add_answer_box(Box::new(ptr_answer(i)));
+        }
+
+        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        assert!(
+            packets.len() > 1,
+            "known answers should not fit in one packet"
+        );
+
+        let (last, rest) = packets.split_last().expect("at least one packet");
+        for packet in rest {
+            assert_ne!(
+                packet_flags(packet) & FLAGS_TC,
+                0,
+                "a packet with more known answers to follow must set TC"
+            );
+        }
+        assert_eq!(
+            packet_flags(last) & FLAGS_TC,
+            0,
+            "the last packet must not set TC"
+        );
+
+        // The question goes in the first packet only, and no answer is lost.
+        assert_eq!(packets[0].as_bytes()[4..6], 1u16.to_be_bytes());
+        for packet in rest.iter().skip(1) {
+            assert_eq!(packet.as_bytes()[4..6], [0, 0]);
+        }
+        assert_eq!(parsed_answer_count(&packets), 100);
+    }
+
+    /// RFC 6762 section 17: a record too large for one MTU-sized packet is sent
+    /// alone in an oversized packet, rather than dropped. It must be alone, since
+    /// a fragmented packet "MUST NOT contain more than one resource record".
+    #[test]
+    fn test_dns_outgoing_oversized_record_sent_alone() {
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+        out.add_answer_at_time(ptr_answer(0), 0);
+        out.add_answer_at_time(
+            DnsTxt::new("big._spill._tcp.local.", CLASS_IN, 4500, vec![b'x'; 2000]),
+            0,
+        );
+        out.add_answer_at_time(ptr_answer(1), 0);
+
+        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        assert_eq!(packets.len(), 3, "the big record needs a packet to itself");
+
+        assert!(packets[0].size() <= MAX_PKT_DEFAULT);
+        assert!(
+            packets[1].size() > MAX_PKT_DEFAULT,
+            "the oversized record must not be dropped"
+        );
+        // Still small enough that the send path will let it out.
+        assert!(packets[1].size() <= MAX_PKT_ABSOLUTE_IPV6);
+        assert!(packets[2].size() <= MAX_PKT_DEFAULT);
+
+        // One record per packet here, the middle one being the big TXT.
+        let parsed = DnsIncoming::new(packets[1].as_bytes().to_vec(), test_interface_id()).unwrap();
+        assert_eq!(parsed.answers().len(), 1);
+        assert_eq!(parsed.answers()[0].get_name(), "big._spill._tcp.local.");
+        assert_eq!(parsed_answer_count(&packets), 3);
+    }
+
+    /// Authorities and additionals spill too, and stay in their own sections.
+    #[test]
+    fn test_dns_outgoing_all_sections_spill() {
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+        for i in 0..40 {
+            out.add_answer_at_time(ptr_answer(i), 0);
+        }
+        for i in 40..80 {
+            out.add_authority(Box::new(ptr_answer(i)));
+        }
+        for i in 80..120 {
+            out.add_additional_answer(ptr_answer(i));
+        }
+
+        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        assert!(packets.len() > 1);
+
+        let mut answers = 0;
+        let mut authorities = 0;
+        let mut additionals = 0;
+        for packet in &packets {
+            assert!(packet.size() <= MAX_PKT_DEFAULT);
+            let parsed = DnsIncoming::new(packet.as_bytes().to_vec(), test_interface_id()).unwrap();
+            answers += parsed.answers().len();
+            authorities += parsed.authorities().len();
+            additionals += parsed.additionals().len();
+        }
+
+        assert_eq!(answers, 40);
+        assert_eq!(authorities, 40);
+        assert_eq!(additionals, 40);
     }
 }

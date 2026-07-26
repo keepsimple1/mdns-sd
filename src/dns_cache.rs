@@ -871,6 +871,8 @@ mod tests {
             name: name.to_string(),
             index,
             addrs: HashSet::new(),
+            max_packet_size_v4: crate::MAX_PKT_DEFAULT,
+            max_packet_size_v6: crate::MAX_PKT_DEFAULT,
         }
     }
 

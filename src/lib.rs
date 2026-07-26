@@ -177,7 +177,7 @@ mod error;
 mod service_daemon;
 mod service_info;
 
-pub use dns_parser::{InterfaceId, RRType, ScopedIp, ScopedIpV4, ScopedIpV6};
+pub use dns_parser::{InterfaceId, RRType, ScopedIp, ScopedIpV4, ScopedIpV6, MAX_PKT_DEFAULT};
 pub use error::{Error, Result};
 pub use service_daemon::{
     DaemonEvent, DaemonStatus, DnsNameChange, HostnameResolutionEvent, IfKind, IfPredicate,
