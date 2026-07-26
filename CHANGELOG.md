@@ -6,10 +6,6 @@ This is a small bugfix release.
 
 - Fix a panic when encoding a name that contains a label longer than 63 bytes. The packet write path now reports an error and skips the offending question or record, instead of asserting. (#484, commit `08362e3`)
 
-## Other changes
-
-- docs: add RFC 6762 compliance rows for the features added in v0.20.2. (commit `a574e93`)
-
 ## All changes
 
 * `a574e93 2026-07-24` docs: add RFC 6762 compliance rows for v0.20.2 features (keepsimple1)
