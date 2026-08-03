@@ -295,10 +295,6 @@ pub const MAX_PKT_ABSOLUTE_IPV4: usize = 8972;
 ///
 /// Same 9000-byte ceiling as [`MAX_PKT_ABSOLUTE_IPV4`], less the bigger IPv6 header:
 /// 9000 bytes - IPv6 header 40 bytes - UDP header 8 bytes.
-///
-/// Being the smaller of the two, it is legal over either IP version, and is therefore
-/// the ceiling used when generating packets, at the cost of 20 unused bytes for IPv4.
-/// The IPv4 value is for packets we receive, which others may legally send that big.
 pub const MAX_PKT_ABSOLUTE_IPV6: usize = 8952;
 
 /// Absolute max size of an mDNS packet for the given IP version.
@@ -310,18 +306,12 @@ pub const fn max_pkt_absolute(is_ipv4: bool) -> usize {
     }
 }
 
-/// Default max size of a generated (i.e. outgoing) packet, i.e. the default of
-/// [`ServiceDaemon::set_max_packet_size`](crate::ServiceDaemon::set_max_packet_size).
-///
-/// The limit is per packet, not per message: a message too big for one packet is
-/// split across several rather than truncated.
+/// Default max size of a generated (i.e. outgoing) packet.
 ///
 /// Calculated as: 1500 bytes Ethernet MTU - IPv6 header 40 bytes - UDP header 8 bytes.
 /// It is safe on both IPv4 and IPv6, at the cost of 20 unused bytes for IPv4.
 ///
-/// The idea is to keep generated packets unfragmented. See RFC 6762 section 17 for details.
-/// This is a conservative constant rather than the real MTU of the outgoing interface: use
-/// the API above to raise it on links known to support bigger packets.
+/// The idea is to keep generated packets unfragmented at IP layer. See RFC 6762 section 17.
 pub const MAX_PKT_DEFAULT: usize = 1452;
 
 const MSG_HEADER_LEN: usize = 12;
@@ -340,8 +330,7 @@ pub enum WriteError {
     /// A label in a name is longer than [`MAX_LABEL_BYTES`].
     NameTooLong,
 
-    /// The packet would exceed its max size with this record. The caller can
-    /// retry the record in a new packet.
+    /// The packet would exceed its max size with this record.
     PacketFull,
 }
 
@@ -1478,10 +1467,13 @@ impl DnsRecordExt for DnsNSec {
     }
 }
 
-#[derive(PartialEq)]
-enum PacketState {
-    Init = 0,
-    Finished = 1,
+/// Which section of a DNS message an item belongs to.
+#[derive(Clone, Copy)]
+enum Section {
+    Question,
+    Answer,
+    Authority,
+    Additional,
 }
 
 /// A single packet for outgoing DNS message.
@@ -1489,24 +1481,29 @@ pub struct DnsOutPacket {
     /// All bytes in `data` is the actual packet on the wire.
     data: Vec<u8>,
 
-    /// An internal state, not defined by DNS.
-    state: PacketState,
-
     /// k: name, v: offset
     names: HashMap<String, u16>,
 
-    /// Max byte size of `data`. A question or record that would push `data`
-    /// past it is rejected with [`WriteError::PacketFull`].
+    /// Max byte size of `data`. i.e. the max packet size.
     max_size: usize,
+
+    /// How many items `data` holds in each section, i.e. the header counts.
+    question_count: u16,
+    answer_count: u16,
+    auth_count: u16,
+    addi_count: u16,
 }
 
 impl DnsOutPacket {
     fn new(max_size: usize) -> Self {
         Self {
             data: vec![0; MSG_HEADER_LEN],
-            state: PacketState::Init,
             names: HashMap::new(),
             max_size,
+            question_count: 0,
+            answer_count: 0,
+            auth_count: 0,
+            addi_count: 0,
         }
     }
 
@@ -1516,6 +1513,24 @@ impl DnsOutPacket {
 
     pub fn as_bytes(&self) -> &[u8] {
         &self.data
+    }
+
+    /// True if nothing has been written into this packet yet.
+    fn is_empty(&self) -> bool {
+        self.question_count == 0
+            && self.answer_count == 0
+            && self.auth_count == 0
+            && self.addi_count == 0
+    }
+
+    /// Counts one more item in `section`.
+    fn bump(&mut self, section: Section) {
+        match section {
+            Section::Question => self.question_count += 1,
+            Section::Answer => self.answer_count += 1,
+            Section::Authority => self.auth_count += 1,
+            Section::Additional => self.addi_count += 1,
+        }
     }
 
     fn write_question(&mut self, question: &DnsQuestion) -> WriteResult {
@@ -1575,7 +1590,7 @@ impl DnsOutPacket {
             return Err(e);
         }
 
-        self.insert_short(record_offset - 2, (self.size() - record_offset) as u16);
+        self.set_short_at(record_offset - 2, (self.size() - record_offset) as u16);
 
         if self.size() > self.max_size {
             self.rollback(start_size);
@@ -1585,7 +1600,7 @@ impl DnsOutPacket {
         Ok(())
     }
 
-    pub(crate) fn insert_short(&mut self, index: usize, value: u16) {
+    fn set_short_at(&mut self, index: usize, value: u16) {
         self.data[index..index + 2].copy_from_slice(&value.to_be_bytes());
     }
 
@@ -1740,7 +1755,7 @@ impl DnsOutPacket {
     /// the next packet.
     fn set_truncated(&mut self) {
         let flags = u16::from_be_bytes([self.data[2], self.data[3]]);
-        self.insert_short(2, flags | FLAGS_TC);
+        self.set_short_at(2, flags | FLAGS_TC);
     }
 
     /// Writes the header fields and finish the packet.
@@ -1765,33 +1780,14 @@ impl DnsOutPacket {
     //    |                    ARCOUNT                    |
     //    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
     //
-    fn write_header(
-        &mut self,
-        id: u16,
-        flags: u16,
-        q_count: u16,
-        a_count: u16,
-        auth_count: u16,
-        addi_count: u16,
-    ) {
-        self.insert_short(0, id);
-        self.insert_short(2, flags);
-        self.insert_short(4, q_count);
-        self.insert_short(6, a_count);
-        self.insert_short(8, auth_count);
-        self.insert_short(10, addi_count);
-
-        self.state = PacketState::Finished;
+    fn write_header(&mut self, id: u16, flags: u16) {
+        self.set_short_at(0, id);
+        self.set_short_at(2, flags);
+        self.set_short_at(4, self.question_count);
+        self.set_short_at(6, self.answer_count);
+        self.set_short_at(8, self.auth_count);
+        self.set_short_at(10, self.addi_count);
     }
-}
-
-/// Which section of a DNS message an item belongs to.
-#[derive(Clone, Copy)]
-enum Section {
-    Question,
-    Answer,
-    Authority,
-    Additional,
 }
 
 /// Encodes a [`DnsOutgoing`] into one or more [`DnsOutPacket`], starting a new
@@ -1807,12 +1803,6 @@ struct PacketBuilder<'a> {
 
     finished: Vec<DnsOutPacket>,
     current: DnsOutPacket,
-
-    /// Section counts for `current`.
-    question_count: u16,
-    answer_count: u16,
-    auth_count: u16,
-    addi_count: u16,
 }
 
 impl<'a> PacketBuilder<'a> {
@@ -1823,27 +1813,6 @@ impl<'a> PacketBuilder<'a> {
             id: if out.multicast { 0 } else { out.id },
             finished: Vec::new(),
             current: DnsOutPacket::new(max_size),
-            question_count: 0,
-            answer_count: 0,
-            auth_count: 0,
-            addi_count: 0,
-        }
-    }
-
-    /// True if nothing has been written into the current packet yet.
-    fn current_is_empty(&self) -> bool {
-        self.question_count == 0
-            && self.answer_count == 0
-            && self.auth_count == 0
-            && self.addi_count == 0
-    }
-
-    fn bump(&mut self, section: Section) {
-        match section {
-            Section::Question => self.question_count += 1,
-            Section::Answer => self.answer_count += 1,
-            Section::Authority => self.auth_count += 1,
-            Section::Additional => self.addi_count += 1,
         }
     }
 
@@ -1859,7 +1828,7 @@ impl<'a> PacketBuilder<'a> {
     {
         match write(&mut self.current) {
             Ok(()) => {
-                self.bump(section);
+                self.current.bump(section);
                 return;
             }
             // The item can never be encoded: skip it.
@@ -1869,12 +1838,12 @@ impl<'a> PacketBuilder<'a> {
 
         // Finish the current packet and retry in a new one. If the current packet
         // is already empty, a new one would be no roomier, so don't bother.
-        if !self.current_is_empty() {
+        if !self.current.is_empty() {
             self.flush();
 
             match write(&mut self.current) {
                 Ok(()) => {
-                    self.bump(section);
+                    self.current.bump(section);
                     return;
                 }
                 Err(WriteError::NameTooLong) => return,
@@ -1900,7 +1869,7 @@ impl<'a> PacketBuilder<'a> {
         self.current.max_size = usize::MAX;
 
         if write(&mut self.current).is_ok() {
-            self.bump(section);
+            self.current.bump(section);
             self.flush();
         } else {
             // Too big even for the hard ceiling: skip the record and carry on.
@@ -1910,29 +1879,17 @@ impl<'a> PacketBuilder<'a> {
 
     /// Finishes the current packet and starts a new empty one.
     fn flush(&mut self) {
-        self.current.write_header(
-            self.id,
-            self.out.flags,
-            self.question_count,
-            self.answer_count,
-            self.auth_count,
-            self.addi_count,
-        );
+        self.current.write_header(self.id, self.out.flags);
 
         let next = DnsOutPacket::new(self.max_size);
         self.finished
             .push(std::mem::replace(&mut self.current, next));
-
-        self.question_count = 0;
-        self.answer_count = 0;
-        self.auth_count = 0;
-        self.addi_count = 0;
     }
 
     fn finish(mut self) -> Vec<DnsOutPacket> {
         // Always produce at least one packet, even an empty one, but never leave a
         // trailing empty packet behind a full one.
-        if !self.current_is_empty() || self.finished.is_empty() {
+        if !self.current.is_empty() || self.finished.is_empty() {
             self.flush();
         }
 
