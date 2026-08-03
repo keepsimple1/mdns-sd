@@ -1798,19 +1798,20 @@ struct PacketBuilder<'a> {
     /// Max size of a packet that holds more than one record.
     max_size: usize,
 
-    /// The message id, always 0 for multicast.
-    id: u16,
+    /// IP version these packets are bound for, which decides their absolute
+    /// ceiling: see [`max_pkt_absolute`].
+    is_ipv4: bool,
 
     finished: Vec<DnsOutPacket>,
     current: DnsOutPacket,
 }
 
 impl<'a> PacketBuilder<'a> {
-    fn new(out: &'a DnsOutgoing, max_size: usize) -> Self {
+    fn new(out: &'a DnsOutgoing, max_size: usize, is_ipv4: bool) -> Self {
         Self {
             out,
             max_size,
-            id: if out.multicast { 0 } else { out.id },
+            is_ipv4,
             finished: Vec::new(),
             current: DnsOutPacket::new(max_size),
         }
@@ -1863,10 +1864,9 @@ impl<'a> PacketBuilder<'a> {
         // optional -- such a packet "MUST NOT contain more than one resource record"
         // -- so this packet is flushed immediately.
         //
-        // No ceiling is applied here: whether such a packet may go out on the wire
-        // is for the send path to decide, which drops one bigger than section 17
-        // allows for its IP version.
-        self.current.max_size = usize::MAX;
+        // Only the section 17 ceiling for this IP version still applies: a packet
+        // over it cannot go out on the wire at all.
+        self.current.max_size = max_pkt_absolute(self.is_ipv4);
 
         if write(&mut self.current).is_ok() {
             self.current.bump(section);
@@ -1879,7 +1879,8 @@ impl<'a> PacketBuilder<'a> {
 
     /// Finishes the current packet and starts a new empty one.
     fn flush(&mut self) {
-        self.current.write_header(self.id, self.out.flags);
+        self.current
+            .write_header(self.out.wire_id(), self.out.flags);
 
         let next = DnsOutPacket::new(self.max_size);
         self.finished
@@ -1968,6 +1969,15 @@ impl DnsOutgoing {
 
     pub fn set_id(&mut self, id: u16) {
         self.id = id;
+    }
+
+    /// The id to put in the header, always 0 for multicast.
+    const fn wire_id(&self) -> u16 {
+        if self.multicast {
+            0
+        } else {
+            self.id
+        }
     }
 
     pub const fn is_query(&self) -> bool {
@@ -2182,11 +2192,11 @@ impl DnsOutgoing {
     }
 
     /// Returns a list of actual DNS packet data to be sent on the wire, each no
-    /// bigger than `max_size`.
+    /// bigger than `max_size`, over the IP version given by `is_ipv4`.
     ///
     /// Most callers want [`MAX_PKT_DEFAULT`] for `max_size`.
-    pub fn to_data_on_wire(&self, max_size: usize) -> Vec<Vec<u8>> {
-        let packet_list = self.to_packets(max_size);
+    pub fn to_data_on_wire(&self, max_size: usize, is_ipv4: bool) -> Vec<Vec<u8>> {
+        let packet_list = self.to_packets(max_size, is_ipv4);
         packet_list.into_iter().map(|p| p.data).collect()
     }
 
@@ -2198,17 +2208,21 @@ impl DnsOutgoing {
     /// empty packet: it is sent alone in an oversized packet, per RFC 6762
     /// section 17.
     ///
+    /// `is_ipv4` tells which IP version the packets are bound for, and so how big
+    /// that lone oversized packet may get: see [`max_pkt_absolute`]. A record too
+    /// big even for that could not be sent at all, and is dropped.
+    ///
     /// `max_size` must be no bigger than [`MAX_PKT_ABSOLUTE_IPV6`], the RFC 6762
     /// section 17 ceiling that is legal over either IP version;
     /// [`ServiceDaemon::set_max_packet_size`](crate::ServiceDaemon::set_max_packet_size)
     /// caps what it accepts. Most callers want [`MAX_PKT_DEFAULT`].
-    pub fn to_packets(&self, max_size: usize) -> Vec<DnsOutPacket> {
+    pub fn to_packets(&self, max_size: usize, is_ipv4: bool) -> Vec<DnsOutPacket> {
         debug_assert!(
             max_size <= MAX_PKT_ABSOLUTE_IPV6,
             "max_size {} exceeds the RFC 6762 section 17 ceiling",
             max_size
         );
-        let mut builder = PacketBuilder::new(self, max_size);
+        let mut builder = PacketBuilder::new(self, max_size, is_ipv4);
 
         for question in self.questions.iter() {
             builder.add(Section::Question, |packet| packet.write_question(question));
@@ -2838,10 +2852,14 @@ mod tests {
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// The `is_ipv4` argument of `to_packets`. IPv6 has the smaller of the two
+    /// absolute ceilings, so it is the stricter one to encode for.
+    const IPV6: bool = false;
+
     #[test]
     fn test_dns_outgoing_serialization_empty() {
         let out = DnsOutgoing::new(0);
-        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].as_bytes(), &[0; 12]);
         let expected_names = HashMap::new();
@@ -2852,7 +2870,7 @@ mod tests {
     fn test_dns_outgoing_serialization_question() {
         let mut out = DnsOutgoing::new(0);
         out.add_question("123.test", RRType::A);
-        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
         assert_eq!(
             packets[0].as_bytes(),
@@ -2886,7 +2904,7 @@ mod tests {
             "arm".to_string(),
             "linux".to_string(),
         )));
-        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
         assert_eq!(
             packets[0].as_bytes(),
@@ -2916,7 +2934,7 @@ mod tests {
             IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             InterfaceId::default(),
         ));
-        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
         assert_eq!(
             packets[0].as_bytes(),
@@ -2946,7 +2964,7 @@ mod tests {
             ),
             0,
         );
-        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
         assert_eq!(
             packets[0].as_bytes(),
@@ -2979,7 +2997,7 @@ mod tests {
             ),
             0,
         );
-        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
         assert_eq!(
             packets[0].as_bytes(),
@@ -3008,7 +3026,7 @@ mod tests {
         out.add_question(&format!("{long_label}.local"), RRType::PTR);
         out.add_question("123.test", RRType::A);
 
-        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
         assert_eq!(
             packets[0].as_bytes(),
@@ -3053,7 +3071,7 @@ mod tests {
             0,
         );
 
-        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
 
         // Header answer count is 1: the first answer was dropped.
@@ -3104,7 +3122,7 @@ mod tests {
         // Re-emitting it must drop the question rather than panic.
         let mut out = DnsOutgoing::new(0);
         out.add_question(&name, RRType::PTR);
-        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].as_bytes(), &[0; MSG_HEADER_LEN]);
     }
@@ -3160,7 +3178,7 @@ mod tests {
             out.add_answer_at_time(ptr_answer(i), 0);
         }
 
-        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert!(
             packets.len() > 1,
             "{} answers should not fit in one packet",
@@ -3192,7 +3210,7 @@ mod tests {
             out.add_answer_box(Box::new(ptr_answer(i)));
         }
 
-        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert!(
             packets.len() > 1,
             "known answers should not fit in one packet"
@@ -3233,7 +3251,7 @@ mod tests {
         );
         out.add_answer_at_time(ptr_answer(1), 0);
 
-        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 3, "the big record needs a packet to itself");
 
         assert!(packets[0].size() <= MAX_PKT_DEFAULT);
@@ -3252,6 +3270,37 @@ mod tests {
         assert_eq!(parsed_answer_count(&packets), 3);
     }
 
+    /// A record over the RFC 6762 section 17 ceiling could not go out on the wire
+    /// even in a packet of its own, so it is dropped while its neighbors survive.
+    #[test]
+    fn test_dns_outgoing_record_over_absolute_ceiling_dropped() {
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+        out.add_answer_at_time(ptr_answer(0), 0);
+        out.add_answer_at_time(
+            DnsTxt::new(
+                "huge._spill._tcp.local.",
+                CLASS_IN,
+                4500,
+                vec![b'x'; MAX_PKT_ABSOLUTE_IPV6],
+            ),
+            0,
+        );
+        out.add_answer_at_time(ptr_answer(1), 0);
+
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
+        for packet in &packets {
+            assert!(
+                packet.size() <= MAX_PKT_ABSOLUTE_IPV6,
+                "an unsendable packet must never be generated"
+            );
+        }
+        assert_eq!(
+            parsed_answer_count(&packets),
+            2,
+            "only the huge record is dropped"
+        );
+    }
+
     /// Authorities and additionals spill too, and stay in their own sections.
     #[test]
     fn test_dns_outgoing_all_sections_spill() {
@@ -3266,7 +3315,7 @@ mod tests {
             out.add_additional_answer(ptr_answer(i));
         }
 
-        let packets = out.to_packets(MAX_PKT_DEFAULT);
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert!(packets.len() > 1);
 
         let mut answers = 0;

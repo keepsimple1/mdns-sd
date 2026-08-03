@@ -878,7 +878,7 @@ fn _new_socket_bind(intf: &Interface, should_loop: bool) -> Result<MyUdpSocket> 
 
             // Test if we can send packets successfully.
             let multicast_addr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
-            let test_packets = DnsOutgoing::new(0).to_data_on_wire(MAX_PKT_DEFAULT);
+            let test_packets = DnsOutgoing::new(0).to_data_on_wire(MAX_PKT_DEFAULT, true);
             for packet in test_packets {
                 sock.send_to(&packet, &multicast_addr)
                     .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
@@ -4613,6 +4613,10 @@ struct SendConfig {
     /// Max byte size of a generated packet.
     /// See [`ServiceDaemon::set_max_packet_size`].
     max_packet_size: usize,
+
+    /// Whether the packets go out over IPv4, which decides their absolute
+    /// ceiling: see [`max_pkt_absolute`].
+    is_ipv4: bool,
 }
 
 /// Send an outgoing mDNS query or response, and returns the packet bytes.
@@ -4644,10 +4648,12 @@ fn send_dns_outgoing(
         }
     };
 
-    // The limit is per address family, so read it off the address we send from.
+    // The limits are per address family, so read them off the address we send from.
+    let is_ipv4 = if_addr.ip().is_ipv4();
     let config = SendConfig {
         port,
-        max_packet_size: my_intf.max_packet_size(if_addr.ip().is_ipv4()),
+        max_packet_size: my_intf.max_packet_size(is_ipv4),
+        is_ipv4,
     };
 
     send_dns_outgoing_impl(
@@ -4735,7 +4741,7 @@ fn send_dns_outgoing_impl(
         }
     }
 
-    let packet_list = out.to_data_on_wire(config.max_packet_size);
+    let packet_list = out.to_data_on_wire(config.max_packet_size, config.is_ipv4);
     for packet in packet_list.iter() {
         match unicast_dest {
             Some(dest) => unicast_on_intf(packet, if_name, dest, sock),
@@ -5465,7 +5471,7 @@ mod tests {
         let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
         query.add_question(&hostname, RRType::A);
         let query_packet = query
-            .to_data_on_wire(MAX_PKT_DEFAULT)
+            .to_data_on_wire(MAX_PKT_DEFAULT, true)
             .pop()
             .expect("query serialized to one packet");
 
@@ -5727,7 +5733,7 @@ mod tests {
         let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
         query.add_question(&service_type, RRType::PTR);
         let query_packet = query
-            .to_data_on_wire(MAX_PKT_DEFAULT)
+            .to_data_on_wire(MAX_PKT_DEFAULT, true)
             .pop()
             .expect("one packet");
 
@@ -5921,6 +5927,7 @@ mod tests {
                 SendConfig {
                     port: MDNS_PORT,
                     max_packet_size: MAX_PKT_DEFAULT,
+                    is_ipv4: intf.addr.ip().is_ipv4(),
                 },
                 None,
             )
@@ -6190,7 +6197,7 @@ mod tests {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
 
         // Construct a dummy DnsIncoming message
-        let mut dummy_data = out.to_data_on_wire(MAX_PKT_DEFAULT);
+        let mut dummy_data = out.to_data_on_wire(MAX_PKT_DEFAULT, true);
         let interface_id = InterfaceId::from(&service_intf);
         let incoming = DnsIncoming::new(dummy_data.pop().unwrap(), interface_id).unwrap();
 
