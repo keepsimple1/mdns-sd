@@ -74,7 +74,7 @@ pub const IP_CHECK_INTERVAL_IN_SECS_DEFAULT: u32 = 5;
 pub const VERIFY_TIMEOUT_DEFAULT: Duration = Duration::from_secs(10);
 
 /// The smallest value accepted by [`ServiceDaemon::set_max_packet_size`].
-pub const MIN_MAX_PACKET_SIZE: usize = 512;
+pub(crate) const MIN_MAX_PACKET_SIZE: usize = 512;
 
 /// The mDNS port number per RFC 6762.
 pub const MDNS_PORT: u16 = 5353;
@@ -645,7 +645,9 @@ impl ServiceDaemon {
 
     /// Change the max byte size of a packet this daemon generates on the interfaces
     /// matching `if_kind`. Use `IfKind::All` to change it on every interface. Messages
-    /// that don't fit are split across multiple packets rather than truncated.
+    /// that don't fit are split across multiple packets. A single record that doesn't
+    /// fit in a packet is sent alone in a packet of up to 8952 bytes over IPv6 or 8972
+    /// bytes over IPv4, per RFC 6762 section 17.
     ///
     /// The default is `MAX_PKT_DEFAULT` (1452 bytes), small enough to fit in one
     /// Ethernet frame over either IPv4 or IPv6.
@@ -5159,7 +5161,6 @@ fn handle_expired_probes(
     waiting_services
 }
 
-/// Resolves `IfKind::Addr(ip)` to `IndexV4(if_index)` or `IndexV6(if_index)`.
 /// Returns the max packet size to use on the interface `if_index` for the given
 /// address family, i.e. the size of the last selection matching it, or
 /// [`MAX_PKT_DEFAULT`] if none does.
@@ -5189,6 +5190,7 @@ fn resolve_max_packet_size(
     size
 }
 
+/// Resolves `IfKind::Addr(ip)` to `IndexV4(if_index)` or `IndexV6(if_index)`.
 fn resolve_addr_to_index(if_kind: IfKind, interfaces: &[Interface]) -> IfKind {
     if let IfKind::Addr(addr) = &if_kind {
         if let Some(intf) = interfaces.iter().find(|intf| &intf.ip() == addr) {

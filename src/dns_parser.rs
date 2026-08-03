@@ -289,16 +289,16 @@ pub const CLASS_CACHE_FLUSH: u16 = 0x8000;
 /// headers, MUST NOT exceed 9000 bytes."
 ///
 /// It is calculated as: 9000 bytes - IPv4 header 20 bytes - UDP header 8 bytes.
-pub const MAX_PKT_ABSOLUTE_IPV4: usize = 8972;
+pub(crate) const MAX_PKT_ABSOLUTE_IPV4: usize = 8972;
 
 /// Absolute max size of UDP datagram payload for an mDNS packet over IPv6.
 ///
 /// Same 9000-byte ceiling as [`MAX_PKT_ABSOLUTE_IPV4`], less the bigger IPv6 header:
 /// 9000 bytes - IPv6 header 40 bytes - UDP header 8 bytes.
-pub const MAX_PKT_ABSOLUTE_IPV6: usize = 8952;
+pub(crate) const MAX_PKT_ABSOLUTE_IPV6: usize = 8952;
 
 /// Absolute max size of an mDNS packet for the given IP version.
-pub const fn max_pkt_absolute(is_ipv4: bool) -> usize {
+pub(crate) const fn max_pkt_absolute(is_ipv4: bool) -> usize {
     if is_ipv4 {
         MAX_PKT_ABSOLUTE_IPV4
     } else {
@@ -1468,7 +1468,7 @@ impl DnsRecordExt for DnsNSec {
 }
 
 /// Which section of a DNS message an item belongs to.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Section {
     Question,
     Answer,
@@ -1837,8 +1837,7 @@ impl<'a> PacketBuilder<'a> {
             Err(WriteError::PacketFull) => {}
         }
 
-        // Finish the current packet and retry in a new one. If the current packet
-        // is already empty, a new one would be no roomier, so don't bother.
+        // Packet is full. Flush the current and create a new one.
         if !self.current.is_empty() {
             self.flush();
 
@@ -1852,20 +1851,16 @@ impl<'a> PacketBuilder<'a> {
             }
         }
 
-        // A question too big for an empty packet is malformed rather than merely
-        // oversized: there is no legitimate question of this size.
+        // Packet is still full. A question such big is not legitimate.
         if matches!(section, Section::Question) {
             return;
         }
 
-        // The record does not fit in a packet of its own either. RFC 6762 section 17:
-        // a record too large for one MTU-sized packet SHOULD be sent alone, in a
-        // single IP datagram, using multiple IP fragments. Sending it alone is not
-        // optional -- such a packet "MUST NOT contain more than one resource record"
-        // -- so this packet is flushed immediately.
-        //
-        // Only the section 17 ceiling for this IP version still applies: a packet
-        // over it cannot go out on the wire at all.
+        // Packet is still full. We will send this single record.
+
+        // RFC 6762 section 17:
+        // "a record too large for one MTU-sized packet SHOULD be sent alone, in a
+        // single IP datagram".
         self.current.max_size = max_pkt_absolute(self.is_ipv4);
 
         if write(&mut self.current).is_ok() {
@@ -1874,6 +1869,10 @@ impl<'a> PacketBuilder<'a> {
         } else {
             // Too big even for the hard ceiling: skip the record and carry on.
             self.current.max_size = self.max_size;
+            debug!(
+                "Record too big for absolute max size, skipping: {:?}",
+                section
+            );
         }
     }
 

@@ -35,9 +35,7 @@ pub(crate) struct MyIntf {
     /// One interface can have multiple IPv4 addresses and/or multiple IPv6 addresses.
     pub(crate) addrs: HashSet<IfAddr>,
 
-    /// Max byte size of a packet generated for the IPv4 addresses of this interface,
-    /// resolved from the selections given to
-    /// [`ServiceDaemon::set_max_packet_size`](crate::ServiceDaemon::set_max_packet_size).
+    /// Max byte size of a packet generated for the IPv4 addresses of this interface.
     pub(crate) max_packet_size_v4: usize,
 
     /// Same as `max_packet_size_v4`, for the IPv6 addresses of this interface.
