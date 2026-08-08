@@ -34,6 +34,12 @@ pub(crate) struct MyIntf {
 
     /// One interface can have multiple IPv4 addresses and/or multiple IPv6 addresses.
     pub(crate) addrs: HashSet<IfAddr>,
+
+    /// Max byte size of a packet generated for the IPv4 addresses of this interface.
+    pub(crate) max_packet_size_v4: usize,
+
+    /// Same as `max_packet_size_v4`, for the IPv6 addresses of this interface.
+    pub(crate) max_packet_size_v6: usize,
 }
 
 impl MyIntf {
@@ -43,6 +49,15 @@ impl MyIntf {
 
     pub(crate) fn next_ifaddr_v6(&self) -> Option<&IfAddr> {
         self.addrs.iter().find(|a| a.ip().is_ipv6())
+    }
+
+    /// Max byte size of a packet generated for the given address family.
+    pub(crate) fn max_packet_size(&self, is_ipv4: bool) -> usize {
+        if is_ipv4 {
+            self.max_packet_size_v4
+        } else {
+            self.max_packet_size_v6
+        }
     }
 }
 

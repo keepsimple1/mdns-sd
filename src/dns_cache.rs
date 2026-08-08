@@ -862,6 +862,7 @@ mod tests {
     use crate::{
         dns_parser::{DnsAddress, DnsPointer, DnsRecordExt, DnsSrv, DnsTxt, RRType, CLASS_IN},
         service_info::MyIntf,
+        MAX_PKT_DEFAULT,
     };
     use std::collections::HashSet;
     use std::net::IpAddr;
@@ -871,6 +872,8 @@ mod tests {
             name: name.to_string(),
             index,
             addrs: HashSet::new(),
+            max_packet_size_v4: MAX_PKT_DEFAULT,
+            max_packet_size_v6: MAX_PKT_DEFAULT,
         }
     }
 

@@ -34,9 +34,10 @@ use crate::{
     current_time_millis,
     dns_cache::{DnsCache, IpType},
     dns_parser::{
-        ip_address_rr_type, DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer,
-        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, InterfaceId, RRType, ScopedIp,
-        CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_MSG_ABSOLUTE,
+        ip_address_rr_type, max_pkt_absolute, DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing,
+        DnsPointer, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, InterfaceId, RRType, ScopedIp,
+        CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
+        MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
     },
     error::{e_fmt, Error, Result},
     service_info::{
@@ -71,6 +72,9 @@ pub const IP_CHECK_INTERVAL_IN_SECS_DEFAULT: u32 = 5;
 /// The default time out for [ServiceDaemon::verify] is 10 seconds, per
 /// [RFC 6762 section 10.4](https://datatracker.ietf.org/doc/html/rfc6762#section-10.4)
 pub const VERIFY_TIMEOUT_DEFAULT: Duration = Duration::from_secs(10);
+
+/// The smallest value accepted by [`ServiceDaemon::set_max_packet_size`].
+pub(crate) const MIN_MAX_PACKET_SIZE: usize = 512;
 
 /// The mDNS port number per RFC 6762.
 pub const MDNS_PORT: u16 = 5353;
@@ -639,6 +643,40 @@ impl ServiceDaemon {
         self.send_cmd(Command::SetOption(DaemonOption::ServiceNameLenMax(len_max)))
     }
 
+    /// Change the max byte size of a packet this daemon generates on the interfaces
+    /// matching `if_kind`. Use `IfKind::All` to change it on every interface. Messages
+    /// that don't fit are split across multiple packets. A single record that doesn't
+    /// fit in a packet is sent alone in a packet of up to 8952 bytes over IPv6 or 8972
+    /// bytes over IPv4, per RFC 6762 section 17.
+    ///
+    /// The default is `MAX_PKT_DEFAULT` (1452 bytes), small enough to fit in one
+    /// Ethernet frame over either IPv4 or IPv6.
+    ///
+    /// A `size` outside the accepted range is rejected with an error. The minimum is
+    /// 512 bytes, the classic UDP DNS message size of RFC 1035. The maximum is 8952
+    /// bytes: RFC 6762 section 17 caps an mDNS packet at 9000 bytes including the IP
+    /// and UDP headers, and we subtract the bigger of the two IP headers so that a
+    /// generated packet is legal over either IP version.
+    pub fn set_max_packet_size(&self, if_kind: impl IntoIfKindVec, size: usize) -> Result<()> {
+        if size < MIN_MAX_PACKET_SIZE {
+            return Err(Error::Msg(format!(
+                "max packet size {size} is too small, must be at least {MIN_MAX_PACKET_SIZE}"
+            )));
+        }
+
+        if size > MAX_PKT_ABSOLUTE_IPV6 {
+            return Err(Error::Msg(format!(
+                "max packet size {size} is too big, must be at most {MAX_PKT_ABSOLUTE_IPV6}"
+            )));
+        }
+
+        let if_kind_vec = if_kind.into_vec();
+        self.send_cmd(Command::SetOption(DaemonOption::MaxPacketSize(
+            if_kind_vec.kinds,
+            size,
+        )))
+    }
+
     /// Change the interval for checking IP changes automatically.
     ///
     /// Setting the interval to 0 disables the IP check.
@@ -842,7 +880,7 @@ fn _new_socket_bind(intf: &Interface, should_loop: bool) -> Result<MyUdpSocket> 
 
             // Test if we can send packets successfully.
             let multicast_addr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
-            let test_packets = DnsOutgoing::new(0).to_data_on_wire();
+            let test_packets = DnsOutgoing::new(0).to_data_on_wire(MAX_PKT_DEFAULT, true);
             for packet in test_packets {
                 sock.send_to(&packet, &multicast_addr)
                     .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
@@ -1067,6 +1105,15 @@ struct IfSelection {
     selected: bool,
 }
 
+/// Selection of the max packet size of interfaces.
+struct MaxPacketSizeSelection {
+    /// The interfaces to be selected.
+    if_kind: IfKind,
+
+    /// Max byte size of a packet generated for the selected interfaces.
+    max_packet_size: usize,
+}
+
 /// A struct holding the state. It was inspired by `zeroconf` package in Python.
 struct Zeroconf {
     /// The mDNS port number to use for socket binding.
@@ -1119,6 +1166,10 @@ struct Zeroconf {
 
     /// Interval in millis to check IP address changes.
     ip_check_interval: u64,
+
+    /// All max packet size selections called to the daemon, in call order.
+    /// For an interface matched by more than one, the last one wins.
+    max_packet_sizes: Vec<MaxPacketSizeSelection>,
 
     /// All interface selections called to the daemon.
     if_selections: Vec<IfSelection>,
@@ -1286,6 +1337,8 @@ impl Zeroconf {
                     name: intf.name.clone(),
                     index: if_index,
                     addrs: HashSet::from([intf.addr]),
+                    max_packet_size_v4: MAX_PKT_DEFAULT,
+                    max_packet_size_v6: MAX_PKT_DEFAULT,
                 });
         }
 
@@ -1317,6 +1370,7 @@ impl Zeroconf {
             monitors,
             service_name_len_max,
             ip_check_interval,
+            max_packet_sizes: Vec::new(),
             if_selections,
             signal_sock,
             timers,
@@ -1623,6 +1677,7 @@ impl Zeroconf {
         match daemon_opt {
             DaemonOption::ServiceNameLenMax(length) => self.service_name_len_max = length,
             DaemonOption::IpCheckInterval(interval) => self.ip_check_interval = interval,
+            DaemonOption::MaxPacketSize(if_kind, size) => self.set_max_packet_size(if_kind, size),
             DaemonOption::EnableInterface(if_kind) => self.enable_interface(if_kind),
             DaemonOption::DisableInterface(if_kind) => self.disable_interface(if_kind),
             DaemonOption::MulticastLoopV4(on) => self.set_multicast_loop_v4(on),
@@ -1666,6 +1721,38 @@ impl Zeroconf {
         }
 
         self.apply_intf_selections(interfaces);
+    }
+
+    fn set_max_packet_size(&mut self, kinds: Vec<IfKind>, size: usize) {
+        debug!("set_max_packet_size: {:?} {}", kinds, size);
+        let interfaces = my_ip_interfaces_inner(true, self.include_apple_p2p);
+
+        for if_kind in kinds {
+            self.max_packet_sizes.push(MaxPacketSizeSelection {
+                if_kind: resolve_addr_to_index(if_kind, &interfaces),
+                max_packet_size: size,
+            });
+        }
+
+        self.apply_max_packet_sizes(&interfaces);
+    }
+
+    /// Resolve all max packet size selections against `interfaces` and store the
+    /// outcome in every interface in `my_intfs`.
+    fn apply_max_packet_sizes(&mut self, interfaces: &[Interface]) {
+        for (if_index, my_intf) in self.my_intfs.iter_mut() {
+            let v4 = resolve_max_packet_size(&self.max_packet_sizes, interfaces, *if_index, true);
+            let v6 = resolve_max_packet_size(&self.max_packet_sizes, interfaces, *if_index, false);
+
+            if my_intf.max_packet_size_v4 != v4 || my_intf.max_packet_size_v6 != v6 {
+                debug!(
+                    "interface {}: max packet size v4 {} -> {v4}, v6 {} -> {v6}",
+                    my_intf.name, my_intf.max_packet_size_v4, my_intf.max_packet_size_v6
+                );
+                my_intf.max_packet_size_v4 = v4;
+                my_intf.max_packet_size_v6 = v6;
+            }
+        }
     }
 
     fn set_multicast_loop_v4(&mut self, on: bool) {
@@ -1790,15 +1877,19 @@ impl Zeroconf {
         }
 
         // Update `my_intfs` based on the selections.
-        for (idx, intf) in interfaces.into_iter().enumerate() {
+        for (idx, intf) in interfaces.iter().enumerate() {
             if intf_selections[idx] {
                 // Add the interface
-                self.add_interface(intf);
+                self.add_interface(intf, &interfaces);
             } else {
                 // Remove the interface
-                self.del_interface_addr(&intf);
+                self.del_interface_addr(intf);
             }
         }
+
+        // An interface that lost an address may now match a different selection.
+        // (`add_interface` already resolved the ones that gained one.)
+        self.apply_max_packet_sizes(&interfaces);
     }
 
     fn del_ip(&mut self, ip: IpAddr) {
@@ -1994,7 +2085,11 @@ impl Zeroconf {
         }
     }
 
-    fn add_interface(&mut self, intf: Interface) {
+    /// Add the address of `intf` to `my_intfs`, and announce our services on it.
+    ///
+    /// `interfaces` is the full list the caller is applying, needed to resolve the
+    /// max packet size of the interface before we send anything on it.
+    fn add_interface(&mut self, intf: &Interface, interfaces: &[Interface]) {
         let sock_opt = if intf.ip().is_ipv4() {
             &self.ipv4_sock
         } else {
@@ -2018,7 +2113,7 @@ impl Zeroconf {
                 // If intf has a new address, add it to the existing interface.
                 let my_intf = entry.get_mut();
                 if !my_intf.addrs.contains(&intf.addr) {
-                    if let Err(e) = join_multicast_group(&sock.pktinfo, &intf) {
+                    if let Err(e) = join_multicast_group(&sock.pktinfo, intf) {
                         debug!("add_interface: socket_config {}: {e}", &intf.name);
                     }
                     my_intf.addrs.insert(intf.addr.clone());
@@ -2026,7 +2121,7 @@ impl Zeroconf {
                 }
             }
             Entry::Vacant(entry) => {
-                if let Err(e) = join_multicast_group(&sock.pktinfo, &intf) {
+                if let Err(e) = join_multicast_group(&sock.pktinfo, intf) {
                     debug!("add_interface: socket_config {}: {e}. Skipped.", &intf.name);
                     return;
                 }
@@ -2036,6 +2131,8 @@ impl Zeroconf {
                     name: intf.name.clone(),
                     index: if_index,
                     addrs: HashSet::from([intf.addr.clone()]),
+                    max_packet_size_v4: MAX_PKT_DEFAULT,
+                    max_packet_size_v6: MAX_PKT_DEFAULT,
                 };
                 entry.insert(new_intf);
             }
@@ -2047,6 +2144,14 @@ impl Zeroconf {
         }
 
         debug!("add new interface {}: {}", intf.name, intf.ip());
+
+        // Resolve before announcing, so the first packet out already honors it.
+        let v4 = resolve_max_packet_size(&self.max_packet_sizes, interfaces, if_index, true);
+        let v6 = resolve_max_packet_size(&self.max_packet_sizes, interfaces, if_index, false);
+        if let Some(my_intf) = self.my_intfs.get_mut(&if_index) {
+            my_intf.max_packet_size_v4 = v4;
+            my_intf.max_packet_size_v6 = v6;
+        }
 
         let Some(my_intf) = self.my_intfs.get(&if_index) else {
             debug!("add_interface: cannot find if_index {if_index}");
@@ -2063,7 +2168,7 @@ impl Zeroconf {
 
         for (_, service_info) in self.my_services.iter_mut() {
             if service_info.is_addr_auto() {
-                service_info.insert_ipaddr(&intf);
+                service_info.insert_ipaddr(intf);
 
                 if let Ok(true) = announce_service_on_intf(
                     dns_registry,
@@ -2536,6 +2641,7 @@ impl Zeroconf {
     /// Returns false if failed to receive a packet,
     /// otherwise returns true.
     fn handle_read(&mut self, event_key: usize) -> bool {
+        let is_ipv4 = event_key == IPV4_SOCK_EVENT_KEY;
         let sock_opt = match event_key {
             IPV4_SOCK_EVENT_KEY => &mut self.ipv4_sock,
             IPV6_SOCK_EVENT_KEY => &mut self.ipv6_sock,
@@ -2548,14 +2654,13 @@ impl Zeroconf {
             debug!("handle_read: socket not available for token {}", event_key);
             return false;
         };
-        let mut buf = vec![0u8; MAX_MSG_ABSOLUTE];
+        // The buffer is one byte bigger than the biggest legal message, so that an
+        // over-sized datagram can be told apart from a legal one that happens to be
+        // exactly at the limit.
+        let max_size = max_pkt_absolute(is_ipv4);
+        let mut buf = vec![0u8; max_size + 1];
 
         // Read the next mDNS UDP datagram.
-        //
-        // If the datagram is larger than `buf`, excess bytes may or may not
-        // be truncated by the socket layer depending on the platform's libc.
-        // In any case, such large datagram will not be decoded properly and
-        // this function should return false but should not crash.
         let (sz, pktinfo) = match sock.pktinfo.recv(&mut buf) {
             Ok(sz) => sz,
             Err(e) => {
@@ -2565,6 +2670,22 @@ impl Zeroconf {
                 return false;
             }
         };
+
+        // RFC 6762 section 17 caps an mDNS packet at 9000 bytes including the IP and
+        // UDP headers. A datagram over that arrives truncated, and decoding a
+        // truncated message does not fail cleanly: names run into whatever bytes
+        // follow, yielding bogus records or confusing parse errors. Drop it instead.
+        //
+        // On Windows, `recv` fails with WSAEMSGSIZE for such a datagram instead of
+        // truncating it, so it is dropped by the error branch above. Either way it
+        // is never decoded.
+        if sz > max_size {
+            debug!(
+                "handle_read: dropping over-sized datagram of at least {} bytes (max {})",
+                sz, max_size
+            );
+            return true; // We still read something.
+        }
 
         // Find the interface that received the packet.
         let pkt_if_index = pktinfo.if_index as u32;
@@ -4333,6 +4454,7 @@ struct DaemonOptionVal {
 enum DaemonOption {
     ServiceNameLenMax(u8),
     IpCheckInterval(u64),
+    MaxPacketSize(Vec<IfKind>, usize),
     EnableInterface(Vec<IfKind>),
     DisableInterface(Vec<IfKind>),
     MulticastLoopV4(bool),
@@ -4484,6 +4606,21 @@ fn is_apple_p2p_by_name(name: &str) -> bool {
     p2p_prefixes.iter().any(|prefix| name.starts_with(prefix))
 }
 
+/// How to encode and where to send outgoing messages on one interface.
+#[derive(Clone, Copy, Debug)]
+struct SendConfig {
+    /// The mDNS port to send to.
+    port: u16,
+
+    /// Max byte size of a generated packet.
+    /// See [`ServiceDaemon::set_max_packet_size`].
+    max_packet_size: usize,
+
+    /// Whether the packets go out over IPv4, which decides their absolute
+    /// ceiling: see [`max_pkt_absolute`].
+    is_ipv4: bool,
+}
+
 /// Send an outgoing mDNS query or response, and returns the packet bytes.
 /// Returns empty vec if no valid interface address is found.
 fn send_dns_outgoing(
@@ -4513,13 +4650,21 @@ fn send_dns_outgoing(
         }
     };
 
+    // The limits are per address family, so read them off the address we send from.
+    let is_ipv4 = if_addr.ip().is_ipv4();
+    let config = SendConfig {
+        port,
+        max_packet_size: my_intf.max_packet_size(is_ipv4),
+        is_ipv4,
+    };
+
     send_dns_outgoing_impl(
         out,
         if_name,
         my_intf.index,
         if_addr,
         sock,
-        port,
+        config,
         unicast_dest,
     )
 }
@@ -4531,7 +4676,7 @@ fn send_dns_outgoing_impl(
     if_index: u32,
     if_addr: &IfAddr,
     sock: &PktInfoUdpSocket,
-    port: u16,
+    config: SendConfig,
     unicast_dest: Option<SocketAddr>,
 ) -> MyResult<Vec<Vec<u8>>> {
     let qtype = if out.is_query() {
@@ -4598,11 +4743,11 @@ fn send_dns_outgoing_impl(
         }
     }
 
-    let packet_list = out.to_data_on_wire();
+    let packet_list = out.to_data_on_wire(config.max_packet_size, config.is_ipv4);
     for packet in packet_list.iter() {
         match unicast_dest {
             Some(dest) => unicast_on_intf(packet, if_name, dest, sock),
-            None => multicast_on_intf(packet, if_name, if_index, if_addr, sock, port),
+            None => multicast_on_intf(packet, if_name, if_index, if_addr, sock, config.port),
         }
     }
     Ok(packet_list)
@@ -4611,8 +4756,9 @@ fn send_dns_outgoing_impl(
 /// Sends a unicast packet directly to `dest` (used for RFC 6762 §6.7
 /// legacy unicast responses).
 fn unicast_on_intf(packet: &[u8], if_name: &str, dest: SocketAddr, socket: &PktInfoUdpSocket) {
-    if packet.len() > MAX_MSG_ABSOLUTE {
-        debug!("Drop over-sized packet ({})", packet.len());
+    let max_size = max_pkt_absolute(dest.is_ipv4());
+    if packet.len() > max_size {
+        debug!("Drop over-sized packet ({} > {max_size})", packet.len());
         return;
     }
 
@@ -4642,8 +4788,9 @@ fn multicast_on_intf(
     socket: &PktInfoUdpSocket,
     port: u16,
 ) {
-    if packet.len() > MAX_MSG_ABSOLUTE {
-        debug!("Drop over-sized packet ({})", packet.len());
+    let max_size = max_pkt_absolute(if_addr.ip().is_ipv4());
+    if packet.len() > max_size {
+        debug!("Drop over-sized packet ({} > {max_size})", packet.len());
         return;
     }
 
@@ -5014,6 +5161,35 @@ fn handle_expired_probes(
     waiting_services
 }
 
+/// Returns the max packet size to use on the interface `if_index` for the given
+/// address family, i.e. the size of the last selection matching it, or
+/// [`MAX_PKT_DEFAULT`] if none does.
+///
+/// A selection matches an address, so it applies as soon as any address of the
+/// interface in that family matches. That keeps the two families independent:
+/// e.g. [`IfKind::IPv4`] leaves the IPv6 side of the interface alone.
+fn resolve_max_packet_size(
+    selections: &[MaxPacketSizeSelection],
+    interfaces: &[Interface],
+    if_index: u32,
+    is_ipv4: bool,
+) -> usize {
+    let mut size = MAX_PKT_DEFAULT;
+
+    for selection in selections {
+        let matched = interfaces.iter().any(|intf| {
+            intf.index.unwrap_or(0) == if_index
+                && intf.ip().is_ipv4() == is_ipv4
+                && selection.if_kind.matches(intf)
+        });
+        if matched {
+            size = selection.max_packet_size;
+        }
+    }
+
+    size
+}
+
 /// Resolves `IfKind::Addr(ip)` to `IndexV4(if_index)` or `IndexV6(if_index)`.
 fn resolve_addr_to_index(if_kind: IfKind, interfaces: &[Interface]) -> IfKind {
     if let IfKind::Addr(addr) = &if_kind {
@@ -5033,11 +5209,12 @@ fn resolve_addr_to_index(if_kind: IfKind, interfaces: &[Interface]) -> IfKind {
 mod tests {
     use super::{
         _new_socket_bind, check_domain_suffix, check_service_name_length, hostname_change,
-        my_ip_interfaces, name_change, send_dns_outgoing_impl, valid_instance_name,
-        valid_ip_on_intf, DaemonEvent, HostnameResolutionEvent, MyIntf, ServiceDaemon,
-        ServiceEvent, ServiceInfo, GROUP_ADDR_V4, INITIAL_QUERY_DELAY_MAX_MILLIS,
-        INITIAL_QUERY_DELAY_MIN_MILLIS, MDNS_PORT, SHARED_RESPONSE_DELAY_MAX_MILLIS,
-        SHARED_RESPONSE_DELAY_MIN_MILLIS,
+        my_ip_interfaces, name_change, resolve_max_packet_size, send_dns_outgoing_impl,
+        valid_instance_name, valid_ip_on_intf, DaemonEvent, HostnameResolutionEvent, IfKind,
+        MaxPacketSizeSelection, MyIntf, SendConfig, ServiceDaemon, ServiceEvent, ServiceInfo,
+        GROUP_ADDR_V4, INITIAL_QUERY_DELAY_MAX_MILLIS, INITIAL_QUERY_DELAY_MIN_MILLIS,
+        MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MDNS_PORT, MIN_MAX_PACKET_SIZE,
+        SHARED_RESPONSE_DELAY_MAX_MILLIS, SHARED_RESPONSE_DELAY_MIN_MILLIS,
     };
     use crate::{
         dns_parser::{
@@ -5046,13 +5223,140 @@ mod tests {
         },
         service_daemon::{add_answer_of_service, check_hostname},
     };
-    use if_addrs::{IfAddr, Ifv4Addr};
+    use if_addrs::{IfAddr, Ifv4Addr, Ifv6Addr, Interface};
     use std::{
         collections::HashSet,
-        net::{IpAddr, Ipv4Addr, UdpSocket},
+        net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket},
         time::{Duration, Instant, SystemTime},
     };
     use test_log::test;
+
+    /// Builds an interface address for the max packet size tests below.
+    fn test_interface(name: &str, index: u32, addr: IfAddr) -> Interface {
+        Interface {
+            name: name.to_string(),
+            addr,
+            index: Some(index),
+            oper_status: if_addrs::IfOperStatus::Up,
+            is_p2p: false,
+            #[cfg(windows)]
+            adapter_name: String::new(),
+        }
+    }
+
+    fn test_ifaddr_v4(ip: Ipv4Addr) -> IfAddr {
+        IfAddr::V4(Ifv4Addr {
+            ip,
+            netmask: Ipv4Addr::new(255, 255, 255, 0),
+            broadcast: None,
+            prefixlen: 24,
+        })
+    }
+
+    fn test_ifaddr_v6(ip: Ipv6Addr) -> IfAddr {
+        IfAddr::V6(Ifv6Addr {
+            ip,
+            netmask: Ipv6Addr::from(u128::MAX << 64),
+            broadcast: None,
+            prefixlen: 64,
+        })
+    }
+
+    #[test]
+    fn test_resolve_max_packet_size() {
+        // en0 is dual-stack, en1 is IPv4 only.
+        let interfaces = vec![
+            test_interface("en0", 1, test_ifaddr_v4(Ipv4Addr::new(192, 168, 1, 2))),
+            test_interface(
+                "en0",
+                1,
+                test_ifaddr_v6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+            ),
+            test_interface("en1", 2, test_ifaddr_v4(Ipv4Addr::new(10, 0, 0, 2))),
+        ];
+
+        let resolve = |selections: &[MaxPacketSizeSelection], if_index, is_ipv4| {
+            resolve_max_packet_size(selections, &interfaces, if_index, is_ipv4)
+        };
+
+        // No selection: every interface keeps the default.
+        assert_eq!(resolve(&[], 1, true), MAX_PKT_DEFAULT);
+        assert_eq!(resolve(&[], 1, false), MAX_PKT_DEFAULT);
+
+        // A selection by name applies to the interface it matches, both families.
+        let by_name = vec![MaxPacketSizeSelection {
+            if_kind: IfKind::Name("en0".to_string()),
+            max_packet_size: 8000,
+        }];
+        assert_eq!(resolve(&by_name, 1, true), 8000);
+        assert_eq!(resolve(&by_name, 1, false), 8000);
+        assert_eq!(resolve(&by_name, 2, true), MAX_PKT_DEFAULT);
+
+        // For an interface matched more than once, the last selection wins.
+        let overlapping = vec![
+            MaxPacketSizeSelection {
+                if_kind: IfKind::All,
+                max_packet_size: 8000,
+            },
+            MaxPacketSizeSelection {
+                if_kind: IfKind::Name("en1".to_string()),
+                max_packet_size: 4000,
+            },
+        ];
+        assert_eq!(resolve(&overlapping, 1, true), 8000);
+        assert_eq!(resolve(&overlapping, 1, false), 8000);
+        assert_eq!(resolve(&overlapping, 2, true), 4000);
+
+        // A selection of one address family leaves the other one alone.
+        let v4_only = vec![MaxPacketSizeSelection {
+            if_kind: IfKind::IPv4,
+            max_packet_size: 8000,
+        }];
+        assert_eq!(resolve(&v4_only, 1, true), 8000);
+        assert_eq!(resolve(&v4_only, 1, false), MAX_PKT_DEFAULT);
+
+        let v6_only = vec![MaxPacketSizeSelection {
+            if_kind: IfKind::IPv6,
+            max_packet_size: 8000,
+        }];
+        assert_eq!(resolve(&v6_only, 1, false), 8000);
+        assert_eq!(resolve(&v6_only, 1, true), MAX_PKT_DEFAULT);
+        // en1 has no IPv6 address, so the IPv6 selection cannot reach it.
+        assert_eq!(resolve(&v6_only, 2, true), MAX_PKT_DEFAULT);
+        assert_eq!(resolve(&v6_only, 2, false), MAX_PKT_DEFAULT);
+
+        // Same for an index selection, which names a family too.
+        let by_index_v4 = vec![MaxPacketSizeSelection {
+            if_kind: IfKind::IndexV4(1),
+            max_packet_size: 8000,
+        }];
+        assert_eq!(resolve(&by_index_v4, 1, true), 8000);
+        assert_eq!(resolve(&by_index_v4, 1, false), MAX_PKT_DEFAULT);
+    }
+
+    /// A size outside [`MIN_MAX_PACKET_SIZE`]..=[`MAX_PKT_ABSOLUTE_IPV6`] is rejected
+    /// rather than clamped, so what reaches the encoder is always legal.
+    #[test]
+    fn test_set_max_packet_size_range() {
+        let daemon = ServiceDaemon::new().unwrap();
+
+        assert!(daemon
+            .set_max_packet_size(IfKind::All, MIN_MAX_PACKET_SIZE - 1)
+            .is_err());
+        assert!(daemon
+            .set_max_packet_size(IfKind::All, MAX_PKT_ABSOLUTE_IPV6 + 1)
+            .is_err());
+
+        // Both ends of the range are accepted.
+        assert!(daemon
+            .set_max_packet_size(IfKind::All, MIN_MAX_PACKET_SIZE)
+            .is_ok());
+        assert!(daemon
+            .set_max_packet_size(IfKind::All, MAX_PKT_ABSOLUTE_IPV6)
+            .is_ok());
+
+        daemon.shutdown().unwrap();
+    }
 
     #[test]
     fn test_response_source_ifaddr_match() {
@@ -5076,6 +5380,8 @@ mod tests {
             name: "dummy0".to_string(),
             index: 1,
             addrs: HashSet::from([ifaddr_a.clone(), ifaddr_b.clone()]),
+            max_packet_size_v4: MAX_PKT_DEFAULT,
+            max_packet_size_v6: MAX_PKT_DEFAULT,
         };
 
         let pick = |querier: IpAddr| -> Option<IfAddr> {
@@ -5167,7 +5473,7 @@ mod tests {
         let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
         query.add_question(&hostname, RRType::A);
         let query_packet = query
-            .to_data_on_wire()
+            .to_data_on_wire(MAX_PKT_DEFAULT, true)
             .pop()
             .expect("query serialized to one packet");
 
@@ -5428,7 +5734,10 @@ mod tests {
         // Build the PTR query for our service type.
         let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
         query.add_question(&service_type, RRType::PTR);
-        let query_packet = query.to_data_on_wire().pop().expect("one packet");
+        let query_packet = query
+            .to_data_on_wire(MAX_PKT_DEFAULT, true)
+            .pop()
+            .expect("one packet");
 
         // Wait for the initial announcements and the §6 rate-limit window (1s) to
         // pass, so our query elicits a fresh (delayed) response instead of being
@@ -5617,7 +5926,11 @@ mod tests {
                 intf.index.unwrap_or(0),
                 &intf.addr,
                 &sock.pktinfo,
-                MDNS_PORT,
+                SendConfig {
+                    port: MDNS_PORT,
+                    max_packet_size: MAX_PKT_DEFAULT,
+                    is_ipv4: intf.addr.ip().is_ipv4(),
+                },
                 None,
             )
             .unwrap();
@@ -5886,7 +6199,7 @@ mod tests {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
 
         // Construct a dummy DnsIncoming message
-        let mut dummy_data = out.to_data_on_wire();
+        let mut dummy_data = out.to_data_on_wire(MAX_PKT_DEFAULT, true);
         let interface_id = InterfaceId::from(&service_intf);
         let incoming = DnsIncoming::new(dummy_data.pop().unwrap(), interface_id).unwrap();
 
