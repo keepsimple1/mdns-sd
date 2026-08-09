@@ -188,9 +188,11 @@ pub use service_info::{
     AsIpAddrs, IntoTxtProperties, ResolvedService, ServiceInfo, TxtProperties, TxtProperty,
 };
 
-/// A handler to receive messages from [ServiceDaemon], and the errors its receiving
-/// methods return. Re-export from `flume` crate.
-pub use flume::{Receiver, RecvError, RecvTimeoutError, TryRecvError};
+/// A handler to receive messages from [ServiceDaemon]. Re-export from `flume` crate.
+pub use flume::Receiver;
+
+/// Errors returned by the receiving methods of [Receiver]. Re-export from `flume` crate.
+pub use flume::{RecvError, RecvTimeoutError, TryRecvError};
 
 use std::time::SystemTime;
 
