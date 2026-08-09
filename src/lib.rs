@@ -191,7 +191,7 @@ pub use service_info::{
 /// A handler to receive messages from [ServiceDaemon]. Re-export from `flume` crate.
 pub use flume::Receiver;
 
-/// Errors returned by the receiving methods of [Receiver]. Re-export from `flume` crate.
+/// Errors returned by the receiving methods of `Receiver`. Re-export from `flume` crate.
 pub use flume::{RecvError, RecvTimeoutError, TryRecvError};
 
 use std::time::SystemTime;
