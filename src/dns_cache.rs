@@ -821,14 +821,14 @@ impl DnsCache {
 /// existing records of the same type and class per RFC 6762 Section 10.2.
 fn apply_cache_flush(
     incoming: &DnsRecordBox,
-    record_vec: &mut [DnsRecordIntf],
+    existing_records: &mut [DnsRecordIntf],
     timers: &mut Vec<u64>,
 ) {
     let now = current_time_millis();
     let class = incoming.get_class();
     let rtype = incoming.get_type();
 
-    record_vec.iter_mut().for_each(|r| {
+    existing_records.iter_mut().for_each(|r| {
         // When cache flush is asked, we set expire date to 1 second in the future if:
         // - The record has the same rclass
         // - The record was created more than 1 second ago.
