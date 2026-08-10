@@ -276,46 +276,7 @@ impl DnsCache {
         };
 
         if incoming.get_cache_flush() {
-            let now = current_time_millis();
-            let class = incoming.get_class();
-            let rtype = incoming.get_type();
-
-            record_vec.iter_mut().for_each(|r| {
-                // When cache flush is asked, we set expire date to 1 second in the future if:
-                // - The record has the same rclass
-                // - The record was created more than 1 second ago.
-                // - The record expire is more than 1 second away.
-                // Ref: RFC 6762 Section 10.2
-                //
-                // Note: when the updated record actually expires, it will trigger events properly.
-                let mut should_flush = false;
-
-                if class == r.record.get_class()
-                    && rtype == r.record.get_type()
-                    && now > r.record.get_created() + 1000
-                    && r.record.get_expire() > now + 1000
-                {
-                    should_flush = true;
-
-                    // additional checks for address records.
-                    if rtype == RRType::A || rtype == RRType::AAAA {
-                        if let Some(addr) = r.record.any().downcast_ref::<DnsAddress>() {
-                            if let Some(addr_b) = incoming.any().downcast_ref::<DnsAddress>() {
-                                should_flush = addr.interface_id.index == addr_b.interface_id.index;
-                            }
-                        }
-                    }
-                }
-
-                if should_flush {
-                    trace!("FLUSH one record: {:?}", &r.record);
-                    let new_expire = now + 1000;
-                    r.record.set_expire(new_expire);
-
-                    // Add a timer so the run loop will handle this expire.
-                    timers.push(new_expire);
-                }
-            });
+            apply_cache_flush(&incoming, record_vec, timers);
         }
 
         // update TTL for existing record or create a new record.
@@ -854,6 +815,55 @@ impl DnsCache {
             modified_instances,
         }
     }
+}
+
+/// When a record has the cache flush bit set, we need to update the expire time of
+/// existing records of the same type and class per RFC 6762 Section 10.2.
+fn apply_cache_flush(
+    incoming: &DnsRecordBox,
+    record_vec: &mut Vec<DnsRecordIntf>,
+    timers: &mut Vec<u64>,
+) {
+    let now = current_time_millis();
+    let class = incoming.get_class();
+    let rtype = incoming.get_type();
+
+    record_vec.iter_mut().for_each(|r| {
+        // When cache flush is asked, we set expire date to 1 second in the future if:
+        // - The record has the same rclass
+        // - The record was created more than 1 second ago.
+        // - The record expire is more than 1 second away.
+        // Ref: RFC 6762 Section 10.2
+        //
+        // Note: when the updated record actually expires, it will trigger events properly.
+        let mut should_flush = false;
+
+        if class == r.record.get_class()
+            && rtype == r.record.get_type()
+            && now > r.record.get_created() + 1000
+            && r.record.get_expire() > now + 1000
+        {
+            should_flush = true;
+
+            // additional checks for address records.
+            if rtype == RRType::A || rtype == RRType::AAAA {
+                if let Some(addr) = r.record.any().downcast_ref::<DnsAddress>() {
+                    if let Some(addr_b) = incoming.any().downcast_ref::<DnsAddress>() {
+                        should_flush = addr.interface_id.index == addr_b.interface_id.index;
+                    }
+                }
+            }
+        }
+
+        if should_flush {
+            trace!("FLUSH one record: {:?}", &r.record);
+            let new_expire = now + 1000;
+            r.record.set_expire(new_expire);
+
+            // Add a timer so the run loop will handle this expire.
+            timers.push(new_expire);
+        }
+    });
 }
 
 #[cfg(test)]
