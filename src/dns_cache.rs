@@ -821,7 +821,7 @@ impl DnsCache {
 /// existing records of the same type and class per RFC 6762 Section 10.2.
 fn apply_cache_flush(
     incoming: &DnsRecordBox,
-    record_vec: &mut Vec<DnsRecordIntf>,
+    record_vec: &mut [DnsRecordIntf],
     timers: &mut Vec<u64>,
 ) {
     let now = current_time_millis();
