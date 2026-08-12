@@ -652,11 +652,11 @@ impl ServiceDaemon {
     /// The default is `MAX_PKT_DEFAULT` (1452 bytes), small enough to fit in one
     /// Ethernet frame over either IPv4 or IPv6.
     ///
-    /// A `size` outside the accepted range is rejected with an error. The minimum is
-    /// 512 bytes, the classic UDP DNS message size of RFC 1035. The maximum is 8952
-    /// bytes: RFC 6762 section 17 caps an mDNS packet at 9000 bytes including the IP
-    /// and UDP headers, and we subtract the bigger of the two IP headers so that a
-    /// generated packet is legal over either IP version.
+    /// `size` must be in the range `512..=8952`. The minimum of 512 bytes is the classic
+    /// UDP DNS message size of RFC 1035. The maximum of 8952 bytes follows from RFC 6762
+    /// section 17, which caps an mDNS packet at 9000 bytes: we subtract the
+    /// bigger of the two IP headers so that a generated packet is legal over either
+    /// IP version.
     pub fn set_max_packet_size(&self, if_kind: impl IntoIfKindVec, size: usize) -> Result<()> {
         if size < MIN_MAX_PACKET_SIZE {
             return Err(Error::Msg(format!(

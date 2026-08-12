@@ -1,3 +1,34 @@
+# Version 0.21.0 (2026-08-10)
+
+## Breaking changes
+
+- The max outgoing packet size is now 1452 bytes (Ethernet MTU), down from 8972 bytes,
+  per [RFC 6762 section 17](https://datatracker.ietf.org/doc/html/rfc6762#section-17).
+  A record too big for one packet is still sent alone, in a packet of up to the RFC's
+  9000-byte ceiling, so no record is dropped. Users that need to change the limit
+  can call the new `ServiceDaemon::set_max_packet_size()`.
+
+## New features
+
+- Add `ServiceDaemon::set_max_packet_size()` to change the max byte size of outgoing
+  packets on the interfaces matching a given `IfKind`, and export the new default as
+  `MAX_PKT_DEFAULT`. (#487, commit `82711a8`)
+- Re-export the receiver-side error types `RecvError`, `RecvTimeoutError` and
+  `TryRecvError` from `flume`, so that a caller can name them without adding `flume`
+  as a direct dependency. (#488, commit `20c0eac`)
+
+## Bug fixes / improvements
+
+- On the receive side, the IPv4 and IPv6 max packet sizes are now tracked separately
+  (8972 and 8952 bytes) so that each stays within the RFC's 9000-byte limit including
+  its own IP header. (#487, commit `82711a8`)
+
+## All changes
+
+* `6bf2bdb 2026-08-09` refactor: extract the code that does cache flush (#490) (keepsimple1)
+* `20c0eac 2026-08-08` feat: re-export Receiver error types (#488) (#489) (keepsimple1)
+* `82711a8 2026-08-07` feat: limit generated packet size per RFC 6762 section 17 (#487) (keepsimple1)
+
 # Version 0.20.3 (2026-07-26)
 
 This is a small bugfix release.
