@@ -46,7 +46,7 @@ The following table shows how much this implementation is compliant with RFCs re
 | Goodbye Packets | RFC 6762 [section 10.1][ref10] | ✅ |
 | Announcements to Flush Outdated Cache Entries | RFC 6762 [section 10.2][ref11] | ✅ | i.e. `cache-flush` bit |
 | Cache Flush on Failure Indication | RFC 6762 [section 10.4][ref8] | ✅ | API: `ServiceDaemon::verify()` |
-| Multicast DNS Message Size | RFC 6762 [section 17][ref14] | ✅ | outgoing packets are limited at most 1452 bytes by default, so that one packet fits in an Ethernet frame. API: `ServiceDaemon::set_max_packet_size()` |
+| Outgoing packet size | RFC 6762 [section 17][ref14] | ✅ | By default, outgoing packet max size is 1452 bytes, i.e. the Ethernet MTU. API: `ServiceDaemon::set_max_packet_size()` |
 
 [ref1]: https://datatracker.ietf.org/doc/html/rfc6762#section-5.1
 [ref2]: https://datatracker.ietf.org/doc/html/rfc6762#section-5.4

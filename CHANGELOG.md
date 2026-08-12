@@ -2,19 +2,17 @@
 
 ## Breaking changes
 
-- Messages this daemon generates are now split into packets of at most 1452 bytes,
-  down from 8972 bytes, so that one packet fits in an Ethernet frame per
-  [RFC 6762 section 17](https://datatracker.ietf.org/doc/html/rfc6762#section-17). A
-  record too big for one packet is still sent alone, in a packet of up to the RFC's
-  9000-byte ceiling, so no record is dropped. Callers that need to change the limit
+- The max outgoing packet size is now 1452 bytes (Ethernet MTU), down from 8972 bytes,
+  per [RFC 6762 section 17](https://datatracker.ietf.org/doc/html/rfc6762#section-17).
+  A record too big for one packet is still sent alone, in a packet of up to the RFC's
+  9000-byte ceiling, so no record is dropped. Users that need to change the limit
   can call the new `ServiceDaemon::set_max_packet_size()`.
 
 ## New features
 
-- Add `ServiceDaemon::set_max_packet_size()` to change the max byte size of generated
+- Add `ServiceDaemon::set_max_packet_size()` to change the max byte size of outgoing
   packets on the interfaces matching a given `IfKind`, and export the new default as
-  `MAX_PKT_DEFAULT`. Accepted sizes range from 512 bytes to 8952 bytes. (#487, commit
-  `82711a8`)
+  `MAX_PKT_DEFAULT`. (#487, commit `82711a8`)
 - Re-export the receiver-side error types `RecvError`, `RecvTimeoutError` and
   `TryRecvError` from `flume`, so that a caller can name them without adding `flume`
   as a direct dependency. (#488, commit `20c0eac`)
