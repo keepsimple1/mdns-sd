@@ -3211,30 +3211,11 @@ mod tests {
         assert!(DnsIncoming::new(data, test_interface_id()).is_err());
     }
 
-    /// A name that follows a pointer backwards and then meets a second pointer
-    /// whose target sits *after* the start of the name being read.
+    /// A legal name that follows a pointer backwards and then meets a second
+    /// pointer whose target sits *after* the start of the name being read, yet
+    /// still strictly *before* that second pointer's own position.
     ///
-    /// Every pointer here points strictly backwards from its own position, as
-    /// RFC 1035 section 4.1.4 requires, and the traversal terminates. But
-    /// `read_name` compares each pointer against the start offset of the name
-    /// rather than against the position of the pointer itself, so it rejects
-    /// the whole message.
-    ///
-    /// Such a message needs a label that overlaps the records around it, which
-    /// no sane encoder emits. It still has to parse: a stricter-than-RFC check
-    /// is a parser bug, not a defense.
-    ///
-    /// The layout below is offset-sensitive:
-    ///
-    /// - 640: a byte of value 62, sitting inside the label of question #10.
-    ///   Read as a label length, it covers 641..=702: the tail of question #10,
-    ///   all of question #11, and the first three bytes of the answer record.
-    ///   Those 62 bytes must be valid UTF-8, which is why the pointer at 700
-    ///   targets 640: the bytes 0xC2 0x80 also form a valid UTF-8 character.
-    /// - 700: the answer's name, a pointer to 640.
-    /// - 702: a zero byte (the high byte of the answer's TYPE), which ends a name.
-    /// - 703: a pointer to 702 (the low byte of TYPE and the high byte of CLASS).
-    ///
+    /// Such a message probably never appears in reality, but it still has to parse.
     /// Reading the answer's name walks: 700 -> 640 -> 62-byte label -> 703 ->
     /// 702 -> zero byte, name complete.
     #[test]
@@ -3288,13 +3269,12 @@ mod tests {
         assert_eq!(incoming.answers().len(), 0);
     }
 
-    /// Two pointers that target each other. Both sit below the offset the name
-    /// being read starts at, so comparing them against that offset lets both
-    /// through and the traversal cycles forever.
+    /// Two pointers at offsets 23 and 25 that target each other (23 -> 25 ->
+    /// 23). Both sit below offset 27, where the name starts.
     ///
-    /// They are planted in the RDATA of a record whose type we do not know:
-    /// that RDATA is skipped rather than parsed, so its bytes are never read as
-    /// a name until the second record's name points into them.
+    /// `follow_pointer` requires each target to be strictly below the
+    /// pointer's *own* position. A cycle always contains at least one
+    /// non-backward hop, so this rule breaks every cycle.
     #[test]
     fn test_read_name_mutual_pointers_are_rejected() {
         let mut data: Vec<u8> = vec![0, 0, 0x84, 0, 0, 0, 0, 2, 0, 0, 0, 0];
