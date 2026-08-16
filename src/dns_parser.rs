@@ -321,6 +321,11 @@ const MSG_HEADER_LEN: usize = 12;
 /// Reference: [RFC1035 section 2.3.4](https://datatracker.ietf.org/doc/html/rfc1035#section-2.3.4)
 const MAX_LABEL_BYTES: usize = 63;
 
+/// Max size of a whole domain name, in bytes.
+///
+/// Reference: [RFC1035 section 2.3.4](https://datatracker.ietf.org/doc/html/rfc1035#section-2.3.4)
+const MAX_NAME_BYTES: usize = 255;
+
 /// Why a question or a record could not be written into a packet.
 ///
 /// In either case nothing is left behind in the packet: the caller rolls back
@@ -2722,12 +2727,66 @@ impl DnsIncoming {
     ///
     /// See https://datatracker.ietf.org/doc/html/rfc1035#section-3.1 for
     /// domain name encoding.
+    ///
+    /// A name is a sequence of labels, where each label is a length byte
+    /// followed by that many bytes. The name ends either with a zero length
+    /// byte, or with a "compression pointer" (top 2 bits set) that redirects
+    /// to a name written earlier in the same packet.
+    ///
+    /// For example, a packet where the question name `_http._tcp.local.` is
+    /// written out in full at offset 12, and the answer name
+    /// `myprinter._http._tcp.local.` at offset 40 reuses it via compression:
+    ///
+    /// ```text
+    ///  offset:  12   13..17    18   19..22   23   24..28    29
+    ///          +----+---------+----+--------+----+---------+----+
+    ///  bytes:  | 05 | "_http" | 04 | "_tcp" | 05 | "local" | 00 |
+    ///          +----+---------+----+--------+----+---------+----+
+    ///            ^len           ^len          ^len           ^ zero byte: end of name
+    ///
+    ///  offset:  40    41..49     50   51
+    ///          +----+-------------+----+----+
+    ///  bytes:  | 09 | "myprinter" | C0 | 0C |
+    ///          +----+-------------+----+----+
+    ///            ^len               ^ pointer: 0xC00C ^ 0xC000 = 12, jump back to offset 12
+    /// ```
+    ///
+    /// Reading the name that starts at offset 40 then walks like this:
+    ///
+    /// ```text
+    ///  step  offset  bytes           action                    name so far
+    ///  ----  ------  --------------  ------------------------  ---------------------------
+    ///   1      40    09 "myprinter"  append label              "myprinter."
+    ///   2      50    C0 0C           end of name reached:      "myprinter."
+    ///                                self.offset = 52,
+    ///                                jump to offset 12
+    ///   3      12    05 "_http"      append label              "myprinter._http."
+    ///   4      18    04 "_tcp"       append label              "myprinter._http._tcp."
+    ///   5      23    05 "local"      append label              "myprinter._http._tcp.local."
+    ///   6      29    00              stop                      "myprinter._http._tcp.local."
+    /// ```
+    ///
+    /// Note there are two cursors. The one walking the labels may jump
+    /// backwards, while `self.offset` records where the caller resumes parsing.
+    /// A pointer terminates the name from the caller's point of view, so in the
+    /// example above `self.offset` becomes 52 even though reading continues at
+    /// offset 12. Keeping the two apart is why the walk lives in
+    /// [`Self::read_labels`], which takes `&self` and therefore cannot move the
+    /// read cursor at all.
     fn read_name(&mut self) -> Result<String> {
+        let mut name = String::new();
+        self.offset = self.read_labels(self.offset, &mut name)?;
+        Ok(name)
+    }
+
+    /// Appends the labels encoded at `offset` to `name`, and returns the offset
+    /// just past that encoding: past the terminating zero byte, or past the
+    /// compression pointer that ended the name.
+    ///
+    /// Takes `&self` so that following a pointer cannot move the read cursor:
+    /// only [`Self::read_name`] assigns `self.offset`, from this return value.
+    fn read_labels(&self, mut offset: usize, name: &mut String) -> Result<usize> {
         let data = &self.data[..];
-        let start_offset = self.offset;
-        let mut offset = start_offset;
-        let mut name = "".to_string();
-        let mut at_end = false;
 
         // From RFC1035:
         // "...Domain names in messages are expressed in terms of a sequence of labels.
@@ -2742,7 +2801,7 @@ impl DnsIncoming {
         loop {
             if offset >= data.len() {
                 return Err(Error::Msg(format!(
-                    "read_name: offset: {} data len {}. DnsIncoming: {:?}",
+                    "read_labels: offset: {} data len {}. DnsIncoming: {:?}",
                     offset,
                     data.len(),
                     self
@@ -2751,13 +2810,9 @@ impl DnsIncoming {
             let length = data[offset];
 
             // From RFC1035:
-            // "...Since every domain name ends with the null label of
-            // the root, a domain name is terminated by a length byte of zero."
+            // "...a domain name is terminated by a length byte of zero."
             if length == 0 {
-                if !at_end {
-                    self.offset = offset + 1;
-                }
-                break; // The end of the name
+                return Ok(offset + 1); // The end of the name.
             }
 
             // Check the first 2 bits for possible "Message compression".
@@ -2770,42 +2825,32 @@ impl DnsIncoming {
                     // Never read beyond the whole data length.
                     if ending > data.len() {
                         return Err(Error::Msg(format!(
-                            "read_name: ending {} exceeds data length {}",
+                            "read_labels: ending {} exceeds data length {}",
                             ending,
                             data.len()
                         )));
                     }
 
-                    name += str::from_utf8(&data[offset..ending])
-                        .map_err(|e| Error::Msg(format!("read_name: from_utf8: {e}")))?;
-                    name += ".";
-                    offset += length as usize;
-                }
-                0xC0 => {
-                    // Message compression.
-                    // See https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.4
-                    let slice = &data[offset..];
-                    if slice.len() < U16_SIZE {
+                    let label = str::from_utf8(&data[offset..ending])
+                        .map_err(|e| Error::Msg(format!("read_labels: from_utf8: {e}")))?;
+
+                    // A name that keeps growing is the only way a chain of
+                    // pointers can fail to terminate, so this bound is what
+                    // makes reading a name finite. See `follow_pointer`.
+                    if name.len() + label.len() + 1 > MAX_NAME_BYTES {
                         return Err(Error::Msg(format!(
-                            "read_name: u16 slice len is only {}",
-                            slice.len()
-                        )));
-                    }
-                    let pointer = (u16_from_be_slice(slice) ^ 0xC000) as usize;
-                    if pointer >= start_offset {
-                        // Error: could trigger an infinite loop.
-                        return Err(Error::Msg(format!(
-                            "Invalid name compression: pointer {} must be less than the start offset {}",
-                            &pointer, &start_offset
+                            "read_labels: name exceeds {MAX_NAME_BYTES} bytes: {name}"
                         )));
                     }
 
-                    // A pointer marks the end of a domain name.
-                    if !at_end {
-                        self.offset = offset + U16_SIZE;
-                        at_end = true;
-                    }
-                    offset = pointer;
+                    *name += label;
+                    *name += ".";
+                    offset = ending;
+                }
+                0xC0 => {
+                    // Message compression: a pointer marks the end of a domain name.
+                    self.follow_pointer(offset, name)?;
+                    return Ok(offset + U16_SIZE);
                 }
                 _ => {
                     return Err(Error::Msg(format!(
@@ -2817,8 +2862,56 @@ impl DnsIncoming {
                 }
             };
         }
+    }
 
-        Ok(name)
+    /// Follows the compression pointer at offset `at`, appending the labels it
+    /// names to `name`.
+    ///
+    /// See https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.4 for
+    /// message compression.
+    ///
+    /// Reading a name always terminates, for two reasons that work together:
+    ///
+    /// - A pointer must target an offset strictly below its own position, so a
+    ///   run of pointers that targets nothing but further pointers walks
+    ///   backwards and runs out of message. That run is resolved by the loop
+    ///   below rather than by nesting, so it costs no stack.
+    /// - Past that run sits either the end of a name or a real label. So every
+    ///   nested call gets here only after [`Self::read_labels`] has appended at
+    ///   least one label, which `MAX_NAME_BYTES` bounds. Nesting is therefore
+    ///   bounded too, at half that.
+    fn follow_pointer(&self, at: usize, name: &mut String) -> Result<()> {
+        let data = &self.data[..];
+        let mut pointer_at = at;
+
+        // Resolve a run of pointers that target other pointers, so that the
+        // recursive call below always lands on a label or on the end of a name.
+        let target = loop {
+            let slice = &data[pointer_at..];
+            if slice.len() < U16_SIZE {
+                return Err(Error::Msg(format!(
+                    "follow_pointer: u16 slice len is only {}",
+                    slice.len()
+                )));
+            }
+            let target = (u16_from_be_slice(slice) ^ 0xC000) as usize;
+
+            // RFC1035 section 4.1.4 compresses a name into "a pointer to a prior
+            // occurrence", so a pointer always points strictly backwards.
+            if target >= pointer_at {
+                return Err(Error::Msg(format!(
+                    "Invalid name compression: pointer {target} at offset {pointer_at} must point backwards"
+                )));
+            }
+
+            if data[target] & 0xC0 != 0xC0 {
+                break target;
+            }
+            pointer_at = target;
+        };
+
+        self.read_labels(target, name)?;
+        Ok(())
     }
 }
 
@@ -2843,9 +2936,9 @@ const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DnsAddress, DnsHostInfo, DnsIncoming, DnsOutPacket, DnsOutgoing, DnsPointer, DnsTxt,
-        RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, FLAGS_TC,
-        MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MSG_HEADER_LEN,
+        u16_from_be_slice, DnsAddress, DnsHostInfo, DnsIncoming, DnsOutPacket, DnsOutgoing,
+        DnsPointer, DnsTxt, RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
+        FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MSG_HEADER_LEN,
     };
     use crate::InterfaceId;
     use std::collections::HashMap;
@@ -3124,6 +3217,171 @@ mod tests {
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].as_bytes(), &[0; MSG_HEADER_LEN]);
+    }
+
+    /// A pointer that points into the name currently being read is a loop:
+    /// following it re-reads the same labels and arrives at the same pointer
+    /// again. `read_name` must reject such a name instead of hanging.
+    #[test]
+    fn test_read_name_pointer_loop_is_rejected() {
+        // A response with one PTR record. Its name starts at offset 12 and is
+        // encoded as: label "local", label "_x", then a pointer back to 12,
+        // i.e. to the "local" label of this very name.
+        let mut data: Vec<u8> = vec![0, 0, 0x84, 0, 0, 0, 0, 1, 0, 0, 0, 0];
+        data.extend_from_slice(&[5, b'l', b'o', b'c', b'a', b'l']); // offset 12
+        data.extend_from_slice(&[2, b'_', b'x']); // offset 18
+        data.extend_from_slice(&[0xC0, 12]); // offset 21: pointer to 12
+        data.extend_from_slice(&[0, 12, 0, 1]); // PTR, IN
+        data.extend_from_slice(&[0, 0, 0, 120]); // TTL
+        data.extend_from_slice(&[0, 2]); // RDLENGTH
+        data.extend_from_slice(&[0xC0, 12]); // RDATA: pointer to 12
+
+        assert!(DnsIncoming::new(data, test_interface_id()).is_err());
+    }
+
+    /// A name that follows a pointer backwards and then meets a second pointer
+    /// whose target sits *after* the start of the name being read.
+    ///
+    /// Every pointer here points strictly backwards from its own position, as
+    /// RFC 1035 section 4.1.4 requires, and the traversal terminates. But
+    /// `read_name` compares each pointer against the start offset of the name
+    /// rather than against the position of the pointer itself, so it rejects
+    /// the whole message.
+    ///
+    /// Such a message needs a label that overlaps the records around it, which
+    /// no sane encoder emits. It still has to parse: a stricter-than-RFC check
+    /// is a parser bug, not a defense.
+    ///
+    /// The layout below is offset-sensitive:
+    ///
+    /// - 640: a byte of value 62, sitting inside the label of question #10.
+    ///   Read as a label length, it covers 641..=702: the tail of question #10,
+    ///   all of question #11, and the first three bytes of the answer record.
+    ///   Those 62 bytes must be valid UTF-8, which is why the pointer at 700
+    ///   targets 640: the bytes 0xC2 0x80 also form a valid UTF-8 character.
+    /// - 700: the answer's name, a pointer to 640.
+    /// - 702: a zero byte (the high byte of the answer's TYPE), which ends a name.
+    /// - 703: a pointer to 702 (the low byte of TYPE and the high byte of CLASS).
+    ///
+    /// Reading the answer's name walks: 700 -> 640 -> 62-byte label -> 703 ->
+    /// 702 -> zero byte, name complete.
+    #[test]
+    fn test_read_name_pointer_after_backward_jump() {
+        /// Appends a question: one label of `label_len` 'a' bytes, PTR, IN.
+        fn push_question(data: &mut Vec<u8>, label_len: usize) {
+            data.push(label_len as u8);
+            data.extend(vec![b'a'; label_len]);
+            data.push(0); // end of the name
+            data.extend_from_slice(&[0, 12]); // QTYPE: PTR
+            data.extend_from_slice(&[0, 1]); // QCLASS: IN
+        }
+
+        let mut data: Vec<u8> = vec![
+            0, 0, // ID
+            0, 0, // flags: a query
+            0, 11, // 11 questions
+            0, 1, // 1 answer
+            0, 0, 0, 0, // no authorities, no additionals
+        ];
+
+        // Questions #1 to #10, 66 bytes each: 12 + 660 = 672.
+        for _ in 0..10 {
+            push_question(&mut data, 60);
+        }
+        assert_eq!(data.len(), 672);
+
+        // Question #11, 28 bytes, so that the answer record starts at 700.
+        push_question(&mut data, 22);
+        assert_eq!(data.len(), 700);
+
+        // Plant the label length inside question #10's label.
+        data[640] = 62;
+
+        // The answer record.
+        data.extend_from_slice(&[0xC2, 0x80]); // 700: name: pointer to 640
+        data.extend_from_slice(&[0x00, 0xC2]); // 702: TYPE, unknown type 194
+        data.extend_from_slice(&[0xBE, 0x01]); // 704: CLASS. 703..705 is a pointer to 702
+        data.extend_from_slice(&[0, 0, 0, 120]); // TTL
+        data.extend_from_slice(&[0, 0]); // RDLENGTH: no RDATA
+
+        // Both pointers point backwards from where they are.
+        assert_eq!(u16_from_be_slice(&data[700..702]) ^ 0xC000, 640);
+        assert_eq!(u16_from_be_slice(&data[703..705]) ^ 0xC000, 702);
+
+        let incoming = DnsIncoming::new(data, test_interface_id())
+            .expect("a name whose pointers all point backwards must parse");
+        assert_eq!(incoming.questions().len(), 11);
+
+        // The answer's type is unknown to us, so the record itself is skipped.
+        assert_eq!(incoming.answers().len(), 0);
+    }
+
+    /// Two pointers that target each other. Both sit below the offset the name
+    /// being read starts at, so comparing them against that offset lets both
+    /// through and the traversal cycles forever.
+    ///
+    /// They are planted in the RDATA of a record whose type we do not know:
+    /// that RDATA is skipped rather than parsed, so its bytes are never read as
+    /// a name until the second record's name points into them.
+    #[test]
+    fn test_read_name_mutual_pointers_are_rejected() {
+        let mut data: Vec<u8> = vec![0, 0, 0x84, 0, 0, 0, 0, 2, 0, 0, 0, 0];
+
+        // Answer #1: the root name, then an unknown type, so its RDATA is skipped.
+        data.push(0); // 12: the root name
+        data.extend_from_slice(&[0x00, 0xC2]); // 13: TYPE: unknown type 194
+        data.extend_from_slice(&[0x00, 0x01]); // 15: CLASS: IN
+        data.extend_from_slice(&[0, 0, 0, 120]); // 17: TTL
+        data.extend_from_slice(&[0x00, 0x04]); // 21: RDLENGTH
+        data.extend_from_slice(&[0xC0, 25]); // 23: RDATA: pointer to 25
+        data.extend_from_slice(&[0xC0, 23]); // 25: RDATA: pointer to 23
+        assert_eq!(data.len(), 27);
+
+        // Answer #2, whose name points into that RDATA.
+        data.extend_from_slice(&[0xC0, 23]); // 27: name: pointer to 23
+        data.extend_from_slice(&[0x00, 0xC2, 0x00, 0x01]); // TYPE, CLASS
+        data.extend_from_slice(&[0, 0, 0, 120]); // TTL
+        data.extend_from_slice(&[0, 0]); // RDLENGTH: no RDATA
+
+        // Every pointer targets an offset below the start of the name at 27.
+        assert_eq!(u16_from_be_slice(&data[27..29]) ^ 0xC000, 23);
+        assert_eq!(u16_from_be_slice(&data[23..25]) ^ 0xC000, 25);
+        assert_eq!(u16_from_be_slice(&data[25..27]) ^ 0xC000, 23);
+
+        assert!(DnsIncoming::new(data, test_interface_id()).is_err());
+    }
+
+    /// A label whose read carries the cursor onto a pointer that jumps back to
+    /// that same label. Every pointer here points backwards from its own
+    /// position, so no comparison of offsets rejects it: the cycle is broken
+    /// only by the name growing past [`MAX_NAME_BYTES`].
+    #[test]
+    fn test_read_name_label_cycle_is_rejected() {
+        let mut data: Vec<u8> = vec![0, 0, 0x84, 0, 0, 0, 0, 2, 0, 0, 0, 0];
+
+        // Answer #1, again an unknown type so that its RDATA is skipped.
+        data.push(0); // 12: the root name
+        data.extend_from_slice(&[0x00, 0xC2]); // 13: TYPE: unknown type 194
+        data.extend_from_slice(&[0x00, 0x01]); // 15: CLASS: IN
+        data.extend_from_slice(&[0, 0, 0, 120]); // 17: TTL
+        data.extend_from_slice(&[0x00, 0x07]); // 21: RDLENGTH
+        data.push(0x04); // 23: RDATA: a label of 4 bytes, ending at 28
+        data.extend_from_slice(b"aaaa"); // 24
+        data.extend_from_slice(&[0xC0, 23]); // 28: RDATA: pointer to 23
+        assert_eq!(data.len(), 30);
+
+        // Answer #2, whose name enters the cycle.
+        data.extend_from_slice(&[0xC0, 23]); // 30: name: pointer to 23
+        data.extend_from_slice(&[0x00, 0xC2, 0x00, 0x01]); // TYPE, CLASS
+        data.extend_from_slice(&[0, 0, 0, 120]); // TTL
+        data.extend_from_slice(&[0, 0]); // RDLENGTH: no RDATA
+
+        // Reading the label at 23 leaves the cursor on the pointer at 28, which
+        // points backwards from 28 and lands back on the label.
+        assert_eq!(u16_from_be_slice(&data[28..30]) ^ 0xC000, 23);
+        assert_eq!(u16_from_be_slice(&data[30..32]) ^ 0xC000, 23);
+
+        assert!(DnsIncoming::new(data, test_interface_id()).is_err());
     }
 
     fn test_interface_id() -> InterfaceId {
