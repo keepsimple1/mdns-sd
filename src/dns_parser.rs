@@ -2727,6 +2727,15 @@ impl DnsIncoming {
     ///
     /// See https://datatracker.ietf.org/doc/html/rfc1035#section-3.1 for
     /// domain name encoding.
+    fn read_name(&mut self) -> Result<String> {
+        let mut name = String::new();
+        self.offset = self.read_labels(self.offset, &mut name)?;
+        Ok(name)
+    }
+
+    /// Appends the labels encoded at `offset` to `name`, and returns the offset
+    /// just past that encoding: past the terminating zero byte, or past the
+    /// compression pointer that ended the name.
     ///
     /// A name is a sequence of labels, where each label is a length byte
     /// followed by that many bytes. The name ends either with a zero length
@@ -2751,40 +2760,7 @@ impl DnsIncoming {
     ///            ^len               ^ pointer: 0xC00C ^ 0xC000 = 12, jump back to offset 12
     /// ```
     ///
-    /// Reading the name that starts at offset 40 then walks like this:
-    ///
-    /// ```text
-    ///  step  offset  bytes           action                    name so far
-    ///  ----  ------  --------------  ------------------------  ---------------------------
-    ///   1      40    09 "myprinter"  append label              "myprinter."
-    ///   2      50    C0 0C           end of name reached:      "myprinter."
-    ///                                self.offset = 52,
-    ///                                jump to offset 12
-    ///   3      12    05 "_http"      append label              "myprinter._http."
-    ///   4      18    04 "_tcp"       append label              "myprinter._http._tcp."
-    ///   5      23    05 "local"      append label              "myprinter._http._tcp.local."
-    ///   6      29    00              stop                      "myprinter._http._tcp.local."
-    /// ```
-    ///
-    /// Note there are two cursors. The one walking the labels may jump
-    /// backwards, while `self.offset` records where the caller resumes parsing.
-    /// A pointer terminates the name from the caller's point of view, so in the
-    /// example above `self.offset` becomes 52 even though reading continues at
-    /// offset 12. Keeping the two apart is why the walk lives in
-    /// [`Self::read_labels`], which takes `&self` and therefore cannot move the
-    /// read cursor at all.
-    fn read_name(&mut self) -> Result<String> {
-        let mut name = String::new();
-        self.offset = self.read_labels(self.offset, &mut name)?;
-        Ok(name)
-    }
-
-    /// Appends the labels encoded at `offset` to `name`, and returns the offset
-    /// just past that encoding: past the terminating zero byte, or past the
-    /// compression pointer that ended the name.
-    ///
-    /// Takes `&self` so that following a pointer cannot move the read cursor:
-    /// only [`Self::read_name`] assigns `self.offset`, from this return value.
+    /// Takes `&self` so that following a pointer cannot move the read cursor.
     fn read_labels(&self, mut offset: usize, name: &mut String) -> Result<usize> {
         let data = &self.data[..];
 
@@ -2834,9 +2810,14 @@ impl DnsIncoming {
                     let label = str::from_utf8(&data[offset..ending])
                         .map_err(|e| Error::Msg(format!("read_labels: from_utf8: {e}")))?;
 
-                    // A name that keeps growing is the only way a chain of
-                    // pointers can fail to terminate, so this bound is what
-                    // makes reading a name finite. See `follow_pointer`.
+                    // `MAX_NAME_BYTES` bounds a possible loop where pointer targets a label that
+                    // is already part of the current name. For example:
+                    //
+                    //  offset:  12   13..17    18   19
+                    //          +----+---------+----+----+
+                    //  bytes:  | 05 | "_http" | C0 | 0C |
+                    //          +----+---------+----+----+
+                    //            ^len           ^pointer targets offset 12.
                     if name.len() + label.len() + 1 > MAX_NAME_BYTES {
                         return Err(Error::Msg(format!(
                             "read_labels: name exceeds {MAX_NAME_BYTES} bytes: {name}"
@@ -2869,17 +2850,6 @@ impl DnsIncoming {
     ///
     /// See https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.4 for
     /// message compression.
-    ///
-    /// Reading a name always terminates, for two reasons that work together:
-    ///
-    /// - A pointer must target an offset strictly below its own position, so a
-    ///   run of pointers that targets nothing but further pointers walks
-    ///   backwards and runs out of message. That run is resolved by the loop
-    ///   below rather than by nesting, so it costs no stack.
-    /// - Past that run sits either the end of a name or a real label. So every
-    ///   nested call gets here only after [`Self::read_labels`] has appended at
-    ///   least one label, which `MAX_NAME_BYTES` bounds. Nesting is therefore
-    ///   bounded too, at half that.
     fn follow_pointer(&self, at: usize, name: &mut String) -> Result<()> {
         let data = &self.data[..];
         let mut pointer_at = at;
@@ -2907,6 +2877,8 @@ impl DnsIncoming {
             if data[target] & 0xC0 != 0xC0 {
                 break target;
             }
+
+            // The target is itself a pointer, so follow it.
             pointer_at = target;
         };
 
