@@ -2756,6 +2756,30 @@ impl Zeroconf {
         false
     }
 
+    /// Re-issues follow-up queries (SRV / address) for every instance of
+    /// `ty_domain` that has been found via PTR but is not yet resolved.
+    ///
+    /// This is meant to be driven by the browse retransmission cycle so a
+    /// pending instance keeps being queried for as long as the browse is
+    /// active.
+    fn query_unresolved_instances(&mut self, ty_domain: &str) {
+        let now = current_time_millis();
+        let mut instances = Vec::new();
+        if let Some(records) = self.cache.get_ptr(ty_domain) {
+            for record in records.iter().filter(|r| !r.record.expires_soon(now)) {
+                if let Some(ptr) = record.record.any().downcast_ref::<DnsPointer>() {
+                    instances.push(ptr.alias().to_string());
+                }
+            }
+        }
+
+        for instance in instances {
+            if !self.resolved.contains(&instance) {
+                self.query_unresolved(&instance);
+            }
+        }
+    }
+
     /// Checks if `ty_domain` has records in the cache. If yes, sends the
     /// cached records via `sender`.
     fn query_cache_for_service(
@@ -3878,6 +3902,11 @@ impl Zeroconf {
         }
 
         self.send_query(&ty, RRType::PTR);
+
+        // Re-query the SRV/address records for any unresolvedinstance, so a pending
+        // instance is not stranded once its fast-path retries are exhausted (see `exec_command_resolve`).
+        self.query_unresolved_instances(&ty);
+
         self.increase_counter(Counter::Browse, 1);
 
         let next_time = now + (next_delay * 1000) as u64;
@@ -3951,6 +3980,10 @@ impl Zeroconf {
             // will be no-op as the cache has been updated.
             let next_time = current_time_millis() + RESOLVE_WAIT_IN_MILLIS;
             self.add_retransmission(next_time, Command::Resolve(instance, try_count + 1));
+        } else {
+            // This fast-path retry chain is ending: either the instance
+            // resolved, or we exhausted `max_try`.
+            self.pending_resolves.remove(&instance);
         }
     }
 
@@ -5218,8 +5251,8 @@ mod tests {
     };
     use crate::{
         dns_parser::{
-            DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer, InterfaceId, RRType, ScopedIp,
-            CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
+            DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer, DnsSrv, InterfaceId,
+            RRType, ScopedIp, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
         },
         service_daemon::{add_answer_of_service, check_hostname},
     };
@@ -6558,5 +6591,185 @@ mod tests {
         client_custom.shutdown().unwrap();
         server_default.shutdown().unwrap();
         client_default.shutdown().unwrap();
+    }
+
+    /// Regression test for such issue: an instance that is found (via PTR) but
+    /// whose SRV/address answers are lost during the initial resolve attempts
+    /// must not be stranded. As long as the browse is active, the daemon must
+    /// keep re-querying for it.
+    #[test]
+    fn test_unresolved_instance_not_stranded() {
+        use socket2::{Domain, Protocol, Socket, Type};
+        use std::net::SocketAddrV4;
+
+        // Pick the first IPv4 interface, like the other multicast tests.
+        let intf_ip = match my_ip_interfaces(false)
+            .into_iter()
+            .find_map(|intf| match intf.ip() {
+                IpAddr::V4(ip) if !ip.is_loopback() => Some(ip),
+                _ => None,
+            }) {
+            Some(ip) => ip,
+            None => {
+                println!("No non-loopback IPv4 interface available; skipping test.");
+                return;
+            }
+        };
+
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+        let ty_domain = format!("_strandtest{unique}._udp.local.");
+        let instance = format!("inst.{ty_domain}");
+        // The SRV target is a distinct hostname, which is the case that needs a
+        // separate address query.
+        let host = format!("strandhost{unique}.local.");
+        let port = 1234u16;
+        let ttl = 4500u32;
+
+        let if_id = InterfaceId {
+            name: "test".to_string(),
+            index: 0,
+        };
+
+        // Build our hand-rolled responder socket: bound to the mDNS port,
+        // joined to the group, with loopback on so it exchanges packets with
+        // the in-process daemon.
+        let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
+            .expect("create responder socket");
+        sock.set_reuse_address(true).expect("set reuse_address");
+        #[cfg(unix)]
+        let _ = sock.set_reuse_port(true);
+        sock.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS_PORT).into())
+            .expect("bind responder socket");
+        sock.join_multicast_v4(&GROUP_ADDR_V4, &intf_ip)
+            .expect("join multicast group");
+        sock.set_multicast_if_v4(&intf_ip)
+            .expect("set multicast_if");
+        sock.set_multicast_loop_v4(true).expect("enable loopback");
+        sock.set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("set read timeout");
+        let responder: UdpSocket = sock.into();
+
+        // A response carrying PTR + SRV, but deliberately no address record.
+        let announce_packets = || {
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+            out.add_answer_at_time(
+                DnsPointer::new(&ty_domain, RRType::PTR, CLASS_IN, ttl, instance.clone()),
+                0,
+            );
+            out.add_answer_at_time(
+                DnsSrv::new(&instance, CLASS_IN, ttl, 0, 0, port, host.clone()),
+                0,
+            );
+            out.to_data_on_wire(MAX_PKT_DEFAULT, true)
+        };
+
+        // A response carrying just the withheld address record.
+        let addr_packets = || {
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+            out.add_answer_at_time(
+                DnsAddress::new(
+                    &host,
+                    RRType::A,
+                    CLASS_IN,
+                    ttl,
+                    IpAddr::V4(intf_ip),
+                    if_id.clone(),
+                ),
+                0,
+            );
+            out.to_data_on_wire(MAX_PKT_DEFAULT, true)
+        };
+
+        let send_all = |packets: Vec<Vec<u8>>| {
+            for packet in packets {
+                let _ = responder.send_to(&packet, (GROUP_ADDR_V4, MDNS_PORT));
+            }
+        };
+
+        // Start the browse, then announce (unsolicited) to seed the cache.
+        let daemon = ServiceDaemon::new().expect("create daemon");
+        let browse_rx = daemon.browse(&ty_domain).expect("start browse");
+        send_all(announce_packets());
+
+        // The number of address-query packets we must see before we start
+        // answering: this is `max_try` in `exec_command_resolve`. The buggy
+        // code sends exactly this many and then stops.
+        let answer_after = 3;
+        let mut addr_query_count = 0;
+        let mut resolved = false;
+        let mut buf = [0u8; 2048];
+        let deadline = Instant::now() + Duration::from_secs(20);
+
+        while Instant::now() < deadline {
+            // Drive the responder: react to whatever queries have arrived.
+            while let Ok((len, _from)) = responder.recv_from(&mut buf) {
+                let Ok(msg) = DnsIncoming::new(buf[..len].to_vec(), if_id.clone()) else {
+                    continue;
+                };
+                if msg.is_response() {
+                    continue;
+                }
+
+                let mut saw_addr_query = false;
+                let mut saw_service_query = false;
+                for q in msg.questions() {
+                    let qname = q.entry_name();
+                    if qname.eq_ignore_ascii_case(&host)
+                        && matches!(q.entry_type(), RRType::A | RRType::AAAA)
+                    {
+                        saw_addr_query = true;
+                    } else if qname.eq_ignore_ascii_case(&ty_domain)
+                        || qname.eq_ignore_ascii_case(&instance)
+                    {
+                        saw_service_query = true;
+                    }
+                }
+
+                // Keep the PTR/SRV fresh if the daemon asks for them.
+                if saw_service_query {
+                    send_all(announce_packets());
+                }
+
+                // Count address queries as one per packet (the daemon batches
+                // A and AAAA into a single query). Only answer once the buggy
+                // give-up window is behind us.
+                if saw_addr_query {
+                    addr_query_count += 1;
+                    if addr_query_count > answer_after {
+                        send_all(addr_packets());
+                    }
+                }
+            }
+
+            // Has the daemon resolved the instance yet?
+            while let Ok(event) = browse_rx.try_recv() {
+                if let ServiceEvent::ServiceResolved(info) = event {
+                    if info.get_fullname().eq_ignore_ascii_case(&instance) {
+                        resolved = true;
+                    }
+                }
+            }
+
+            if resolved {
+                break;
+            }
+        }
+
+        daemon.shutdown().unwrap();
+
+        assert!(
+            addr_query_count > answer_after,
+            "daemon stopped querying for the address after {} tries; \
+             an unresolved instance must keep being queried while the browse is active",
+            addr_query_count
+        );
+        assert!(
+            resolved,
+            "instance was found but never resolved even though its address was \
+             eventually answered"
+        );
     }
 }
