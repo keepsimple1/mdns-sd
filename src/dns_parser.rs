@@ -2309,13 +2309,28 @@ impl DnsIncoming {
             |      Additional     | RRs holding additional information
             +---------------------+
          */
-        incoming.read_header()?;
-        incoming.read_questions()?;
-        incoming.read_answers()?;
-        incoming.read_authorities()?;
-        incoming.read_additional()?;
+        if let Err(e) = incoming.read_sections() {
+            // Annotate the failure with the raw packet, so a malformed message
+            // can be inspected or decoded offline without a separate capture.
+            return Err(Error::Msg(format!(
+                "{e}; raw packet ({} bytes): {:02x?}",
+                incoming.data.len(),
+                incoming.data,
+            )));
+        }
 
         Ok(incoming)
+    }
+
+    /// Reads the five message sections in order. Kept separate from `new` so a
+    /// parse failure can be annotated with the raw packet bytes.
+    fn read_sections(&mut self) -> Result<()> {
+        self.read_header()?;
+        self.read_questions()?;
+        self.read_answers()?;
+        self.read_authorities()?;
+        self.read_additional()?;
+        Ok(())
     }
 
     pub fn id(&self) -> u16 {
