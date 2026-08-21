@@ -2534,94 +2534,125 @@ impl DnsIncoming {
                 )));
             }
 
-            // decode RDATA based on the record type.
-            let rec: Option<DnsRecordBox> = match RRType::from_u16(ty) {
-                None => None,
-
-                Some(rr_type) => match rr_type {
-                    RRType::CNAME | RRType::PTR => {
-                        Some(DnsPointer::new(&name, rr_type, class, ttl, self.read_name()?).boxed())
+            // Decode the RDATA based on the record type. A single record with
+            // malformed RDATA must not discard the whole message: skip just
+            // that record and resume at the next one using RDLENGTH.
+            match self.read_rdata(ty, class, ttl, rdata_len, &name) {
+                Ok(Some(record)) => {
+                    if self.offset == next_offset {
+                        trace!("read_rr_records: {:?}", &record);
+                        rr_records.push(record);
+                    } else {
+                        debug!(
+                            "skipping record '{}' (type {}): RDATA ended at {}, expected {}",
+                            &name, ty, self.offset, next_offset
+                        );
                     }
-                    RRType::TXT => {
-                        Some(DnsTxt::new(&name, class, ttl, self.read_vec(rdata_len)?).boxed())
-                    }
-                    RRType::SRV => Some(
-                        DnsSrv::new(
-                            &name,
-                            class,
-                            ttl,
-                            self.read_u16()?,
-                            self.read_u16()?,
-                            self.read_u16()?,
-                            self.read_name()?,
-                        )
-                        .boxed(),
-                    ),
-                    RRType::HINFO => Some(
-                        DnsHostInfo::new(
-                            &name,
-                            rr_type,
-                            class,
-                            ttl,
-                            self.read_char_string()?,
-                            self.read_char_string()?,
-                        )
-                        .boxed(),
-                    ),
-                    RRType::A => Some(
-                        DnsAddress::new(
-                            &name,
-                            rr_type,
-                            class,
-                            ttl,
-                            self.read_ipv4()?.into(),
-                            self.interface_id.clone(),
-                        )
-                        .boxed(),
-                    ),
-                    RRType::AAAA => Some(
-                        DnsAddress::new(
-                            &name,
-                            rr_type,
-                            class,
-                            ttl,
-                            self.read_ipv6()?.into(),
-                            self.interface_id.clone(),
-                        )
-                        .boxed(),
-                    ),
-                    RRType::NSEC => Some(
-                        DnsNSec::new(
-                            &name,
-                            class,
-                            ttl,
-                            self.read_name()?,
-                            self.read_type_bitmap()?,
-                        )
-                        .boxed(),
-                    ),
-                    _ => None,
-                },
-            };
-
-            if let Some(record) = rec {
-                trace!("read_rr_records: {:?}", &record);
-                rr_records.push(record);
-            } else {
-                trace!("Unsupported DNS record type: {} name: {}", ty, &name);
-                self.offset += rdata_len;
+                }
+                Ok(None) => {
+                    trace!("Unsupported DNS record type: {} name: {}", ty, &name);
+                }
+                Err(e) => {
+                    debug!(
+                        "skipping record '{}' (type {}) with invalid RDATA: {}",
+                        &name, ty, e,
+                    );
+                }
             }
 
-            // sanity check.
-            if self.offset != next_offset {
-                return Err(Error::Msg(format!(
-                    "read_rr_records: decode offset error for RData type {} offset: {} expected offset: {}",
-                    ty, self.offset, next_offset,
-                )));
-            }
+            // Re-anchor to the record boundary defined by RDLENGTH, regardless
+            // of how the RDATA decoded, so the next record is read from the
+            // correct offset.
+            self.offset = next_offset;
         }
 
         Ok(rr_records)
+    }
+
+    /// Decodes the RDATA of a single record whose header fields have already
+    /// been read, returning `None` for record types we do not parse.
+    ///
+    /// On success the read cursor is left at the end of the RDATA; the caller
+    /// verifies that against RDLENGTH. Errors are per-record: the caller skips
+    /// the offending record and continues with the rest of the message.
+    fn read_rdata(
+        &mut self,
+        ty: u16,
+        class: u16,
+        ttl: u32,
+        rdata_len: usize,
+        name: &str,
+    ) -> Result<Option<DnsRecordBox>> {
+        let rec: Option<DnsRecordBox> = match RRType::from_u16(ty) {
+            None => None,
+
+            Some(rr_type) => match rr_type {
+                RRType::CNAME | RRType::PTR => {
+                    Some(DnsPointer::new(name, rr_type, class, ttl, self.read_name()?).boxed())
+                }
+                RRType::TXT => {
+                    Some(DnsTxt::new(name, class, ttl, self.read_vec(rdata_len)?).boxed())
+                }
+                RRType::SRV => Some(
+                    DnsSrv::new(
+                        name,
+                        class,
+                        ttl,
+                        self.read_u16()?,
+                        self.read_u16()?,
+                        self.read_u16()?,
+                        self.read_name()?,
+                    )
+                    .boxed(),
+                ),
+                RRType::HINFO => Some(
+                    DnsHostInfo::new(
+                        name,
+                        rr_type,
+                        class,
+                        ttl,
+                        self.read_char_string()?,
+                        self.read_char_string()?,
+                    )
+                    .boxed(),
+                ),
+                RRType::A => Some(
+                    DnsAddress::new(
+                        name,
+                        rr_type,
+                        class,
+                        ttl,
+                        self.read_ipv4()?.into(),
+                        self.interface_id.clone(),
+                    )
+                    .boxed(),
+                ),
+                RRType::AAAA => Some(
+                    DnsAddress::new(
+                        name,
+                        rr_type,
+                        class,
+                        ttl,
+                        self.read_ipv6()?.into(),
+                        self.interface_id.clone(),
+                    )
+                    .boxed(),
+                ),
+                RRType::NSEC => Some(
+                    DnsNSec::new(
+                        name,
+                        class,
+                        ttl,
+                        self.read_name()?,
+                        self.read_type_bitmap()?,
+                    )
+                    .boxed(),
+                ),
+                _ => None,
+            },
+        };
+
+        Ok(rec)
     }
 
     fn read_char_string(&mut self) -> Result<String> {
@@ -3349,6 +3380,52 @@ mod tests {
         assert_eq!(u16_from_be_slice(&data[30..32]) ^ 0xC000, 23);
 
         assert!(DnsIncoming::new(data, test_interface_id()).is_err());
+    }
+
+    /// A real `_miio._udp.local.` response captured behind an avahi mDNS
+    /// reflector (see issue #468). It has 5 answers, one of which is an NSEC
+    /// whose Next Domain Name is a compression pointer to its own offset (a
+    /// self-reference, offset 121 -> 121). That one record is malformed, but
+    /// the other four (PTR, A, SRV, TXT) are fine, and lenient parsers such as
+    /// tcpdump decode the whole packet.
+    ///
+    /// The parser must skip only the malformed NSEC and keep the good records,
+    /// rather than discarding the entire message.
+    #[test]
+    fn test_malformed_nsec_record_is_skipped() {
+        let data: Vec<u8> = vec![
+            0x00, 0x00, 0x84, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x05, 0x5f,
+            0x6d, 0x69, 0x69, 0x6f, 0x04, 0x5f, 0x75, 0x64, 0x70, 0x05, 0x6c, 0x6f, 0x63, 0x61,
+            0x6c, 0x00, 0x00, 0x0c, 0x00, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x24, 0x21, 0x64,
+            0x72, 0x65, 0x61, 0x6d, 0x65, 0x2d, 0x76, 0x61, 0x63, 0x75, 0x75, 0x6d, 0x2d, 0x70,
+            0x32, 0x30, 0x32, 0x39, 0x5f, 0x6d, 0x69, 0x69, 0x6f, 0x34, 0x34, 0x37, 0x33, 0x30,
+            0x35, 0x32, 0x34, 0x37, 0xc0, 0x0c, 0x21, 0x64, 0x72, 0x65, 0x61, 0x6d, 0x65, 0x2d,
+            0x76, 0x61, 0x63, 0x75, 0x75, 0x6d, 0x2d, 0x70, 0x32, 0x30, 0x32, 0x39, 0x5f, 0x6d,
+            0x69, 0x69, 0x6f, 0x34, 0x34, 0x37, 0x33, 0x30, 0x35, 0x32, 0x34, 0x37, 0x00, 0x00,
+            0x2f, 0x80, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x09, 0xc0, 0x79, 0x00, 0x05, 0x40,
+            0x00, 0x00, 0x00, 0x00, 0xc0, 0x4c, 0x00, 0x01, 0x80, 0x01, 0x00, 0x00, 0x00, 0x78,
+            0x00, 0x04, 0x0a, 0x2a, 0x02, 0x32, 0xc0, 0x28, 0x00, 0x21, 0x80, 0x01, 0x00, 0x00,
+            0x00, 0x78, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0xd4, 0x31, 0xc0, 0x4c, 0xc0, 0x28,
+            0x00, 0x10, 0x80, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x0f, 0x0e, 0x70, 0x61, 0x74,
+            0x68, 0x3d, 0x2f, 0x6d, 0x79, 0x64, 0x65, 0x76, 0x69, 0x63, 0x65,
+        ];
+
+        // The offending record: the NSEC's Next Domain Name at offset 121 is a
+        // pointer to offset 121 (itself).
+        assert_eq!(u16_from_be_slice(&data[121..123]) ^ 0xC000, 121);
+
+        let incoming = DnsIncoming::new(data, test_interface_id())
+            .expect("one malformed record must not fail the whole packet");
+
+        // Four of the five records survive; only the NSEC is dropped.
+        assert_eq!(incoming.answers().len(), 4);
+        assert!(
+            !incoming
+                .answers()
+                .iter()
+                .any(|r| r.get_type() == RRType::NSEC),
+            "the malformed NSEC record must be skipped"
+        );
     }
 
     fn test_interface_id() -> InterfaceId {
