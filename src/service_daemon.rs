@@ -2456,6 +2456,17 @@ impl Zeroconf {
     ) -> Vec<u8> {
         let is_ipv4 = sock.domain() == Domain::IPV4;
 
+        // Goodbye records must carry the names peers actually cached: if
+        // probing renamed a record on this interface, withdraw the renamed
+        // name, not the original one from `ServiceInfo`.
+        let (fullname, hostname) = match self.dns_registry_map.get(&intf.index) {
+            Some(dns_registry) => (
+                dns_registry.resolve_name(info.get_fullname()),
+                dns_registry.resolve_name(info.get_hostname()),
+            ),
+            None => (info.get_fullname(), info.get_hostname()),
+        };
+
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         out.add_answer_at_time(
             DnsPointer::new(
@@ -2463,7 +2474,7 @@ impl Zeroconf {
                 RRType::PTR,
                 CLASS_IN,
                 0,
-                info.get_fullname().to_string(),
+                fullname.to_string(),
             ),
             0,
         );
@@ -2471,32 +2482,26 @@ impl Zeroconf {
         if let Some(sub) = info.get_subtype() {
             trace!("Adding subdomain {}", sub);
             out.add_answer_at_time(
-                DnsPointer::new(
-                    sub,
-                    RRType::PTR,
-                    CLASS_IN,
-                    0,
-                    info.get_fullname().to_string(),
-                ),
+                DnsPointer::new(sub, RRType::PTR, CLASS_IN, 0, fullname.to_string()),
                 0,
             );
         }
 
         out.add_answer_at_time(
             DnsSrv::new(
-                info.get_fullname(),
+                fullname,
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 0,
                 info.get_priority(),
                 info.get_weight(),
                 info.get_port(),
-                info.get_hostname().to_string(),
+                hostname.to_string(),
             ),
             0,
         );
         out.add_answer_at_time(
             DnsTxt::new(
-                info.get_fullname(),
+                fullname,
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 0,
                 info.generate_txt(),
@@ -2517,7 +2522,7 @@ impl Zeroconf {
         for address in if_addrs {
             out.add_answer_at_time(
                 DnsAddress::new(
-                    info.get_hostname(),
+                    hostname,
                     ip_address_rr_type(&address),
                     CLASS_IN | CLASS_CACHE_FLUSH,
                     0,
