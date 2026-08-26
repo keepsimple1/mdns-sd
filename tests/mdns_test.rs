@@ -1,7 +1,7 @@
 use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
     DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, InterfaceId, IntoTxtProperties,
-    ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo, TxtProperty, UnregisterStatus,
+    RRType, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo, TxtProperty, UnregisterStatus,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -2575,4 +2575,119 @@ fn timed_println(msg: String) {
     let now = SystemTime::now();
     let formatted_time = humantime::format_rfc3339(now);
     println!("[{}] {}", formatted_time, msg);
+}
+
+#[test]
+fn test_goodbye_uses_conflict_resolved_name() {
+    // When probing renames a service due to a conflict, unregistering it must
+    // send the goodbye records under the renamed (cached-by-peers) name, so
+    // that browsers drop the entry immediately instead of waiting out TTLs.
+    let ty_domain = "_conflict-bye._udp.local.";
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let instance_name = now.as_micros().to_string(); // Create a unique name.
+    let host_name = "conflict_bye_host.local.";
+    let port = 5200;
+
+    // Register the first service.
+    let server1 = ServiceDaemon::new().expect("failed to start server1");
+
+    // Get a single IPv4 address
+    let ip_addr1 = my_ip_interfaces()
+        .iter()
+        .find(|iface| iface.ip().is_ipv4())
+        .map(|iface| iface.ip())
+        .unwrap();
+
+    let service1 = ServiceInfo::new(ty_domain, &instance_name, host_name, ip_addr1, port, None)
+        .expect("valid service info");
+    server1
+        .register(service1)
+        .expect("Failed to register service1");
+
+    // wait for the service announced.
+    sleep(Duration::from_secs(1));
+
+    // Register the second service with the same names to force a conflict.
+    let server2 = ServiceDaemon::new().expect("failed to start server2");
+    let server2_monitor = server2.monitor().unwrap();
+
+    let IpAddr::V4(ipv4) = ip_addr1 else {
+        panic!();
+    };
+    let bytes = ipv4.octets();
+    let ip_addr2 = IpAddr::V4(Ipv4Addr::new(
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3] % 254 + 1,
+    ));
+
+    let service2 = ServiceInfo::new(ty_domain, &instance_name, host_name, ip_addr2, port, None)
+        .expect("failed to create ServiceInfo for service2");
+    let service2_fullname = service2.get_fullname().to_string();
+    server2
+        .register(service2)
+        .expect("failed to register service2");
+
+    // Wait for the conflict to be resolved by renaming service2.
+    let timeout = Duration::from_secs(2);
+    let mut renamed_instance = None;
+    while let Ok(event) = server2_monitor.recv_timeout(timeout) {
+        match event {
+            DaemonEvent::NameChange(change) => {
+                println!("server2 name change: {:?}", change);
+                if change.rr_type == RRType::SRV {
+                    renamed_instance = Some(change.new_name);
+                    break;
+                }
+            }
+            other => println!("server2 other event: {:?}", other),
+        }
+    }
+    let renamed_instance = renamed_instance.expect("service2 was not renamed");
+
+    // Browse until the renamed instance is resolved.
+    let client = ServiceDaemon::new().expect("failed to create mdns client");
+    let receiver = client.browse(ty_domain).unwrap();
+
+    let timeout = Duration::from_secs(3);
+    let mut resolved = false;
+    while let Ok(event) = receiver.recv_timeout(timeout) {
+        if let ServiceEvent::ServiceResolved(info) = event {
+            println!("Resolved a service: {}", info.get_fullname());
+            if info.get_fullname() == renamed_instance {
+                resolved = true;
+                break;
+            }
+        }
+    }
+    assert!(resolved, "the renamed instance was not resolved");
+
+    // Unregister service2 (by its original fullname) and verify the client
+    // sees the renamed instance removed via the goodbye packets, well before
+    // any record TTL could expire.
+    let receiver2 = server2
+        .unregister(&service2_fullname)
+        .expect("failed to unregister service2");
+    let status = receiver2.recv_timeout(Duration::from_secs(2)).unwrap();
+    println!("unregister status: {:?}", status);
+
+    let timeout = Duration::from_secs(5);
+    let mut removed = false;
+    while let Ok(event) = receiver.recv_timeout(timeout) {
+        if let ServiceEvent::ServiceRemoved(_ty, fullname) = event {
+            println!("Removed a service: {fullname}");
+            if fullname == renamed_instance {
+                removed = true;
+                break;
+            }
+        }
+    }
+    assert!(removed, "no goodbye seen for the renamed instance");
+
+    server1.shutdown().unwrap();
+    server2.shutdown().unwrap();
+    client.shutdown().unwrap();
 }
