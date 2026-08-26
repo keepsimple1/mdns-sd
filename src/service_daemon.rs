@@ -83,7 +83,14 @@ const GROUP_ADDR_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const GROUP_ADDR_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
 const LOOPBACK_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
-const RESOLVE_WAIT_IN_MILLIS: u64 = 500;
+/// The first fast-path follow-up resolve query fires this soon after an
+/// instance is found via PTR. Subsequent tries back off exponentially
+/// (200ms, 400ms, 800ms, 1600ms), see `exec_command_resolve`.
+const RESOLVE_RETRY_BASE_MILLIS: u64 = 200;
+
+/// Max number of fast-path resolve tries before the browse retransmission
+/// cycle takes over re-querying (see `query_unresolved_instances`).
+const RESOLVE_MAX_TRY: u16 = 4;
 
 /// RFC 6762 §8.3: the two unsolicited announcements are sent "one second apart".
 /// We schedule the second one strictly wider than the §6 multicast rate-limit
@@ -2863,7 +2870,7 @@ impl Zeroconf {
 
     fn add_pending_resolve(&mut self, instance: String) {
         if !self.pending_resolves.contains(&instance) {
-            let next_time = current_time_millis() + RESOLVE_WAIT_IN_MILLIS;
+            let next_time = current_time_millis() + RESOLVE_RETRY_BASE_MILLIS;
             self.add_retransmission(next_time, Command::Resolve(instance.clone(), 1));
             self.pending_resolves.insert(instance);
         }
@@ -3974,11 +3981,13 @@ impl Zeroconf {
 
     fn exec_command_resolve(&mut self, instance: String, try_count: u16) {
         let pending_query = self.query_unresolved(&instance);
-        let max_try = 3;
-        if pending_query && try_count < max_try {
+        if pending_query && try_count < RESOLVE_MAX_TRY {
             // Note that if the current try already succeeds, the next retransmission
             // will be no-op as the cache has been updated.
-            let next_time = current_time_millis() + RESOLVE_WAIT_IN_MILLIS;
+            //
+            // Back off exponentially
+            let next_delay = RESOLVE_RETRY_BASE_MILLIS << try_count;
+            let next_time = current_time_millis() + next_delay;
             self.add_retransmission(next_time, Command::Resolve(instance, try_count + 1));
         } else {
             // This fast-path retry chain is ending: either the instance
@@ -5246,7 +5255,7 @@ mod tests {
         valid_instance_name, valid_ip_on_intf, DaemonEvent, HostnameResolutionEvent, IfKind,
         MaxPacketSizeSelection, MyIntf, SendConfig, ServiceDaemon, ServiceEvent, ServiceInfo,
         GROUP_ADDR_V4, INITIAL_QUERY_DELAY_MAX_MILLIS, INITIAL_QUERY_DELAY_MIN_MILLIS,
-        MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MDNS_PORT, MIN_MAX_PACKET_SIZE,
+        MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MDNS_PORT, MIN_MAX_PACKET_SIZE, RESOLVE_MAX_TRY,
         SHARED_RESPONSE_DELAY_MAX_MILLIS, SHARED_RESPONSE_DELAY_MIN_MILLIS,
     };
     use crate::{
@@ -6695,9 +6704,11 @@ mod tests {
         send_all(announce_packets());
 
         // The number of address-query packets we must see before we start
-        // answering: this is `max_try` in `exec_command_resolve`. The buggy
-        // code sends exactly this many and then stops.
-        let answer_after = 3;
+        // answering. We withhold past the fast-path budget (`RESOLVE_MAX_TRY`
+        // tries in `exec_command_resolve`) so that resolution can only come
+        // from the browse retransmission cycle. The buggy code went silent
+        // once the fast path was exhausted and never resolved the instance.
+        let answer_after = RESOLVE_MAX_TRY as i32;
         let mut addr_query_count = 0;
         let mut resolved = false;
         let mut buf = [0u8; 2048];
