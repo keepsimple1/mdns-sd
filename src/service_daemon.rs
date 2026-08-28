@@ -2750,12 +2750,21 @@ impl Zeroconf {
             for record in records {
                 if let Some(srv) = record.record.any().downcast_ref::<DnsSrv>() {
                     if self.cache.get_addr(srv.host()).is_none() {
+                        debug!(
+                            "query_unresolved: SRV record found for instance: {}, host: {}, sending address query",
+                            instance,
+                            srv.host()
+                        );
                         self.send_query_vec(&[(srv.host(), RRType::A), (srv.host(), RRType::AAAA)]);
                         return true;
                     }
                 }
             }
         } else {
+            debug!(
+                "query_unresolved: SRV record not found for instance: {}",
+                instance
+            );
             self.send_query(instance, RRType::ANY);
             return true;
         }
