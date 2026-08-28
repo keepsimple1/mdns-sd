@@ -2809,7 +2809,12 @@ impl Zeroconf {
                                 new_event =
                                     Some(ServiceEvent::ServiceResolved(Box::new(resolved_service)));
                             } else {
-                                debug!("Resolved service is not valid: {}", ptr.alias());
+                                debug!(
+                                    "query_cache_for_service: not valid: {} (host_empty={}, addrs_empty={})",
+                                    ptr.alias(),
+                                    resolved_service.get_hostname().is_empty(),
+                                    resolved_service.get_addresses().is_empty(),
+                                );
                             }
                         }
                         Err(err) => {
@@ -3345,7 +3350,11 @@ impl Zeroconf {
                     let event = ServiceEvent::ServiceResolved(Box::new(resolved_service));
                     call_service_listener(&self.service_queriers, ty_domain, event);
                 } else {
-                    debug!("Resolved service is not valid: {instance}");
+                    debug!(
+                        "resolve_updated_instances: not valid: {instance} (host_empty={}, addrs_empty={})",
+                        resolved_service.get_hostname().is_empty(),
+                        resolved_service.get_addresses().is_empty(),
+                    );
                     if self.resolved.remove(dns_ptr.alias()) {
                         removed_instances
                             .entry(ty_domain.to_string())
