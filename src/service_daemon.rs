@@ -3075,6 +3075,10 @@ impl Zeroconf {
                     let ty = dns_record.record.get_type();
                     let name = dns_record.record.get_name();
 
+                    // Positive dump: a new record was accepted into the cache.
+                    // Counterpart to the "skipping record" debug line in the parser.
+                    debug!("cache: new record: {:?}", &dns_record.record);
+
                     // Only process PTR that does not expire soon (i.e. TTL > 1).
                     if ty == RRType::PTR && dns_record.record.get_record().get_ttl() > 1 {
                         if self.service_queriers.contains_key(name) {
@@ -3309,7 +3313,13 @@ impl Zeroconf {
 
                 debug!("resolve_updated_instances: from cache: {instance}");
                 if resolved_service.is_valid() {
-                    debug!("call queriers to resolve {instance}");
+                    debug!(
+                        "resolved '{}' -> host '{}' port {} addrs {:?}",
+                        instance,
+                        resolved_service.host,
+                        resolved_service.port,
+                        resolved_service.addresses,
+                    );
                     resolved.insert(instance.to_string());
                     let event = ServiceEvent::ServiceResolved(Box::new(resolved_service));
                     call_service_listener(&self.service_queriers, ty_domain, event);
