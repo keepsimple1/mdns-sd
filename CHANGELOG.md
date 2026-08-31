@@ -15,6 +15,8 @@ This is a bugfix release.
 * `5bf6b7c 2026-08-30` refactoring: read_name and name compression (#492) (keepsimple1)
 * `fe525a6 2026-08-26` fix: send goodbye packets under conflict-resolved names (#495) (dhavli)
 
+Thanks and welcome our new contributor @dhavli !
+
 # Version 0.21.0 (2026-08-10)
 
 ## Breaking changes
