@@ -1975,11 +1975,18 @@ impl DnsOutgoing {
         self.id = id;
     }
 
+    /// Marks whether this message is destined for multicast (the default) or unicast.
+    pub fn set_multicast(&mut self, multicast: bool) {
+        self.multicast = multicast;
+    }
+
     /// The id to put in the header, always 0 for multicast.
     const fn wire_id(&self) -> u16 {
         if self.multicast {
             0
         } else {
+            // RFC 6762 §6.7: a legacy unicast response MUST echo the
+            // querier's message id.
             self.id
         }
     }
