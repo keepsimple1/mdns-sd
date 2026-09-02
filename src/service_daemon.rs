@@ -2762,10 +2762,11 @@ impl Zeroconf {
             }
         } else {
             debug!(
-                "query_unresolved: SRV record not found for instance: {}",
+                "query_unresolved: SRV record not found for instance: {}, sending SRV+TXT query",
                 instance
             );
-            self.send_query(instance, RRType::ANY);
+            // Query SRV and TXT explicitly rather than RRType::ANY.
+            self.send_query_vec(&[(instance, RRType::SRV), (instance, RRType::TXT)]);
             return true;
         }
 
