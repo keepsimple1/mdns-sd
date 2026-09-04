@@ -2656,7 +2656,18 @@ impl DnsIncoming {
     }
 
     fn read_char_string(&mut self) -> Result<String> {
-        let length = self.data[self.offset];
+        // RFC1035 section 3.3: a <character-string> is "a single length octet
+        // followed by that number of characters". The length octet itself has to
+        // be inside the packet: a record whose RDATA ends exactly at the end of
+        // the message (for instance an HINFO with RDLENGTH 0) leaves nothing to
+        // read here.
+        let Some(&length) = self.data.get(self.offset) else {
+            return Err(e_fmt!(
+                "read_char_string: no length byte at offset {}, data len {}",
+                self.offset,
+                self.data.len()
+            ));
+        };
         self.offset += 1;
         self.read_string(length as usize)
     }
@@ -2965,6 +2976,42 @@ mod tests {
     /// The `is_ipv4` argument of `to_packets`. IPv6 has the smaller of the two
     /// absolute ceilings, so it is the stricter one to encode for.
     const IPV6: bool = false;
+
+    /// Found by fuzzing the packet parser.
+    ///
+    /// An HINFO record with RDLENGTH 0 placed at the very end of a message left
+    /// `read_char_string` with no length octet to read, and it indexed one byte
+    /// past the packet. Any host on the link could panic the daemon thread with
+    /// these 23 bytes.
+    #[test]
+    fn test_hinfo_char_string_at_end_of_packet() {
+        let mut data = Vec::new();
+
+        // Header: one authority record, and a query (so the TTL is not rewritten).
+        data.extend_from_slice(&0x0087u16.to_be_bytes()); // id
+        data.extend_from_slice(&0x0084u16.to_be_bytes()); // flags: a query
+        data.extend_from_slice(&0u16.to_be_bytes()); // questions
+        data.extend_from_slice(&0u16.to_be_bytes()); // answers
+        data.extend_from_slice(&1u16.to_be_bytes()); // authorities
+        data.extend_from_slice(&0u16.to_be_bytes()); // additionals
+
+        // One HINFO record: an empty name, then TYPE / CLASS / TTL / RDLENGTH.
+        // RDLENGTH is 0, so the record — and the message — end here, leaving
+        // nothing for HINFO's two <character-string> fields.
+        data.push(0); // root name
+        data.extend_from_slice(&(RRType::HINFO as u16).to_be_bytes());
+        data.extend_from_slice(&CLASS_IN.to_be_bytes());
+        data.extend_from_slice(&0u32.to_be_bytes()); // ttl
+        data.extend_from_slice(&0u16.to_be_bytes()); // rdlength
+
+        assert_eq!(data.len(), 23);
+
+        let parsed = DnsIncoming::new(data, test_interface_id())
+            .expect("a truncated HINFO must be skipped, not fail the packet");
+
+        // The record is dropped, and nothing is left behind.
+        assert_eq!(parsed.authorities().len(), 0);
+    }
 
     #[test]
     fn test_dns_outgoing_serialization_empty() {
