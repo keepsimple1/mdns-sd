@@ -260,7 +260,11 @@ impl DnsCache {
 
         // No existing records for this name and type, and not for us.
         if empty_records && !is_for_us {
-            trace!("add_or_update: not for us: {}", incoming.get_name());
+            debug!(
+                "add_or_update: dropping record not for us: {} (type {:?})",
+                incoming.get_name(),
+                incoming.get_type()
+            );
             return None;
         }
 

@@ -2729,6 +2729,17 @@ impl Zeroconf {
 
         match DnsIncoming::new(buf, my_intf.into()) {
             Ok(msg) => {
+                debug!(
+                    "handle_read: {} bytes from {} on if_index {}: {} ({} questions {} answers {} authorities {} additionals)",
+                    sz,
+                    pktinfo.addr_src,
+                    pkt_if_index,
+                    if msg.is_query() { "query" } else { "response" },
+                    msg.questions().len(),
+                    msg.answers().len(),
+                    msg.authorities().len(),
+                    msg.additionals().len(),
+                );
                 if msg.is_query() {
                     let querier_addr = pktinfo.addr_src;
                     self.handle_query(msg, pkt_if_index, querier_addr);
@@ -3095,6 +3106,17 @@ impl Zeroconf {
         if self.accept_unsolicited {
             is_for_us = true;
         }
+
+        // A message judged "not for us" only refreshes records already in the
+        // cache: every unknown name in it is dropped by `DnsCache::add_or_update`.
+        // Log the verdict so that drop is visible.
+        debug!(
+            "handle_response: is_for_us={} ({} answers {} authorities {} additionals)",
+            is_for_us,
+            msg.answers().len(),
+            msg.authorities().len(),
+            msg.additionals().len(),
+        );
 
         /// Represents a DNS record change that involves one service instance.
         struct InstanceChange {
