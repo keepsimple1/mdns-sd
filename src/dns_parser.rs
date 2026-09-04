@@ -2110,7 +2110,6 @@ impl DnsOutgoing {
 }
 
 /// An incoming DNS message. It could be a query or a response.
-#[derive(Debug)]
 pub struct DnsIncoming {
     offset: usize,
     data: Vec<u8>,
@@ -2125,6 +2124,26 @@ pub struct DnsIncoming {
     num_authorities: u16,
     num_additionals: u16,
     interface_id: InterfaceId,
+}
+
+/// Written by hand rather than derived, so we don't dump the raw packet unbounded.
+impl fmt::Debug for DnsIncoming {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DnsIncoming")
+            .field("offset", &self.offset)
+            .field("questions", &self.questions)
+            .field("answers", &self.answers)
+            .field("authorities", &self.authorities)
+            .field("additional", &self.additional)
+            .field("id", &self.id)
+            .field("flags", &self.flags)
+            .field("num_questions", &self.num_questions)
+            .field("num_answers", &self.num_answers)
+            .field("num_authorities", &self.num_authorities)
+            .field("num_additionals", &self.num_additionals)
+            .field("interface_id", &self.interface_id)
+            .finish()
+    }
 }
 
 impl DnsIncoming {
@@ -2165,12 +2184,9 @@ impl DnsIncoming {
             +---------------------+
          */
         if let Err(e) = incoming.read_sections() {
-            // Annotate the failure with the raw packet, so a malformed message
-            // can be inspected or decoded offline without a separate capture.
             return Err(Error::Msg(format!(
-                "{e}; raw packet ({} bytes): {:02x?}",
+                "{e}; raw packet length: {}",
                 incoming.data.len(),
-                incoming.data,
             )));
         }
 
@@ -2684,10 +2700,9 @@ impl DnsIncoming {
         loop {
             if offset >= data.len() {
                 return Err(Error::Msg(format!(
-                    "read_labels: offset: {} data len {}. DnsIncoming: {:?}",
+                    "read_labels: offset: {} data len {}",
                     offset,
                     data.len(),
-                    self
                 )));
             }
             let length = data[offset];
