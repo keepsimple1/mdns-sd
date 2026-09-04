@@ -2656,11 +2656,6 @@ impl DnsIncoming {
     }
 
     fn read_char_string(&mut self) -> Result<String> {
-        // RFC1035 section 3.3: a <character-string> is "a single length octet
-        // followed by that number of characters". The length octet itself has to
-        // be inside the packet: a record whose RDATA ends exactly at the end of
-        // the message (for instance an HINFO with RDLENGTH 0) leaves nothing to
-        // read here.
         let Some(&length) = self.data.get(self.offset) else {
             return Err(e_fmt!(
                 "read_char_string: no length byte at offset {}, data len {}",
@@ -2981,8 +2976,7 @@ mod tests {
     ///
     /// An HINFO record with RDLENGTH 0 placed at the very end of a message left
     /// `read_char_string` with no length octet to read, and it indexed one byte
-    /// past the packet. Any host on the link could panic the daemon thread with
-    /// these 23 bytes.
+    /// past the packet.
     #[test]
     fn test_hinfo_char_string_at_end_of_packet() {
         let mut data = Vec::new();
@@ -2990,18 +2984,18 @@ mod tests {
         // Header: one authority record, and a query (so the TTL is not rewritten).
         data.extend_from_slice(&0x0087u16.to_be_bytes()); // id
         data.extend_from_slice(&0x0084u16.to_be_bytes()); // flags: a query
-        data.extend_from_slice(&0u16.to_be_bytes()); // questions
-        data.extend_from_slice(&0u16.to_be_bytes()); // answers
-        data.extend_from_slice(&1u16.to_be_bytes()); // authorities
-        data.extend_from_slice(&0u16.to_be_bytes()); // additionals
+        data.extend_from_slice(&0u16.to_be_bytes()); // 0 questions
+        data.extend_from_slice(&0u16.to_be_bytes()); // 0 answers
+        data.extend_from_slice(&1u16.to_be_bytes()); // 1 authorities
+        data.extend_from_slice(&0u16.to_be_bytes()); // 0 additionals
 
-        // One HINFO record: an empty name, then TYPE / CLASS / TTL / RDLENGTH.
-        // RDLENGTH is 0, so the record — and the message — end here, leaving
-        // nothing for HINFO's two <character-string> fields.
-        data.push(0); // root name
+        data.push(0); // name: root
         data.extend_from_slice(&(RRType::HINFO as u16).to_be_bytes());
         data.extend_from_slice(&CLASS_IN.to_be_bytes());
         data.extend_from_slice(&0u32.to_be_bytes()); // ttl
+
+        // RDLENGTH is 0, so the record — and the message — end here, leaving
+        // nothing for HINFO's two <character-string> fields.
         data.extend_from_slice(&0u16.to_be_bytes()); // rdlength
 
         assert_eq!(data.len(), 23);
