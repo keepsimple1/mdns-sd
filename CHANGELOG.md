@@ -1,3 +1,22 @@
+# Version 0.21.1 (2026-08-30)
+
+This is a bugfix release.
+
+## Bug fixes / improvements
+
+- Send goodbye (TTL=0) packets under conflict-resolved names. When probing renames a
+  record due to a name conflict (RFC 6762 section 9), now the goodbye carries the updated
+  names peers actually observed. (#495, commit `fe525a6`)
+- Harden DNS name parsing (`read_name`) and name compression handling: skip only the
+  malformed record instead of the whole packet. (#492, commit `5bf6b7c`)
+
+## All changes
+
+* `5bf6b7c 2026-08-30` refactoring: read_name and name compression (#492) (keepsimple1)
+* `fe525a6 2026-08-26` fix: send goodbye packets under conflict-resolved names (#495) (dhavli)
+
+Thanks and welcome our new contributor @dhavli !
+
 # Version 0.21.0 (2026-08-10)
 
 ## Breaking changes

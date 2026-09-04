@@ -321,6 +321,11 @@ const MSG_HEADER_LEN: usize = 12;
 /// Reference: [RFC1035 section 2.3.4](https://datatracker.ietf.org/doc/html/rfc1035#section-2.3.4)
 const MAX_LABEL_BYTES: usize = 63;
 
+/// Max size of a whole domain name, in bytes.
+///
+/// Reference: [RFC1035 section 2.3.4](https://datatracker.ietf.org/doc/html/rfc1035#section-2.3.4)
+const MAX_NAME_BYTES: usize = 255;
+
 /// Why a question or a record could not be written into a packet.
 ///
 /// In either case nothing is left behind in the packet: the caller rolls back
@@ -2304,13 +2309,28 @@ impl DnsIncoming {
             |      Additional     | RRs holding additional information
             +---------------------+
          */
-        incoming.read_header()?;
-        incoming.read_questions()?;
-        incoming.read_answers()?;
-        incoming.read_authorities()?;
-        incoming.read_additional()?;
+        if let Err(e) = incoming.read_sections() {
+            // Annotate the failure with the raw packet, so a malformed message
+            // can be inspected or decoded offline without a separate capture.
+            return Err(Error::Msg(format!(
+                "{e}; raw packet ({} bytes): {:02x?}",
+                incoming.data.len(),
+                incoming.data,
+            )));
+        }
 
         Ok(incoming)
+    }
+
+    /// Reads the five message sections in order. Kept separate from `new` so a
+    /// parse failure can be annotated with the raw packet bytes.
+    fn read_sections(&mut self) -> Result<()> {
+        self.read_header()?;
+        self.read_questions()?;
+        self.read_answers()?;
+        self.read_authorities()?;
+        self.read_additional()?;
+        Ok(())
     }
 
     pub fn id(&self) -> u16 {
@@ -2514,94 +2534,125 @@ impl DnsIncoming {
                 )));
             }
 
-            // decode RDATA based on the record type.
-            let rec: Option<DnsRecordBox> = match RRType::from_u16(ty) {
-                None => None,
-
-                Some(rr_type) => match rr_type {
-                    RRType::CNAME | RRType::PTR => {
-                        Some(DnsPointer::new(&name, rr_type, class, ttl, self.read_name()?).boxed())
+            // Decode the RDATA based on the record type. A single record with
+            // malformed RDATA must not discard the whole message: skip just
+            // that record and resume at the next one using RDLENGTH.
+            match self.read_rdata(ty, class, ttl, rdata_len, &name) {
+                Ok(Some(record)) => {
+                    if self.offset == next_offset {
+                        trace!("read_rr_records: {:?}", &record);
+                        rr_records.push(record);
+                    } else {
+                        debug!(
+                            "skipping record '{}' (type {}): RDATA ended at {}, expected {}",
+                            &name, ty, self.offset, next_offset
+                        );
                     }
-                    RRType::TXT => {
-                        Some(DnsTxt::new(&name, class, ttl, self.read_vec(rdata_len)?).boxed())
-                    }
-                    RRType::SRV => Some(
-                        DnsSrv::new(
-                            &name,
-                            class,
-                            ttl,
-                            self.read_u16()?,
-                            self.read_u16()?,
-                            self.read_u16()?,
-                            self.read_name()?,
-                        )
-                        .boxed(),
-                    ),
-                    RRType::HINFO => Some(
-                        DnsHostInfo::new(
-                            &name,
-                            rr_type,
-                            class,
-                            ttl,
-                            self.read_char_string()?,
-                            self.read_char_string()?,
-                        )
-                        .boxed(),
-                    ),
-                    RRType::A => Some(
-                        DnsAddress::new(
-                            &name,
-                            rr_type,
-                            class,
-                            ttl,
-                            self.read_ipv4()?.into(),
-                            self.interface_id.clone(),
-                        )
-                        .boxed(),
-                    ),
-                    RRType::AAAA => Some(
-                        DnsAddress::new(
-                            &name,
-                            rr_type,
-                            class,
-                            ttl,
-                            self.read_ipv6()?.into(),
-                            self.interface_id.clone(),
-                        )
-                        .boxed(),
-                    ),
-                    RRType::NSEC => Some(
-                        DnsNSec::new(
-                            &name,
-                            class,
-                            ttl,
-                            self.read_name()?,
-                            self.read_type_bitmap()?,
-                        )
-                        .boxed(),
-                    ),
-                    _ => None,
-                },
-            };
-
-            if let Some(record) = rec {
-                trace!("read_rr_records: {:?}", &record);
-                rr_records.push(record);
-            } else {
-                trace!("Unsupported DNS record type: {} name: {}", ty, &name);
-                self.offset += rdata_len;
+                }
+                Ok(None) => {
+                    trace!("Unsupported DNS record type: {} name: {}", ty, &name);
+                }
+                Err(e) => {
+                    debug!(
+                        "skipping record '{}' (type {}) with invalid RDATA: {}",
+                        &name, ty, e,
+                    );
+                }
             }
 
-            // sanity check.
-            if self.offset != next_offset {
-                return Err(Error::Msg(format!(
-                    "read_rr_records: decode offset error for RData type {} offset: {} expected offset: {}",
-                    ty, self.offset, next_offset,
-                )));
-            }
+            // Re-anchor to the record boundary defined by RDLENGTH, regardless
+            // of how the RDATA decoded, so the next record is read from the
+            // correct offset.
+            self.offset = next_offset;
         }
 
         Ok(rr_records)
+    }
+
+    /// Decodes the RDATA of a single record whose header fields have already
+    /// been read, returning `None` for record types we do not parse.
+    ///
+    /// On success the read cursor is left at the end of the RDATA; the caller
+    /// verifies that against RDLENGTH. Errors are per-record: the caller skips
+    /// the offending record and continues with the rest of the message.
+    fn read_rdata(
+        &mut self,
+        ty: u16,
+        class: u16,
+        ttl: u32,
+        rdata_len: usize,
+        name: &str,
+    ) -> Result<Option<DnsRecordBox>> {
+        let rec: Option<DnsRecordBox> = match RRType::from_u16(ty) {
+            None => None,
+
+            Some(rr_type) => match rr_type {
+                RRType::CNAME | RRType::PTR => {
+                    Some(DnsPointer::new(name, rr_type, class, ttl, self.read_name()?).boxed())
+                }
+                RRType::TXT => {
+                    Some(DnsTxt::new(name, class, ttl, self.read_vec(rdata_len)?).boxed())
+                }
+                RRType::SRV => Some(
+                    DnsSrv::new(
+                        name,
+                        class,
+                        ttl,
+                        self.read_u16()?,
+                        self.read_u16()?,
+                        self.read_u16()?,
+                        self.read_name()?,
+                    )
+                    .boxed(),
+                ),
+                RRType::HINFO => Some(
+                    DnsHostInfo::new(
+                        name,
+                        rr_type,
+                        class,
+                        ttl,
+                        self.read_char_string()?,
+                        self.read_char_string()?,
+                    )
+                    .boxed(),
+                ),
+                RRType::A => Some(
+                    DnsAddress::new(
+                        name,
+                        rr_type,
+                        class,
+                        ttl,
+                        self.read_ipv4()?.into(),
+                        self.interface_id.clone(),
+                    )
+                    .boxed(),
+                ),
+                RRType::AAAA => Some(
+                    DnsAddress::new(
+                        name,
+                        rr_type,
+                        class,
+                        ttl,
+                        self.read_ipv6()?.into(),
+                        self.interface_id.clone(),
+                    )
+                    .boxed(),
+                ),
+                RRType::NSEC => Some(
+                    DnsNSec::new(
+                        name,
+                        class,
+                        ttl,
+                        self.read_name()?,
+                        self.read_type_bitmap()?,
+                    )
+                    .boxed(),
+                ),
+                _ => None,
+            },
+        };
+
+        Ok(rec)
     }
 
     fn read_char_string(&mut self) -> Result<String> {
@@ -2723,11 +2774,41 @@ impl DnsIncoming {
     /// See https://datatracker.ietf.org/doc/html/rfc1035#section-3.1 for
     /// domain name encoding.
     fn read_name(&mut self) -> Result<String> {
+        let mut name = String::new();
+        self.offset = self.read_labels(self.offset, &mut name)?;
+        Ok(name)
+    }
+
+    /// Appends the labels encoded at `offset` to `name`, and returns the offset
+    /// just past that encoding: past the terminating zero byte, or past the
+    /// compression pointer that ended the name.
+    ///
+    /// A name is a sequence of labels, where each label is a length byte
+    /// followed by that many bytes. The name ends either with a zero length
+    /// byte, or with a "compression pointer" (top 2 bits set) that redirects
+    /// to a name written earlier in the same packet.
+    ///
+    /// For example, a packet where the question name `_http._tcp.local.` is
+    /// written out in full at offset 12, and the answer name
+    /// `myprinter._http._tcp.local.` at offset 40 reuses it via compression:
+    ///
+    /// ```text
+    ///  offset:  12   13..17    18   19..22   23   24..28    29
+    ///          +----+---------+----+--------+----+---------+----+
+    ///  bytes:  | 05 | "_http" | 04 | "_tcp" | 05 | "local" | 00 |
+    ///          +----+---------+----+--------+----+---------+----+
+    ///            ^len           ^len          ^len           ^ zero byte: end of name
+    ///
+    ///  offset:  40    41..49     50   51
+    ///          +----+-------------+----+----+
+    ///  bytes:  | 09 | "myprinter" | C0 | 0C |
+    ///          +----+-------------+----+----+
+    ///            ^len               ^ pointer: 0xC00C ^ 0xC000 = 12, jump back to offset 12
+    /// ```
+    ///
+    /// Takes `&self` so that following a pointer cannot move the read cursor.
+    fn read_labels(&self, mut offset: usize, name: &mut String) -> Result<usize> {
         let data = &self.data[..];
-        let start_offset = self.offset;
-        let mut offset = start_offset;
-        let mut name = "".to_string();
-        let mut at_end = false;
 
         // From RFC1035:
         // "...Domain names in messages are expressed in terms of a sequence of labels.
@@ -2742,7 +2823,7 @@ impl DnsIncoming {
         loop {
             if offset >= data.len() {
                 return Err(Error::Msg(format!(
-                    "read_name: offset: {} data len {}. DnsIncoming: {:?}",
+                    "read_labels: offset: {} data len {}. DnsIncoming: {:?}",
                     offset,
                     data.len(),
                     self
@@ -2751,13 +2832,9 @@ impl DnsIncoming {
             let length = data[offset];
 
             // From RFC1035:
-            // "...Since every domain name ends with the null label of
-            // the root, a domain name is terminated by a length byte of zero."
+            // "...a domain name is terminated by a length byte of zero."
             if length == 0 {
-                if !at_end {
-                    self.offset = offset + 1;
-                }
-                break; // The end of the name
+                return Ok(offset + 1); // The end of the name.
             }
 
             // Check the first 2 bits for possible "Message compression".
@@ -2770,42 +2847,37 @@ impl DnsIncoming {
                     // Never read beyond the whole data length.
                     if ending > data.len() {
                         return Err(Error::Msg(format!(
-                            "read_name: ending {} exceeds data length {}",
+                            "read_labels: ending {} exceeds data length {}",
                             ending,
                             data.len()
                         )));
                     }
 
-                    name += str::from_utf8(&data[offset..ending])
-                        .map_err(|e| Error::Msg(format!("read_name: from_utf8: {e}")))?;
-                    name += ".";
-                    offset += length as usize;
-                }
-                0xC0 => {
-                    // Message compression.
-                    // See https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.4
-                    let slice = &data[offset..];
-                    if slice.len() < U16_SIZE {
+                    let label = str::from_utf8(&data[offset..ending])
+                        .map_err(|e| Error::Msg(format!("read_labels: from_utf8: {e}")))?;
+
+                    // `MAX_NAME_BYTES` bounds a possible loop where pointer targets a label that
+                    // is already part of the current name. For example:
+                    //
+                    //  offset:  12   13..17    18   19
+                    //          +----+---------+----+----+
+                    //  bytes:  | 05 | "_http" | C0 | 0C |
+                    //          +----+---------+----+----+
+                    //            ^len           ^pointer targets offset 12.
+                    if name.len() + label.len() + 1 > MAX_NAME_BYTES {
                         return Err(Error::Msg(format!(
-                            "read_name: u16 slice len is only {}",
-                            slice.len()
-                        )));
-                    }
-                    let pointer = (u16_from_be_slice(slice) ^ 0xC000) as usize;
-                    if pointer >= start_offset {
-                        // Error: could trigger an infinite loop.
-                        return Err(Error::Msg(format!(
-                            "Invalid name compression: pointer {} must be less than the start offset {}",
-                            &pointer, &start_offset
+                            "read_labels: name exceeds {MAX_NAME_BYTES} bytes: {name}"
                         )));
                     }
 
-                    // A pointer marks the end of a domain name.
-                    if !at_end {
-                        self.offset = offset + U16_SIZE;
-                        at_end = true;
-                    }
-                    offset = pointer;
+                    *name += label;
+                    *name += ".";
+                    offset = ending;
+                }
+                0xC0 => {
+                    // Message compression: a pointer marks the end of a domain name.
+                    self.follow_pointer(offset, name)?;
+                    return Ok(offset + U16_SIZE);
                 }
                 _ => {
                     return Err(Error::Msg(format!(
@@ -2817,8 +2889,47 @@ impl DnsIncoming {
                 }
             };
         }
+    }
 
-        Ok(name)
+    /// Follows the compression pointer at offset `at`, appending the labels it
+    /// names to `name`.
+    ///
+    /// See https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.4 for
+    /// message compression.
+    fn follow_pointer(&self, at: usize, name: &mut String) -> Result<()> {
+        let data = &self.data[..];
+        let mut pointer_at = at;
+
+        // Resolve a run of pointers that target other pointers, so that the
+        // recursive call below always lands on a label or on the end of a name.
+        let target = loop {
+            let slice = &data[pointer_at..];
+            if slice.len() < U16_SIZE {
+                return Err(Error::Msg(format!(
+                    "follow_pointer: u16 slice len is only {}",
+                    slice.len()
+                )));
+            }
+            let target = (u16_from_be_slice(slice) ^ 0xC000) as usize;
+
+            // RFC1035 section 4.1.4 compresses a name into "a pointer to a prior
+            // occurrence", so a pointer always points strictly backwards.
+            if target >= pointer_at {
+                return Err(Error::Msg(format!(
+                    "Invalid name compression: pointer {target} at offset {pointer_at} must point backwards"
+                )));
+            }
+
+            if data[target] & 0xC0 != 0xC0 {
+                break target;
+            }
+
+            // The target is itself a pointer, so follow it.
+            pointer_at = target;
+        };
+
+        self.read_labels(target, name)?;
+        Ok(())
     }
 }
 
@@ -2843,9 +2954,9 @@ const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DnsAddress, DnsHostInfo, DnsIncoming, DnsOutPacket, DnsOutgoing, DnsPointer, DnsTxt,
-        RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, FLAGS_TC,
-        MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MSG_HEADER_LEN,
+        u16_from_be_slice, DnsAddress, DnsHostInfo, DnsIncoming, DnsOutPacket, DnsOutgoing,
+        DnsPointer, DnsTxt, RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
+        FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MSG_HEADER_LEN,
     };
     use crate::InterfaceId;
     use std::collections::HashMap;
@@ -3124,6 +3235,197 @@ mod tests {
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].as_bytes(), &[0; MSG_HEADER_LEN]);
+    }
+
+    /// A pointer that points into the name currently being read is a loop:
+    /// following it re-reads the same labels and arrives at the same pointer
+    /// again. `read_name` must reject such a name instead of hanging.
+    #[test]
+    fn test_read_name_pointer_loop_is_rejected() {
+        // A response with one PTR record. Its name starts at offset 12 and is
+        // encoded as: label "local", label "_x", then a pointer back to 12,
+        // i.e. to the "local" label of this very name.
+        let mut data: Vec<u8> = vec![0, 0, 0x84, 0, 0, 0, 0, 1, 0, 0, 0, 0];
+        data.extend_from_slice(&[5, b'l', b'o', b'c', b'a', b'l']); // offset 12
+        data.extend_from_slice(&[2, b'_', b'x']); // offset 18
+        data.extend_from_slice(&[0xC0, 12]); // offset 21: pointer to 12
+        data.extend_from_slice(&[0, 12, 0, 1]); // PTR, IN
+        data.extend_from_slice(&[0, 0, 0, 120]); // TTL
+        data.extend_from_slice(&[0, 2]); // RDLENGTH
+        data.extend_from_slice(&[0xC0, 12]); // RDATA: pointer to 12
+
+        assert!(DnsIncoming::new(data, test_interface_id()).is_err());
+    }
+
+    /// A legal name that follows a pointer backwards and then meets a second
+    /// pointer whose target sits *after* the start of the name being read, yet
+    /// still strictly *before* that second pointer's own position.
+    ///
+    /// Such a message probably never appears in reality, but it still has to parse.
+    /// Reading the answer's name walks: 700 -> 640 -> 62-byte label -> 703 ->
+    /// 702 -> zero byte, name complete.
+    #[test]
+    fn test_read_name_pointer_after_backward_jump() {
+        /// Appends a question: one label of `label_len` 'a' bytes, PTR, IN.
+        fn push_question(data: &mut Vec<u8>, label_len: usize) {
+            data.push(label_len as u8);
+            data.extend(vec![b'a'; label_len]);
+            data.push(0); // end of the name
+            data.extend_from_slice(&[0, 12]); // QTYPE: PTR
+            data.extend_from_slice(&[0, 1]); // QCLASS: IN
+        }
+
+        let mut data: Vec<u8> = vec![
+            0, 0, // ID
+            0, 0, // flags: a query
+            0, 11, // 11 questions
+            0, 1, // 1 answer
+            0, 0, 0, 0, // no authorities, no additionals
+        ];
+
+        // Questions #1 to #10, 66 bytes each: 12 + 660 = 672.
+        for _ in 0..10 {
+            push_question(&mut data, 60);
+        }
+        assert_eq!(data.len(), 672);
+
+        // Question #11, 28 bytes, so that the answer record starts at 700.
+        push_question(&mut data, 22);
+        assert_eq!(data.len(), 700);
+
+        // Plant the label length inside question #10's label.
+        data[640] = 62;
+
+        // The answer record.
+        data.extend_from_slice(&[0xC2, 0x80]); // 700: name: pointer to 640
+        data.extend_from_slice(&[0x00, 0xC2]); // 702: TYPE, unknown type 194
+        data.extend_from_slice(&[0xBE, 0x01]); // 704: CLASS. 703..705 is a pointer to 702
+        data.extend_from_slice(&[0, 0, 0, 120]); // TTL
+        data.extend_from_slice(&[0, 0]); // RDLENGTH: no RDATA
+
+        // Both pointers point backwards from where they are.
+        assert_eq!(u16_from_be_slice(&data[700..702]) ^ 0xC000, 640);
+        assert_eq!(u16_from_be_slice(&data[703..705]) ^ 0xC000, 702);
+
+        let incoming = DnsIncoming::new(data, test_interface_id())
+            .expect("a name whose pointers all point backwards must parse");
+        assert_eq!(incoming.questions().len(), 11);
+
+        // The answer's type is unknown to us, so the record itself is skipped.
+        assert_eq!(incoming.answers().len(), 0);
+    }
+
+    /// Two pointers at offsets 23 and 25 that target each other (23 -> 25 ->
+    /// 23). Both sit below offset 27, where the name starts.
+    ///
+    /// `follow_pointer` requires each target to be strictly below the
+    /// pointer's *own* position. A cycle always contains at least one
+    /// non-backward hop, so this rule breaks every cycle.
+    #[test]
+    fn test_read_name_mutual_pointers_are_rejected() {
+        let mut data: Vec<u8> = vec![0, 0, 0x84, 0, 0, 0, 0, 2, 0, 0, 0, 0];
+
+        // Answer #1: the root name, then an unknown type, so its RDATA is skipped.
+        data.push(0); // 12: the root name
+        data.extend_from_slice(&[0x00, 0xC2]); // 13: TYPE: unknown type 194
+        data.extend_from_slice(&[0x00, 0x01]); // 15: CLASS: IN
+        data.extend_from_slice(&[0, 0, 0, 120]); // 17: TTL
+        data.extend_from_slice(&[0x00, 0x04]); // 21: RDLENGTH
+        data.extend_from_slice(&[0xC0, 25]); // 23: RDATA: pointer to 25
+        data.extend_from_slice(&[0xC0, 23]); // 25: RDATA: pointer to 23
+        assert_eq!(data.len(), 27);
+
+        // Answer #2, whose name points into that RDATA.
+        data.extend_from_slice(&[0xC0, 23]); // 27: name: pointer to 23
+        data.extend_from_slice(&[0x00, 0xC2, 0x00, 0x01]); // TYPE, CLASS
+        data.extend_from_slice(&[0, 0, 0, 120]); // TTL
+        data.extend_from_slice(&[0, 0]); // RDLENGTH: no RDATA
+
+        // Every pointer targets an offset below the start of the name at 27.
+        assert_eq!(u16_from_be_slice(&data[27..29]) ^ 0xC000, 23);
+        assert_eq!(u16_from_be_slice(&data[23..25]) ^ 0xC000, 25);
+        assert_eq!(u16_from_be_slice(&data[25..27]) ^ 0xC000, 23);
+
+        assert!(DnsIncoming::new(data, test_interface_id()).is_err());
+    }
+
+    /// A label whose read carries the cursor onto a pointer that jumps back to
+    /// that same label. Every pointer here points backwards from its own
+    /// position, so no comparison of offsets rejects it: the cycle is broken
+    /// only by the name growing past [`MAX_NAME_BYTES`].
+    #[test]
+    fn test_read_name_label_cycle_is_rejected() {
+        let mut data: Vec<u8> = vec![0, 0, 0x84, 0, 0, 0, 0, 2, 0, 0, 0, 0];
+
+        // Answer #1, again an unknown type so that its RDATA is skipped.
+        data.push(0); // 12: the root name
+        data.extend_from_slice(&[0x00, 0xC2]); // 13: TYPE: unknown type 194
+        data.extend_from_slice(&[0x00, 0x01]); // 15: CLASS: IN
+        data.extend_from_slice(&[0, 0, 0, 120]); // 17: TTL
+        data.extend_from_slice(&[0x00, 0x07]); // 21: RDLENGTH
+        data.push(0x04); // 23: RDATA: a label of 4 bytes, ending at 28
+        data.extend_from_slice(b"aaaa"); // 24
+        data.extend_from_slice(&[0xC0, 23]); // 28: RDATA: pointer to 23
+        assert_eq!(data.len(), 30);
+
+        // Answer #2, whose name enters the cycle.
+        data.extend_from_slice(&[0xC0, 23]); // 30: name: pointer to 23
+        data.extend_from_slice(&[0x00, 0xC2, 0x00, 0x01]); // TYPE, CLASS
+        data.extend_from_slice(&[0, 0, 0, 120]); // TTL
+        data.extend_from_slice(&[0, 0]); // RDLENGTH: no RDATA
+
+        // Reading the label at 23 leaves the cursor on the pointer at 28, which
+        // points backwards from 28 and lands back on the label.
+        assert_eq!(u16_from_be_slice(&data[28..30]) ^ 0xC000, 23);
+        assert_eq!(u16_from_be_slice(&data[30..32]) ^ 0xC000, 23);
+
+        assert!(DnsIncoming::new(data, test_interface_id()).is_err());
+    }
+
+    /// A real `_miio._udp.local.` response captured behind an avahi mDNS
+    /// reflector (see issue #468). It has 5 answers, one of which is an NSEC
+    /// whose Next Domain Name is a compression pointer to its own offset (a
+    /// self-reference, offset 121 -> 121). That one record is malformed, but
+    /// the other four (PTR, A, SRV, TXT) are fine, and lenient parsers such as
+    /// tcpdump decode the whole packet.
+    ///
+    /// The parser must skip only the malformed NSEC and keep the good records,
+    /// rather than discarding the entire message.
+    #[test]
+    fn test_malformed_nsec_record_is_skipped() {
+        let data: Vec<u8> = vec![
+            0x00, 0x00, 0x84, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x05, 0x5f,
+            0x6d, 0x69, 0x69, 0x6f, 0x04, 0x5f, 0x75, 0x64, 0x70, 0x05, 0x6c, 0x6f, 0x63, 0x61,
+            0x6c, 0x00, 0x00, 0x0c, 0x00, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x24, 0x21, 0x64,
+            0x72, 0x65, 0x61, 0x6d, 0x65, 0x2d, 0x76, 0x61, 0x63, 0x75, 0x75, 0x6d, 0x2d, 0x70,
+            0x32, 0x30, 0x32, 0x39, 0x5f, 0x6d, 0x69, 0x69, 0x6f, 0x34, 0x34, 0x37, 0x33, 0x30,
+            0x35, 0x32, 0x34, 0x37, 0xc0, 0x0c, 0x21, 0x64, 0x72, 0x65, 0x61, 0x6d, 0x65, 0x2d,
+            0x76, 0x61, 0x63, 0x75, 0x75, 0x6d, 0x2d, 0x70, 0x32, 0x30, 0x32, 0x39, 0x5f, 0x6d,
+            0x69, 0x69, 0x6f, 0x34, 0x34, 0x37, 0x33, 0x30, 0x35, 0x32, 0x34, 0x37, 0x00, 0x00,
+            0x2f, 0x80, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x09, 0xc0, 0x79, 0x00, 0x05, 0x40,
+            0x00, 0x00, 0x00, 0x00, 0xc0, 0x4c, 0x00, 0x01, 0x80, 0x01, 0x00, 0x00, 0x00, 0x78,
+            0x00, 0x04, 0x0a, 0x2a, 0x02, 0x32, 0xc0, 0x28, 0x00, 0x21, 0x80, 0x01, 0x00, 0x00,
+            0x00, 0x78, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0xd4, 0x31, 0xc0, 0x4c, 0xc0, 0x28,
+            0x00, 0x10, 0x80, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x0f, 0x0e, 0x70, 0x61, 0x74,
+            0x68, 0x3d, 0x2f, 0x6d, 0x79, 0x64, 0x65, 0x76, 0x69, 0x63, 0x65,
+        ];
+
+        // The offending record: the NSEC's Next Domain Name at offset 121 is a
+        // pointer to offset 121 (itself).
+        assert_eq!(u16_from_be_slice(&data[121..123]) ^ 0xC000, 121);
+
+        let incoming = DnsIncoming::new(data, test_interface_id())
+            .expect("one malformed record must not fail the whole packet");
+
+        // Four of the five records survive; only the NSEC is dropped.
+        assert_eq!(incoming.answers().len(), 4);
+        assert!(
+            !incoming
+                .answers()
+                .iter()
+                .any(|r| r.get_type() == RRType::NSEC),
+            "the malformed NSEC record must be skipped"
+        );
     }
 
     fn test_interface_id() -> InterfaceId {
