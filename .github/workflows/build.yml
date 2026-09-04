@@ -57,3 +57,20 @@ jobs:
           RUST_LOG: debug
         if: matrix.os == 'windows-latest'
         run: cargo test --all-features -- --nocapture
+
+  fuzz:
+    name: Build fuzz targets
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      # libFuzzer needs nightly, so this job is deliberately separate from the
+      # MSRV matrix above.
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      # Compile only, no campaign. This guards the fuzz crate against bit-rot:
+      # `cargo clippy --all-features` already covers src/fuzz_api.rs, but nothing
+      # else builds fuzz/Cargo.toml or the targets. Campaigns run out of band.
+      - name: Build fuzz targets
+        run: cargo fuzz build
