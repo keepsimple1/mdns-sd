@@ -177,6 +177,10 @@ mod error;
 mod service_daemon;
 mod service_info;
 
+#[cfg(feature = "unstable-fuzz-api")]
+#[doc(hidden)]
+pub mod fuzz_api;
+
 pub use dns_parser::{InterfaceId, RRType, ScopedIp, ScopedIpV4, ScopedIpV6, MAX_PKT_DEFAULT};
 pub use error::{Error, Result};
 pub use service_daemon::{
