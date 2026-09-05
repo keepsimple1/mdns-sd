@@ -64,13 +64,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-      # libFuzzer needs nightly, so this job is deliberately separate from the
-      # MSRV matrix above.
+      # libFuzzer needs nightly.
       - uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
-      # Compile only, no campaign. This guards the fuzz crate against bit-rot:
-      # `cargo clippy --all-features` already covers src/fuzz_api.rs, but nothing
-      # else builds fuzz/Cargo.toml or the targets. Campaigns run out of band.
+      # Compile only, no campaign. `cargo clippy --all-features` already covers src/fuzz_api.rs.
       - name: Build fuzz targets
         run: cargo fuzz build
