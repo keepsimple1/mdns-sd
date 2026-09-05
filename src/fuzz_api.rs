@@ -28,7 +28,7 @@ pub fn parse_packet(data: &[u8]) {
     let msg = match DnsIncoming::new(data.to_vec(), fuzz_interface_id()) {
         Ok(msg) => msg,
         Err(e) => {
-            // Render the error as it formats slices of the raw packet, 
+            // Render the error as it formats slices of the raw packet,
             // so it is worth fuzzing in its own right.
             let _ = e.to_string();
             return;
