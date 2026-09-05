@@ -24,25 +24,17 @@ fn fuzz_interface_id() -> InterfaceId {
 ///
 /// Malformed input is expected and is not a finding: the target is looking for
 /// panics, hangs, and broken invariants, not for parse errors.
-///
-/// # Panics
-///
-/// Panics if a successfully parsed message contradicts its own header. That is
-/// the point: the panic is what the fuzzer reports.
 pub fn parse_packet(data: &[u8]) {
     let msg = match DnsIncoming::new(data.to_vec(), fuzz_interface_id()) {
         Ok(msg) => msg,
         Err(e) => {
-            // Render the error rather than dropping it. It is built for every
-            // malformed packet the daemon receives, and it formats slices of the
-            // raw packet, so it is worth fuzzing in its own right.
+            // Render the error as it formats slices of the raw packet, 
+            // so it is worth fuzzing in its own right.
             let _ = e.to_string();
             return;
         }
     };
 
-    // `read_questions` pushes exactly `num_questions` entries or fails, so on
-    // success the count is exact.
     assert_eq!(
         msg.questions().len(),
         msg.num_questions() as usize,
@@ -54,7 +46,7 @@ pub fn parse_packet(data: &[u8]) {
     // these counts are upper bounds, not equalities.
     //
     // The answer section is not checked here only because `DnsIncoming` exposes
-    // no `num_answers()` getter; add one and the same bound applies to it.
+    // no `num_answers()` getter.
     assert!(
         msg.authorities().len() <= msg.num_authorities() as usize,
         "parsed more authorities than the header declared"

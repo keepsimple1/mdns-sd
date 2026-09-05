@@ -25,13 +25,6 @@ continues until interrupted. Pass libFuzzer's own options after a `--`:
 New inputs accumulate in `fuzz/corpus/`, which is not tracked by git, so later
 runs build on whatever earlier ones found.
 
-Two options worth *not* reaching for on this target. A dictionary made no
-measurable difference: over 30-second cold starts it landed within noise of the
-bare command. Neither did `-max_len`, because `DnsIncoming::new` has no
-size-dependent branch — `MAX_PKT_ABSOLUTE_IPV4` bounds the encoder, not the
-parser — so libFuzzer's default 4096-byte cap costs nothing here. A future
-target that exercises `DnsOutgoing::to_packets` would want `-max_len=8972`.
-
 ## Targets
 
 | Target | What it covers |
