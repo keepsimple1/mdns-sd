@@ -3563,6 +3563,7 @@ impl Zeroconf {
                     out.add_question(q.entry_name(), q.entry_type());
                 }
                 out.clear_cache_flush_bits();
+                out.set_multicast(false);
             } else if msg.num_authorities() == 0 {
                 // RFC 6762 §6: a record MUST NOT be multicast on an interface
                 // more than once per second. Two exceptions skip the limit here:
@@ -5484,8 +5485,14 @@ mod tests {
             "querier must use an ephemeral (non-5353) source port"
         );
 
-        // Build a one-question A-record query for our hostname.
+        // Build a one-question A-record query for our hostname, carrying a
+        // distinctive non-zero id that the legacy unicast response must echo.
+        // `set_multicast(false)` makes the query serialize with that id on the
+        // wire rather than 0.
+        const QUERY_ID: u16 = 0x4a17;
         let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        query.set_id(QUERY_ID);
+        query.set_multicast(false);
         query.add_question(&hostname, RRType::A);
         let query_packet = query
             .to_data_on_wire(MAX_PKT_DEFAULT, true)
@@ -5535,6 +5542,13 @@ mod tests {
             from.port(),
             MDNS_PORT,
             "response should originate from the mDNS port"
+        );
+
+        // RFC 6762 §6.7: the response header must echo the querier's id.
+        assert_eq!(
+            msg.id(),
+            QUERY_ID,
+            "legacy unicast response must echo the query id"
         );
 
         // RFC 6762 §6.7: the original question must be echoed.
