@@ -2052,6 +2052,7 @@ impl DnsOutgoing {
     /// - Cap the TTL at [`LEGACY_UNICAST_MAX_TTL`] seconds: legacy resolvers
     ///   cache records without the mDNS cache-coherency mechanisms, so the true
     ///   (longer) TTL must not leak out to them.
+    ///
     /// Refer to [RFC 6762 Section 6.7] for details.
     pub fn update_records_for_legacy_unicast(&mut self) {
         let update = |rec: &mut DnsRecordBox| {
