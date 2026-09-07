@@ -282,6 +282,10 @@ pub const CLASS_MASK: u16 = 0x7FFF;
 /// Cache-flush bit: the most significant bit of the rrclass field of the resource record.  
 pub const CLASS_CACHE_FLUSH: u16 = 0x8000;
 
+/// RFC 6762 §6.7: The resource record TTL given in a legacy unicast response SHOULD NOT
+/// be greater than ten seconds.
+pub const LEGACY_UNICAST_MAX_TTL: u32 = 10;
+
 /// Absolute max size of UDP datagram payload for an mDNS packet over IPv4.
 ///
 /// RFC 6762 section 17:
@@ -2041,19 +2045,28 @@ impl DnsOutgoing {
         self.questions.push(q);
     }
 
-    /// Clear the cache-flush (unique) bit on every answer and additional
-    /// record. Required for RFC 6762 §6.7 (Legacy Unicast Responses) and
-    /// §10.2 — a legacy resolver doesn't know about the cache-flush bit
-    /// and may misinterpret responses where it is set.
-    pub fn clear_cache_flush_bits(&mut self) {
+    /// Adjust records so the message is a valid legacy unicast response:
+    ///
+    /// - Clear the cache-flush (unique) bit: a legacy resolver
+    ///   doesn't know about it and may misinterpret responses where it is set.
+    /// - Cap the TTL at [`LEGACY_UNICAST_MAX_TTL`] seconds: legacy resolvers
+    ///   cache records without the mDNS cache-coherency mechanisms, so the true
+    ///   (longer) TTL must not leak out to them.
+    /// Refer to [RFC 6762 Section 6.7] for details.
+    pub fn update_records_for_legacy_unicast(&mut self) {
+        let update = |rec: &mut DnsRecordBox| {
+            let record = rec.get_record_mut();
+            record.entry.cache_flush = false;
+            record.ttl = record.ttl.min(LEGACY_UNICAST_MAX_TTL);
+        };
         for (rec, _) in &mut self.answers {
-            rec.get_record_mut().entry.cache_flush = false;
+            update(rec);
         }
         for rec in &mut self.additionals {
-            rec.get_record_mut().entry.cache_flush = false;
+            update(rec);
         }
         for rec in &mut self.authorities {
-            rec.get_record_mut().entry.cache_flush = false;
+            update(rec);
         }
     }
 
