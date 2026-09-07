@@ -3550,8 +3550,9 @@ impl Zeroconf {
             // getaddrinfo, iOS resolver fallback). The response MUST be unicast
             // back to the querier's source IP and port; multicast replies will
             // never reach the querier's ephemeral socket. Legacy unicast
-            // responses must also echo the question section and clear the
-            // cache-flush bit, since legacy resolvers don't understand it.
+            // responses must also echo the question section, clear the
+            // cache-flush bit (legacy resolvers don't understand it), and cap
+            // record TTLs to 10 seconds (see update_records_for_legacy_unicast).
             let unicast_dest = if querier_addr.port() != MDNS_PORT {
                 Some(querier_addr)
             } else {
@@ -3562,7 +3563,7 @@ impl Zeroconf {
                 for q in msg.questions() {
                     out.add_question(q.entry_name(), q.entry_type());
                 }
-                out.clear_cache_flush_bits();
+                out.update_records_for_legacy_unicast();
                 out.set_multicast(false);
             } else if msg.num_authorities() == 0 {
                 // RFC 6762 §6: a record MUST NOT be multicast on an interface
@@ -5235,7 +5236,7 @@ mod tests {
     use crate::{
         dns_parser::{
             DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer, InterfaceId, RRType, ScopedIp,
-            CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
+            CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, LEGACY_UNICAST_MAX_TTL,
         },
         service_daemon::{add_answer_of_service, check_hostname},
     };
@@ -5574,6 +5575,15 @@ mod tests {
         assert!(
             !answer.get_cache_flush(),
             "legacy unicast responses must clear the cache-flush bit"
+        );
+
+        // RFC 6762 §6.7: the TTL must be capped at 10 seconds, even though the
+        // A record's true host TTL (DNS_HOST_TTL) is 120 seconds.
+        assert!(
+            answer.get_record().get_ttl() <= LEGACY_UNICAST_MAX_TTL,
+            "legacy unicast response TTL {} exceeds the {}s cap",
+            answer.get_record().get_ttl(),
+            LEGACY_UNICAST_MAX_TTL
         );
 
         daemon.shutdown().unwrap();
