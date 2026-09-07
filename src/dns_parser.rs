@@ -282,9 +282,8 @@ pub const CLASS_MASK: u16 = 0x7FFF;
 /// Cache-flush bit: the most significant bit of the rrclass field of the resource record.  
 pub const CLASS_CACHE_FLUSH: u16 = 0x8000;
 
-/// RFC 6762 §6.7: the records in a legacy unicast response MUST NOT carry a TTL
-/// greater than 10 seconds. Legacy resolvers cache them without the mDNS
-/// cache-coherency mechanisms, so a long TTL would leave them stale for minutes.
+/// RFC 6762 §6.7: The resource record TTL given in a legacy unicast response SHOULD NOT
+/// be greater than ten seconds.
 pub const LEGACY_UNICAST_MAX_TTL: u32 = 10;
 
 /// Absolute max size of UDP datagram payload for an mDNS packet over IPv4.
@@ -2046,14 +2045,14 @@ impl DnsOutgoing {
         self.questions.push(q);
     }
 
-    /// Adjust every answer, additional, and authority record so the message is
-    /// a valid RFC 6762 §6.7 legacy unicast response:
+    /// Adjust records so the message is a valid legacy unicast response:
     ///
-    /// - Clear the cache-flush (unique) bit (§6.7 and §10.2): a legacy resolver
+    /// - Clear the cache-flush (unique) bit: a legacy resolver
     ///   doesn't know about it and may misinterpret responses where it is set.
     /// - Cap the TTL at [`LEGACY_UNICAST_MAX_TTL`] seconds: legacy resolvers
     ///   cache records without the mDNS cache-coherency mechanisms, so the true
     ///   (longer) TTL must not leak out to them.
+    /// Refer to [RFC 6762 Section 6.7] for details.
     pub fn update_records_for_legacy_unicast(&mut self) {
         let update = |rec: &mut DnsRecordBox| {
             let record = rec.get_record_mut();

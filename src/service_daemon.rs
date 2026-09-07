@@ -5577,8 +5577,6 @@ mod tests {
             "legacy unicast responses must clear the cache-flush bit"
         );
 
-        // RFC 6762 §6.7: the TTL must be capped at 10 seconds, even though the
-        // A record's true host TTL (DNS_HOST_TTL) is 120 seconds.
         assert!(
             answer.get_record().get_ttl() <= LEGACY_UNICAST_MAX_TTL,
             "legacy unicast response TTL {} exceeds the {}s cap",
