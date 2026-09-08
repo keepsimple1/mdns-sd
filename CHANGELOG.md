@@ -1,3 +1,23 @@
+# Version 0.21.3 (2026-09-07)
+
+This is a bugfix release that improves RFC 6762 section 6.7 compliance for legacy
+unicast responses.
+
+## Bug fixes / improvements
+
+- Echo the querier's message id in legacy unicast responses, per
+  [RFC 6762 section 6.7](https://datatracker.ietf.org/doc/html/rfc6762#section-6.7). (#498)
+- Cap the resource record TTL to 10 seconds in legacy unicast responses, per
+  [RFC 6762 section 6.7](https://datatracker.ietf.org/doc/html/rfc6762#section-6.7). (#504)
+- Replace `assert` with `assert_eq` in tests where possible for clearer failure output. (#456)
+
+## All changes
+
+* `b61fee3 2026-09-07` fix: echo query id in legacy unicast responses (#498) (keepsimple1)
+* `217ed5a 2026-09-07` test: replace assert with assert_eq where possible (#456) (CosminPerRam)
+* `d8ab875 2026-09-07` fix: cap TTL to 10s in legacy unicast responses (#504) (keepsimple1)
+* `0ec8df3 2026-09-07` fix clippy (keepsimple1)
+
 # Version 0.21.2 (2026-09-05)
 
 This is a bugfix release.
