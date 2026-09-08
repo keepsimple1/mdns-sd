@@ -9,7 +9,7 @@ use crate::log::{debug, trace};
 
 use crate::current_time_millis;
 use crate::error::{e_fmt, Error, Result};
-use crate::service_info::{is_unicast_link_local, DnsRegistry, MyIntf, ServiceInfo};
+use crate::service_info::{decode_txt, is_unicast_link_local, DnsRegistry, MyIntf, ServiceInfo};
 
 use if_addrs::Interface;
 
@@ -281,6 +281,10 @@ pub const CLASS_MASK: u16 = 0x7FFF;
 
 /// Cache-flush bit: the most significant bit of the rrclass field of the resource record.  
 pub const CLASS_CACHE_FLUSH: u16 = 0x8000;
+
+/// RFC 6762 §6.7: The resource record TTL given in a legacy unicast response SHOULD NOT
+/// be greater than ten seconds.
+pub const LEGACY_UNICAST_MAX_TTL: u32 = 10;
 
 /// Absolute max size of UDP datagram payload for an mDNS packet over IPv4.
 ///
@@ -1131,151 +1135,6 @@ impl fmt::Debug for DnsTxt {
     }
 }
 
-// Convert from DNS TXT record content to key/value pairs
-fn decode_txt(txt: &[u8]) -> Vec<TxtProperty> {
-    let mut properties = Vec::new();
-    let mut offset = 0;
-    while offset < txt.len() {
-        let length = txt[offset] as usize;
-        if length == 0 {
-            break; // reached the end
-        }
-        offset += 1; // move over the length byte
-
-        let offset_end = offset + length;
-        if offset_end > txt.len() {
-            trace!("ERROR: DNS TXT: size given for property is out of range. (offset={}, length={}, offset_end={}, record length={})", offset, length, offset_end, txt.len());
-            break; // Skipping the rest of the record content, as the size for this property would already be out of range.
-        }
-        let kv_bytes = &txt[offset..offset_end];
-
-        // split key and val using the first `=`
-        let (k, v) = kv_bytes.iter().position(|&x| x == b'=').map_or_else(
-            || (kv_bytes.to_vec(), None),
-            |idx| (kv_bytes[..idx].to_vec(), Some(kv_bytes[idx + 1..].to_vec())),
-        );
-
-        // Make sure the key can be stored in UTF-8.
-        match String::from_utf8(k) {
-            Ok(k_string) => {
-                properties.push(TxtProperty {
-                    key: k_string,
-                    val: v,
-                });
-            }
-            Err(e) => trace!("ERROR: convert to String from key: {}", e),
-        }
-
-        offset += length;
-    }
-
-    properties
-}
-
-/// Represents a property in a TXT record.
-#[derive(Clone, PartialEq, Eq)]
-pub struct TxtProperty {
-    /// The name of the property. The original cases are kept.
-    key: String,
-
-    /// RFC 6763 says values are bytes, not necessarily UTF-8.
-    /// It is also possible that there is no value, in which case
-    /// the key is a boolean key.
-    val: Option<Vec<u8>>,
-}
-
-impl TxtProperty {
-    /// Returns the value of a property as str.
-    pub fn val_str(&self) -> &str {
-        self.val
-            .as_ref()
-            .map_or("", |v| std::str::from_utf8(&v[..]).unwrap_or_default())
-    }
-}
-
-/// Supports constructing from a tuple.
-impl<K, V> From<&(K, V)> for TxtProperty
-where
-    K: ToString,
-    V: ToString,
-{
-    fn from(prop: &(K, V)) -> Self {
-        Self {
-            key: prop.0.to_string(),
-            val: Some(prop.1.to_string().into_bytes()),
-        }
-    }
-}
-
-impl<K, V> From<(K, V)> for TxtProperty
-where
-    K: ToString,
-    V: AsRef<[u8]>,
-{
-    fn from(prop: (K, V)) -> Self {
-        Self {
-            key: prop.0.to_string(),
-            val: Some(prop.1.as_ref().into()),
-        }
-    }
-}
-
-/// Support a property that has no value.
-impl From<&str> for TxtProperty {
-    fn from(key: &str) -> Self {
-        Self {
-            key: key.to_string(),
-            val: None,
-        }
-    }
-}
-
-impl fmt::Display for TxtProperty {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}={}", self.key, self.val_str())
-    }
-}
-
-/// Mimic the default debug output for a struct, with a twist:
-/// - If self.var is UTF-8, will output it as a string in double quotes.
-/// - If self.var is not UTF-8, will output its bytes as in hex.
-impl fmt::Debug for TxtProperty {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let val_string = self.val.as_ref().map_or_else(
-            || "None".to_string(),
-            |v| {
-                std::str::from_utf8(&v[..]).map_or_else(
-                    |_| format!("Some({})", u8_slice_to_hex(&v[..])),
-                    |s| format!("Some(\"{s}\")"),
-                )
-            },
-        );
-
-        write!(
-            f,
-            "TxtProperty {{key: \"{}\", val: {}}}",
-            &self.key, &val_string,
-        )
-    }
-}
-
-const HEX_TABLE: [char; 16] = [
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
-];
-
-/// Create a hex string from `slice`, with a "0x" prefix.
-///
-/// For example, [1u8, 2u8] -> "0x0102"
-fn u8_slice_to_hex(slice: &[u8]) -> String {
-    let mut hex = String::with_capacity(slice.len() * 2 + 2);
-    hex.push_str("0x");
-    for b in slice {
-        hex.push(HEX_TABLE[(b >> 4) as usize]);
-        hex.push(HEX_TABLE[(b & 0x0F) as usize]);
-    }
-    hex
-}
-
 /// A DNS host information record
 #[derive(Debug, Clone)]
 struct DnsHostInfo {
@@ -1975,11 +1834,18 @@ impl DnsOutgoing {
         self.id = id;
     }
 
+    /// Marks whether this message is destined for multicast (the default) or unicast.
+    pub fn set_multicast(&mut self, multicast: bool) {
+        self.multicast = multicast;
+    }
+
     /// The id to put in the header, always 0 for multicast.
     const fn wire_id(&self) -> u16 {
         if self.multicast {
             0
         } else {
+            // RFC 6762 §6.7: a legacy unicast response MUST echo the
+            // querier's message id.
             self.id
         }
     }
@@ -2179,19 +2045,29 @@ impl DnsOutgoing {
         self.questions.push(q);
     }
 
-    /// Clear the cache-flush (unique) bit on every answer and additional
-    /// record. Required for RFC 6762 §6.7 (Legacy Unicast Responses) and
-    /// §10.2 — a legacy resolver doesn't know about the cache-flush bit
-    /// and may misinterpret responses where it is set.
-    pub fn clear_cache_flush_bits(&mut self) {
+    /// Adjust records so the message is a valid legacy unicast response:
+    ///
+    /// - Clear the cache-flush (unique) bit: a legacy resolver
+    ///   doesn't know about it and may misinterpret responses where it is set.
+    /// - Cap the TTL at [`LEGACY_UNICAST_MAX_TTL`] seconds: legacy resolvers
+    ///   cache records without the mDNS cache-coherency mechanisms, so the true
+    ///   (longer) TTL must not leak out to them.
+    ///
+    /// Refer to [RFC 6762 Section 6.7] for details.
+    pub fn update_records_for_legacy_unicast(&mut self) {
+        let update = |rec: &mut DnsRecordBox| {
+            let record = rec.get_record_mut();
+            record.entry.cache_flush = false;
+            record.ttl = record.ttl.min(LEGACY_UNICAST_MAX_TTL);
+        };
         for (rec, _) in &mut self.answers {
-            rec.get_record_mut().entry.cache_flush = false;
+            update(rec);
         }
         for rec in &mut self.additionals {
-            rec.get_record_mut().entry.cache_flush = false;
+            update(rec);
         }
         for rec in &mut self.authorities {
-            rec.get_record_mut().entry.cache_flush = false;
+            update(rec);
         }
     }
 
@@ -2255,7 +2131,6 @@ impl DnsOutgoing {
 }
 
 /// An incoming DNS message. It could be a query or a response.
-#[derive(Debug)]
 pub struct DnsIncoming {
     offset: usize,
     data: Vec<u8>,
@@ -2270,6 +2145,26 @@ pub struct DnsIncoming {
     num_authorities: u16,
     num_additionals: u16,
     interface_id: InterfaceId,
+}
+
+/// Written by hand rather than derived, so we don't dump the raw packet unbounded.
+impl fmt::Debug for DnsIncoming {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DnsIncoming")
+            .field("offset", &self.offset)
+            .field("questions", &self.questions)
+            .field("answers", &self.answers)
+            .field("authorities", &self.authorities)
+            .field("additional", &self.additional)
+            .field("id", &self.id)
+            .field("flags", &self.flags)
+            .field("num_questions", &self.num_questions)
+            .field("num_answers", &self.num_answers)
+            .field("num_authorities", &self.num_authorities)
+            .field("num_additionals", &self.num_additionals)
+            .field("interface_id", &self.interface_id)
+            .finish()
+    }
 }
 
 impl DnsIncoming {
@@ -2310,12 +2205,9 @@ impl DnsIncoming {
             +---------------------+
          */
         if let Err(e) = incoming.read_sections() {
-            // Annotate the failure with the raw packet, so a malformed message
-            // can be inspected or decoded offline without a separate capture.
             return Err(Error::Msg(format!(
-                "{e}; raw packet ({} bytes): {:02x?}",
+                "{e}; raw packet length: {}",
                 incoming.data.len(),
-                incoming.data,
             )));
         }
 
@@ -2656,7 +2548,13 @@ impl DnsIncoming {
     }
 
     fn read_char_string(&mut self) -> Result<String> {
-        let length = self.data[self.offset];
+        let Some(&length) = self.data.get(self.offset) else {
+            return Err(e_fmt!(
+                "read_char_string: no length byte at offset {}, data len {}",
+                self.offset,
+                self.data.len()
+            ));
+        };
         self.offset += 1;
         self.read_string(length as usize)
     }
@@ -2823,10 +2721,9 @@ impl DnsIncoming {
         loop {
             if offset >= data.len() {
                 return Err(Error::Msg(format!(
-                    "read_labels: offset: {} data len {}. DnsIncoming: {:?}",
+                    "read_labels: offset: {} data len {}",
                     offset,
                     data.len(),
-                    self
                 )));
             }
             let length = data[offset];
@@ -2965,6 +2862,41 @@ mod tests {
     /// The `is_ipv4` argument of `to_packets`. IPv6 has the smaller of the two
     /// absolute ceilings, so it is the stricter one to encode for.
     const IPV6: bool = false;
+
+    /// Found by fuzzing the packet parser.
+    ///
+    /// An HINFO record with RDLENGTH 0 placed at the very end of a message left
+    /// `read_char_string` with no length octet to read, and it indexed one byte
+    /// past the packet.
+    #[test]
+    fn test_hinfo_char_string_at_end_of_packet() {
+        let mut data = Vec::new();
+
+        // Header: one authority record, and a query (so the TTL is not rewritten).
+        data.extend_from_slice(&0x0087u16.to_be_bytes()); // id
+        data.extend_from_slice(&0x0084u16.to_be_bytes()); // flags: a query
+        data.extend_from_slice(&0u16.to_be_bytes()); // 0 questions
+        data.extend_from_slice(&0u16.to_be_bytes()); // 0 answers
+        data.extend_from_slice(&1u16.to_be_bytes()); // 1 authorities
+        data.extend_from_slice(&0u16.to_be_bytes()); // 0 additionals
+
+        data.push(0); // name: root
+        data.extend_from_slice(&(RRType::HINFO as u16).to_be_bytes());
+        data.extend_from_slice(&CLASS_IN.to_be_bytes());
+        data.extend_from_slice(&0u32.to_be_bytes()); // ttl
+
+        // RDLENGTH is 0, so the record — and the message — end here, leaving
+        // nothing for HINFO's two <character-string> fields.
+        data.extend_from_slice(&0u16.to_be_bytes()); // rdlength
+
+        assert_eq!(data.len(), 23);
+
+        let parsed = DnsIncoming::new(data, test_interface_id())
+            .expect("a truncated HINFO must be skipped, not fail the packet");
+
+        // The record is dropped, and nothing is left behind.
+        assert_eq!(parsed.authorities().len(), 0);
+    }
 
     #[test]
     fn test_dns_outgoing_serialization_empty() {

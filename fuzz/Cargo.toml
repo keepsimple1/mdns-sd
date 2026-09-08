@@ -1,0 +1,28 @@
+[package]
+name = "mdns-sd-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2018"
+
+# An independent workspace: the fuzz targets need a nightly toolchain, while the
+# crate under test builds on its MSRV. Keeping them apart means `cargo build` and
+# `cargo clippy` at the repo root never try to build the targets.
+[workspace]
+members = []
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.mdns-sd]
+path = ".."
+features = ["unstable-fuzz-api"]
+
+[[bin]]
+name = "parse_packet"
+path = "fuzz_targets/parse_packet.rs"
+test = false
+doc = false
+bench = false

@@ -3622,8 +3622,9 @@ impl Zeroconf {
             // getaddrinfo, iOS resolver fallback). The response MUST be unicast
             // back to the querier's source IP and port; multicast replies will
             // never reach the querier's ephemeral socket. Legacy unicast
-            // responses must also echo the question section and clear the
-            // cache-flush bit, since legacy resolvers don't understand it.
+            // responses must also echo the question section, clear the
+            // cache-flush bit (legacy resolvers don't understand it), and cap
+            // record TTLs to 10 seconds (see update_records_for_legacy_unicast).
             let unicast_dest = if querier_addr.port() != MDNS_PORT {
                 Some(querier_addr)
             } else {
@@ -3634,7 +3635,8 @@ impl Zeroconf {
                 for q in msg.questions() {
                     out.add_question(q.entry_name(), q.entry_type());
                 }
-                out.clear_cache_flush_bits();
+                out.update_records_for_legacy_unicast();
+                out.set_multicast(false);
             } else if msg.num_authorities() == 0 {
                 // RFC 6762 §6: a record MUST NOT be multicast on an interface
                 // more than once per second. Two exceptions skip the limit here:
@@ -5318,6 +5320,7 @@ mod tests {
         dns_parser::{
             DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer, DnsSrv, InterfaceId,
             RRType, ScopedIp, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
+            LEGACY_UNICAST_MAX_TTL,
         },
         service_daemon::{add_answer_of_service, check_hostname},
     };
@@ -5567,8 +5570,14 @@ mod tests {
             "querier must use an ephemeral (non-5353) source port"
         );
 
-        // Build a one-question A-record query for our hostname.
+        // Build a one-question A-record query for our hostname, carrying a
+        // distinctive non-zero id that the legacy unicast response must echo.
+        // `set_multicast(false)` makes the query serialize with that id on the
+        // wire rather than 0.
+        const QUERY_ID: u16 = 0x4a17;
         let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        query.set_id(QUERY_ID);
+        query.set_multicast(false);
         query.add_question(&hostname, RRType::A);
         let query_packet = query
             .to_data_on_wire(MAX_PKT_DEFAULT, true)
@@ -5620,6 +5629,13 @@ mod tests {
             "response should originate from the mDNS port"
         );
 
+        // RFC 6762 §6.7: the response header must echo the querier's id.
+        assert_eq!(
+            msg.id(),
+            QUERY_ID,
+            "legacy unicast response must echo the query id"
+        );
+
         // RFC 6762 §6.7: the original question must be echoed.
         assert!(
             msg.questions()
@@ -5643,6 +5659,13 @@ mod tests {
         assert!(
             !answer.get_cache_flush(),
             "legacy unicast responses must clear the cache-flush bit"
+        );
+
+        assert!(
+            answer.get_record().get_ttl() <= LEGACY_UNICAST_MAX_TTL,
+            "legacy unicast response TTL {} exceeds the {}s cap",
+            answer.get_record().get_ttl(),
+            LEGACY_UNICAST_MAX_TTL
         );
 
         daemon.shutdown().unwrap();
@@ -6141,7 +6164,7 @@ mod tests {
         let resolved = loop {
             match event_receiver.recv() {
                 Ok(HostnameResolutionEvent::AddressesFound(found_hostname, addresses)) => {
-                    assert!(found_hostname == hostname);
+                    assert_eq!(found_hostname, hostname);
                     assert!(addresses.contains(&service_ip_addr));
                     println!("address found: {:?}", &addresses);
                     break true;
@@ -6162,7 +6185,7 @@ mod tests {
         let removed = loop {
             match event_receiver.recv_timeout(timeout) {
                 Ok(HostnameResolutionEvent::AddressesRemoved(removed_host, addresses)) => {
-                    assert!(removed_host == hostname);
+                    assert_eq!(removed_host, hostname);
                     assert!(addresses.contains(&service_ip_addr));
 
                     println!(

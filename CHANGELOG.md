@@ -1,3 +1,47 @@
+# Version 0.21.3 (2026-09-07)
+
+This is a bugfix release that improves RFC 6762 section 6.7 compliance for legacy
+unicast responses.
+
+## Bug fixes / improvements
+
+- Echo the querier's message id in legacy unicast responses, per
+  [RFC 6762 section 6.7](https://datatracker.ietf.org/doc/html/rfc6762#section-6.7). (#498)
+- Cap the resource record TTL to 10 seconds in legacy unicast responses, per
+  [RFC 6762 section 6.7](https://datatracker.ietf.org/doc/html/rfc6762#section-6.7). (#504)
+- Replace `assert` with `assert_eq` in tests where possible for clearer failure output. (#456)
+
+## All changes
+
+* `b61fee3 2026-09-07` fix: echo query id in legacy unicast responses (#498) (keepsimple1)
+* `217ed5a 2026-09-07` test: replace assert with assert_eq where possible (#456) (CosminPerRam)
+* `d8ab875 2026-09-07` fix: cap TTL to 10s in legacy unicast responses (#504) (keepsimple1)
+* `0ec8df3 2026-09-07` fix clippy (keepsimple1)
+
+# Version 0.21.2 (2026-09-05)
+
+This is a bugfix release.
+
+## Bug fixes / improvements
+
+- Fix an out-of-bounds panic parsing a truncated HINFO record: `read_char_string` now
+  checks that the length octet is present instead of indexing past the end of the packet.
+  Found by fuzzing the packet parser. (#499, commit `c65dd3c`)
+- Remove the raw packet dump from parse-failure messages, which is no longer needed for
+  triage and can be troublesome when the packet is large. (#501, commit `30a22cf`)
+- Remove the duplicated TXT decoding in `dns_parser`: it now uses the canonical
+  `TxtProperty` in `service_info` instead of its own copy. (#500, commit `a6af4b5`)
+- Add fuzzing support under `fuzz/` with a `parse_packet` target covering
+  `DnsIncoming::new`, plus a fuzz build in CI. Publishing is unaffected: `cargo package`
+  still excludes `fuzz/`. (#502, commit `3656343`)
+
+## All changes
+
+* `c65dd3c 2026-09-03` fix: out-of-bounds panic parsing a truncated HINFO record (#499) (keepsimple1)
+* `a6af4b5 2026-09-03` refactoring: remove the duplicated TXT decoding in dns_parser (#500) (keepsimple1)
+* `30a22cf 2026-09-04` fix: bound the raw packet dump in parse-failure messages (#501) (keepsimple1)
+* `3656343 2026-09-04` tests: add fuzzing support with a packet parser target (#502) (keepsimple1)
+
 # Version 0.21.1 (2026-08-30)
 
 This is a bugfix release.
