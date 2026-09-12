@@ -4038,8 +4038,7 @@ impl Zeroconf {
             let next_time = current_time_millis() + next_delay;
             self.add_retransmission(next_time, Command::Resolve(instance, try_count + 1));
         } else {
-            // This fast-path retry chain is ending: either the instance
-            // resolved, or we exhausted `max_try`.
+            // This fast-path retry chain is ending.
             self.pending_resolves.remove(&instance);
         }
     }
@@ -6785,7 +6784,14 @@ mod tests {
 
         while Instant::now() < deadline {
             // Drive the responder: react to whatever queries have arrived.
-            while let Ok((len, _from)) = responder.recv_from(&mut buf) {
+            while let Ok((len, from)) = responder.recv_from(&mut buf) {
+                // The daemon sends each query on every interface (loopback
+                // included) and on Linux this socket receives all copies. Count
+                // only the copy sent on the interface we joined, so one daemon
+                // query counts exactly once.
+                if from.ip() != IpAddr::V4(intf_ip) {
+                    continue;
+                }
                 let Ok(msg) = DnsIncoming::new(buf[..len].to_vec(), if_id.clone()) else {
                     continue;
                 };
