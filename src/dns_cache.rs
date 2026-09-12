@@ -259,8 +259,15 @@ impl DnsCache {
         .map_or(true, |records| records.is_empty());
 
         // No existing records for this name and type, and not for us.
+        //
+        // `is_for_us` is heuristic per message, not per record. We never grow the cache for
+        // records nobody asked for, but always keep what's already there coherent.
         if empty_records && !is_for_us {
-            trace!("add_or_update: not for us: {}", incoming.get_name());
+            trace!(
+                "add_or_update: dropping new record not for us: {} (type {:?})",
+                incoming.get_name(),
+                incoming.get_type()
+            );
             return None;
         }
 
