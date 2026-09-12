@@ -2781,7 +2781,10 @@ impl Zeroconf {
                 "query_unresolved: SRV record not found for instance: {}, sending SRV+TXT query",
                 instance
             );
-            // Query SRV and TXT explicitly rather than RRType::ANY.
+            // Query SRV and TXT explicitly rather than RRType::ANY. RFC 6762 §6.5 makes
+            // ANY legal, but SRV+TXT is what Bonjour's DNSServiceResolve and Avahi send,
+            // so it is the path every responder is actually exercised on; it also lets
+            // known-answer suppression apply (`get_known_answers` has no ANY case).
             self.send_query_vec(&[(instance, RRType::SRV), (instance, RRType::TXT)]);
             return true;
         }
@@ -3106,17 +3109,6 @@ impl Zeroconf {
         if self.accept_unsolicited {
             is_for_us = true;
         }
-
-        // A message judged "not for us" only refreshes records already in the
-        // cache: every unknown name in it is dropped by `DnsCache::add_or_update`.
-        // Log the verdict so that drop is visible.
-        debug!(
-            "handle_response: is_for_us={} ({} answers {} authorities {} additionals)",
-            is_for_us,
-            msg.answers().len(),
-            msg.authorities().len(),
-            msg.additionals().len(),
-        );
 
         /// Represents a DNS record change that involves one service instance.
         struct InstanceChange {
@@ -3968,8 +3960,6 @@ impl Zeroconf {
 
         self.send_query(&ty, RRType::PTR);
 
-        // Re-query the SRV/address records for any unresolvedinstance, so a pending
-        // instance is not stranded once its fast-path retries are exhausted (see `exec_command_resolve`).
         self.query_unresolved_instances(&ty);
 
         self.increase_counter(Counter::Browse, 1);
