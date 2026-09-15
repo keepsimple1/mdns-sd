@@ -520,7 +520,7 @@ impl ServiceInfo {
         }
     }
 
-    fn is_address_supported(&self, intf: &Interface) -> bool {
+    pub(crate) fn is_address_supported(&self, intf: &Interface) -> bool {
         let interface_supported = self.supported_intfs.iter().any(|i| i.matches(intf));
         let addr = intf.ip();
         let passes_link_local = !self.is_link_local_only
