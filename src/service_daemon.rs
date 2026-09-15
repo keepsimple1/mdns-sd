@@ -34,9 +34,9 @@ use crate::{
     current_time_millis,
     dns_cache::{DnsCache, IpType},
     dns_parser::{
-        ip_address_rr_type, max_pkt_absolute, DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing,
-        DnsPointer, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, InterfaceId, RRType, ScopedIp,
-        CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
+        ip_address_rr_type, max_pkt_absolute, DnsAddress, DnsEntryExt, DnsIncoming, DnsNSec,
+        DnsOutgoing, DnsPointer, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, InterfaceId, RRType,
+        ScopedIp, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
         MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
     },
     error::{e_fmt, Error, Result},
@@ -3489,7 +3489,14 @@ impl Zeroconf {
                     }
                 }
 
-                if qtype == RRType::A || qtype == RRType::AAAA || qtype == RRType::ANY {
+                if matches!(
+                    qtype,
+                    RRType::A | RRType::AAAA | RRType::ANY | RRType::SVCB | RRType::HTTPS
+                ) {
+                    let mut hostname = None;
+                    let mut host_ttl = u32::MAX;
+                    let mut has_ipv4 = false;
+                    let mut has_ipv6 = false;
                     for service in self.my_services.values() {
                         if service.get_status(if_index) != ServiceStatus::Announced {
                             continue;
@@ -3498,6 +3505,15 @@ impl Zeroconf {
                         let service_hostname = dns_registry.resolve_name(service.get_hostname());
 
                         if service_hostname.to_lowercase() == question.entry_name().to_lowercase() {
+                            let ipv4 = service.get_addrs_on_my_intf_v4(intf);
+                            let ipv6 = service.get_addrs_on_my_intf_v6(intf);
+                            if ipv4.is_empty() && ipv6.is_empty() {
+                                continue;
+                            }
+                            hostname = Some(service_hostname);
+                            host_ttl = host_ttl.min(service.get_host_ttl());
+                            has_ipv4 |= !ipv4.is_empty();
+                            has_ipv6 |= !ipv6.is_empty();
                             // Pick addresses based on the question type, not the
                             // socket family. RFC 6762 doesn't require A queries
                             // to come over IPv4 transport — Android's getaddrinfo
@@ -3506,25 +3522,10 @@ impl Zeroconf {
                             // to be answered with v4 addresses.
                             let mut intf_addrs: Vec<IpAddr> = Vec::new();
                             if qtype == RRType::A || qtype == RRType::ANY {
-                                intf_addrs.extend(service.get_addrs_on_my_intf_v4(intf));
+                                intf_addrs.extend(ipv4);
                             }
                             if qtype == RRType::AAAA || qtype == RRType::ANY {
-                                intf_addrs.extend(service.get_addrs_on_my_intf_v6(intf));
-                            }
-                            if intf_addrs.is_empty()
-                                && (qtype == RRType::A || qtype == RRType::AAAA)
-                            {
-                                let t = match qtype {
-                                    RRType::A => "TYPE_A",
-                                    RRType::AAAA => "TYPE_AAAA",
-                                    _ => "invalid_type",
-                                };
-                                trace!(
-                                    "Cannot find valid addrs for {} response on intf {:?}",
-                                    t,
-                                    &intf
-                                );
-                                continue;
+                                intf_addrs.extend(ipv6);
                             }
                             for address in intf_addrs {
                                 out.add_answer(
@@ -3540,6 +3541,33 @@ impl Zeroconf {
                                 );
                             }
                         }
+                    }
+                    let missing = match qtype {
+                        RRType::A => !has_ipv4,
+                        RRType::AAAA => !has_ipv6,
+                        RRType::SVCB | RRType::HTTPS => true,
+                        _ => false,
+                    };
+                    if let Some(hostname) = hostname.filter(|_| missing) {
+                        // RFC 6762 section 6.1: explicitly deny absent records
+                        // only for a hostname we own on this interface. Combine
+                        // all announced services sharing the hostname, so one
+                        // registration cannot deny another's address family.
+                        let bitmap = if has_ipv6 {
+                            vec![if has_ipv4 { 0x40 } else { 0 }, 0, 0, 0x08]
+                        } else {
+                            vec![0x40]
+                        };
+                        out.add_answer(
+                            &msg,
+                            DnsNSec::new(
+                                hostname,
+                                CLASS_IN | CLASS_CACHE_FLUSH,
+                                host_ttl,
+                                hostname.to_string(),
+                                bitmap,
+                            ),
+                        );
                     }
                 }
 
@@ -6856,6 +6884,251 @@ mod tests {
             resolved,
             "instance was found but never resolved even though its address was \
              eventually answered"
+        );
+    }
+    fn negative_answer_test_daemon() -> (super::Zeroconf, u32) {
+        let signal = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let signal_addr = signal.local_addr().unwrap();
+        signal.set_nonblocking(true).unwrap();
+        let port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (sender, _receiver) = flume::bounded(100);
+        let mut daemon = super::Zeroconf::new(
+            mio::net::UdpSocket::from_std(signal),
+            mio::Poll::new().unwrap(),
+            port,
+            sender,
+            signal_addr,
+        );
+        let index = my_ip_interfaces(true)
+            .iter()
+            .find(|intf| intf.ip() == IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .unwrap()
+            .index
+            .unwrap();
+        // Only loopback and a private port are used for test announcements.
+        daemon.my_intfs.retain(|key, _| *key == index);
+        daemon.dns_registry_map.retain(|key, _| *key == index);
+        (daemon, index)
+    }
+
+    fn register_negative_answer_test_service(
+        daemon: &mut super::Zeroconf,
+        index: u32,
+        instance: &str,
+        address: IpAddr,
+    ) -> String {
+        let service = ServiceInfo::new(
+            "_negative-test._tcp.local.",
+            instance,
+            "negative.local.",
+            address,
+            8080,
+            None,
+        )
+        .unwrap();
+        let fullname = service.get_fullname().to_lowercase();
+        daemon.register_service(service);
+        // Complete actual registration probes deterministically.
+        for probe in daemon
+            .dns_registry_map
+            .get_mut(&index)
+            .unwrap()
+            .probing
+            .values_mut()
+        {
+            probe.start_time = crate::current_time_millis() - 1000;
+            probe.next_send = 0;
+        }
+        daemon.probing_handler();
+        assert_eq!(
+            daemon.my_services[&fullname].get_status(index),
+            crate::service_info::ServiceStatus::Announced
+        );
+        fullname
+    }
+
+    fn query_negative_answer_test_daemon(
+        daemon: &mut super::Zeroconf,
+        index: u32,
+        name: &str,
+        types: &[RRType],
+    ) -> Option<DnsIncoming> {
+        let querier = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        querier
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
+        for ty in types {
+            out.add_question(name, *ty);
+        }
+        let interface = InterfaceId {
+            name: "loopback-test".to_string(),
+            index,
+        };
+        let packets = out.to_data_on_wire(MAX_PKT_DEFAULT, true);
+        let incoming = DnsIncoming::new(packets[0].clone(), interface.clone()).unwrap();
+        daemon.handle_query(incoming, index, querier.local_addr().unwrap());
+        let mut data = [0; 4096];
+        match querier.recv_from(&mut data) {
+            Ok((length, _)) => Some(DnsIncoming::new(data[..length].to_vec(), interface).unwrap()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                None
+            }
+            Err(error) => panic!("receiving test response: {}", error),
+        }
+    }
+
+    #[test]
+    fn test_negative_hostname_answers() {
+        use super::DnsNSec;
+        use crate::dns_parser::DnsRecordExt;
+
+        for (address, present, absent) in [
+            (IpAddr::V4(Ipv4Addr::LOCALHOST), RRType::A, RRType::AAAA),
+            (IpAddr::V6(Ipv6Addr::LOCALHOST), RRType::AAAA, RRType::A),
+        ] {
+            let (mut daemon, index) = negative_answer_test_daemon();
+            let fullname =
+                register_negative_answer_test_service(&mut daemon, index, "single", address);
+            for ty in [absent, RRType::SVCB, RRType::HTTPS] {
+                let reply =
+                    query_negative_answer_test_daemon(&mut daemon, index, "NEGATIVE.local.", &[ty])
+                        .unwrap();
+                assert_eq!(reply.answers().len(), 1);
+                let nsec = reply.answers()[0].any().downcast_ref::<DnsNSec>().unwrap();
+                assert_eq!(nsec._types(), vec![present as u16]);
+                assert_eq!(nsec.get_name(), "negative.local.");
+                assert!(nsec.get_record().get_ttl() <= LEGACY_UNICAST_MAX_TTL);
+            }
+            for ty in [present, RRType::ANY] {
+                let reply =
+                    query_negative_answer_test_daemon(&mut daemon, index, "negative.local.", &[ty])
+                        .unwrap();
+                assert!(reply
+                    .answers()
+                    .iter()
+                    .any(|record| record.get_type() == present));
+                assert!(reply
+                    .answers()
+                    .iter()
+                    .all(|record| record.get_type() != RRType::NSEC));
+            }
+            let mixed = query_negative_answer_test_daemon(
+                &mut daemon,
+                index,
+                "negative.local.",
+                &[RRType::HTTPS, RRType::AAAA, RRType::A],
+            )
+            .unwrap();
+            assert!(mixed
+                .answers()
+                .iter()
+                .any(|record| record.get_type() == present));
+            assert!(mixed
+                .answers()
+                .iter()
+                .any(|record| record.get_type() == RRType::NSEC));
+            assert!(query_negative_answer_test_daemon(
+                &mut daemon,
+                index,
+                "unowned.local.",
+                &[absent]
+            )
+            .is_none());
+            daemon
+                .my_services
+                .get_mut(&fullname)
+                .unwrap()
+                .set_status(index, crate::service_info::ServiceStatus::Probing);
+            assert!(query_negative_answer_test_daemon(
+                &mut daemon,
+                index,
+                "negative.local.",
+                &[absent]
+            )
+            .is_none());
+        }
+    }
+
+    #[test]
+    fn test_negative_hostname_answers_combine_registrations_on_one_interface() {
+        let (mut daemon, index) = negative_answer_test_daemon();
+        register_negative_answer_test_service(
+            &mut daemon,
+            index,
+            "ipv4",
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        );
+        let ipv6 = register_negative_answer_test_service(
+            &mut daemon,
+            index,
+            "ipv6",
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        );
+        for ty in [RRType::A, RRType::AAAA] {
+            let reply =
+                query_negative_answer_test_daemon(&mut daemon, index, "negative.local.", &[ty])
+                    .unwrap();
+            assert!(reply.answers().iter().any(|record| record.get_type() == ty));
+            assert!(reply
+                .answers()
+                .iter()
+                .all(|record| record.get_type() != RRType::NSEC));
+        }
+        let reply = query_negative_answer_test_daemon(
+            &mut daemon,
+            index,
+            "negative.local.",
+            &[RRType::HTTPS],
+        )
+        .unwrap();
+        assert_eq!(reply.answers().len(), 1);
+        assert_eq!(
+            reply.answers()[0]
+                .any()
+                .downcast_ref::<super::DnsNSec>()
+                .unwrap()
+                ._types(),
+            [1, 28]
+        );
+        // An address on another interface cannot prevent a negative answer here.
+        daemon
+            .my_services
+            .get_mut(&ipv6)
+            .unwrap()
+            .remove_ipaddr(&IpAddr::V6(Ipv6Addr::LOCALHOST));
+        daemon
+            .my_services
+            .get_mut(&ipv6)
+            .unwrap()
+            .insert_ipaddr(&test_interface(
+                "other",
+                index + 1,
+                test_ifaddr_v6("2001:db8::1".parse().unwrap()),
+            ));
+        let reply = query_negative_answer_test_daemon(
+            &mut daemon,
+            index,
+            "negative.local.",
+            &[RRType::AAAA],
+        )
+        .unwrap();
+        assert_eq!(
+            reply.answers()[0]
+                .any()
+                .downcast_ref::<super::DnsNSec>()
+                .unwrap()
+                ._types(),
+            [1]
         );
     }
 }
