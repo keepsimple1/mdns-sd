@@ -237,6 +237,12 @@ pub enum RRType {
     /// DNS record type for Negative Responses
     NSEC = 47,
 
+    /// DNS service binding record
+    SVCB = 64,
+
+    /// HTTPS service binding record
+    HTTPS = 65,
+
     /// DNS record type for any records (wildcard)
     ANY = 255,
 }
@@ -253,6 +259,8 @@ impl RRType {
             28 => Some(RRType::AAAA),
             33 => Some(RRType::SRV),
             47 => Some(RRType::NSEC),
+            64 => Some(RRType::SVCB),
+            65 => Some(RRType::HTTPS),
             255 => Some(RRType::ANY),
             _ => None,
         }
@@ -270,6 +278,8 @@ impl fmt::Display for RRType {
             RRType::AAAA => write!(f, "TYPE_AAAA"),
             RRType::SRV => write!(f, "TYPE_SRV"),
             RRType::NSEC => write!(f, "TYPE_NSEC"),
+            RRType::SVCB => write!(f, "TYPE_SVCB"),
+            RRType::HTTPS => write!(f, "TYPE_HTTPS"),
             RRType::ANY => write!(f, "TYPE_ANY"),
         }
     }
@@ -1277,7 +1287,9 @@ impl DnsRecordExt for DnsNSec {
     }
 
     fn write(&self, packet: &mut DnsOutPacket) -> WriteResult {
-        packet.write_bytes(self.next_domain.as_bytes());
+        packet.write_name(&self.next_domain)?;
+        // The stored bitmap excludes the RFC 4034 window number and length.
+        packet.write_bytes(&[0, self.type_bitmap.len() as u8]);
         packet.write_bytes(&self.type_bitmap);
         Ok(())
     }
@@ -3565,5 +3577,62 @@ mod tests {
         assert_eq!(answers, 40);
         assert_eq!(authorities, 40);
         assert_eq!(additionals, 40);
+    }
+    #[test]
+    fn test_nsec_encoding_round_trip() {
+        use super::DnsRecordExt;
+
+        for (bitmap, types) in [
+            (vec![0x40], vec![1]),
+            (vec![0, 0, 0, 8], vec![28]),
+            (vec![0x40, 0, 0, 8], vec![1, 28]),
+        ] {
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | super::FLAGS_AA);
+            out.add_answer_at_time(
+                super::DnsNSec::new(
+                    "negative.local.",
+                    CLASS_IN | super::CLASS_CACHE_FLUSH,
+                    120,
+                    "negative.local.".to_string(),
+                    bitmap.clone(),
+                ),
+                0,
+            );
+            let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
+            assert_eq!(packets.len(), 1);
+            let data = packets[0].as_bytes().to_vec();
+            // Owner name, RR header, compressed Next Domain Name, then window 0.
+            let rdata_offset = 12 + 16 + 10;
+            assert_eq!(
+                &data[rdata_offset..rdata_offset + 4],
+                &[0xc0, 0x0c, 0, bitmap.len() as u8]
+            );
+            assert_eq!(&data[rdata_offset + 4..], bitmap.as_slice());
+            let incoming = DnsIncoming::new(data, test_interface_id()).unwrap();
+            assert_eq!(incoming.answers().len(), 1);
+            let record = incoming.answers()[0]
+                .any()
+                .downcast_ref::<super::DnsNSec>()
+                .unwrap();
+            assert_eq!(record.next_domain, "negative.local.");
+            assert_eq!(record._types(), types);
+            assert_eq!(record.get_record().get_ttl(), 120);
+        }
+    }
+
+    #[test]
+    fn test_service_binding_questions_round_trip() {
+        let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
+        for ty in [RRType::SVCB, RRType::HTTPS, RRType::AAAA, RRType::A] {
+            out.add_question("binding.local.", ty);
+        }
+        let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
+        let incoming =
+            DnsIncoming::new(packets[0].as_bytes().to_vec(), test_interface_id()).unwrap();
+        let types: Vec<_> = incoming.questions().iter().map(|q| q.entry.ty).collect();
+        assert_eq!(
+            types,
+            [RRType::SVCB, RRType::HTTPS, RRType::AAAA, RRType::A]
+        );
     }
 }
