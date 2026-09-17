@@ -2343,9 +2343,11 @@ impl DnsIncoming {
             self.offset += 4;
 
             let Some(rr_type) = RRType::from_u16(ty) else {
-                return Err(Error::Msg(format!(
-                    "DNS incoming: question idx {i} qtype unknown: {ty}",
-                )));
+                // The name, type and class have already been consumed. An
+                // unsupported question must not discard supported questions or
+                // resource records elsewhere in this packet.
+                trace!("DNS incoming: skipping question idx {i} qtype unknown: {ty}");
+                continue;
             };
 
             self.questions.push(DnsQuestion {
@@ -3370,6 +3372,66 @@ mod tests {
                 .any(|r| r.get_type() == RRType::NSEC),
             "the malformed NSEC record must be skipped"
         );
+    }
+
+    #[test]
+    fn test_unknown_questions_preserve_supported_questions_and_answers() {
+        // No enum variant is needed for future question types. Build the wire
+        // questions explicitly so this also covers types the writer cannot emit.
+        for unknown_type in [64u16, 65, 65400] {
+            for unknown_index in 0..3 {
+                let mut data = vec![0; 12];
+                data[4..6].copy_from_slice(&3u16.to_be_bytes());
+                data[6..8].copy_from_slice(&1u16.to_be_bytes());
+                let mut known_types = [1u16, 28].iter().copied();
+                for index in 0..3 {
+                    data.extend_from_slice(b"\x05mixed\x05local\x00");
+                    let ty = if index == unknown_index {
+                        unknown_type
+                    } else {
+                        known_types.next().unwrap()
+                    };
+                    data.extend_from_slice(&ty.to_be_bytes());
+                    data.extend_from_slice(&CLASS_IN.to_be_bytes());
+                }
+                // One known answer after the questions verifies parser alignment.
+                data.extend_from_slice(
+                    b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x78\x00\x04\xc0\x00\x02\x01",
+                );
+                let incoming = DnsIncoming::new(data, test_interface_id()).unwrap();
+                let types: Vec<_> = incoming
+                    .questions()
+                    .iter()
+                    .map(|q| q.entry.ty)
+                    .filter(|ty| matches!(ty, RRType::A | RRType::AAAA))
+                    .collect();
+                assert_eq!(types, [RRType::A, RRType::AAAA]);
+                if unknown_type == 65400 {
+                    assert_eq!(incoming.questions().len(), 2);
+                }
+                assert_eq!(incoming.answers().len(), 1);
+                assert_eq!(incoming.answers()[0].get_type(), RRType::A);
+            }
+        }
+    }
+
+    #[test]
+    fn test_unknown_question_still_requires_complete_name_type_and_class() {
+        let mut data = vec![0; 12];
+        data[4..6].copy_from_slice(&1u16.to_be_bytes());
+        data.extend_from_slice(b"\x05mixed\x05local\x00");
+        data.extend_from_slice(&65400u16.to_be_bytes());
+        data.extend_from_slice(&CLASS_IN.to_be_bytes());
+        assert!(DnsIncoming::new(data.clone(), test_interface_id())
+            .unwrap()
+            .questions()
+            .is_empty());
+        for missing in 1..=4 {
+            assert!(
+                DnsIncoming::new(data[..data.len() - missing].to_vec(), test_interface_id())
+                    .is_err()
+            );
+        }
     }
 
     fn test_interface_id() -> InterfaceId {
