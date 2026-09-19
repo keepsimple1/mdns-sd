@@ -2175,6 +2175,12 @@ impl Zeroconf {
 
         for (_, service_info) in self.my_services.iter_mut() {
             if service_info.is_addr_auto() {
+                // An excluded address creates neither an announcement nor a
+                // probe. Do not demote an already announced service on this
+                // interface to Probing when such an address appears.
+                if !service_info.is_address_supported(intf) {
+                    continue;
+                }
                 service_info.insert_ipaddr(intf);
 
                 if let Ok(true) = announce_service_on_intf(
@@ -5378,6 +5384,98 @@ mod tests {
             broadcast: None,
             prefixlen: 64,
         })
+    }
+
+    #[test]
+    fn test_excluded_address_preserves_announced_service() {
+        use crate::service_info::ServiceStatus;
+
+        for ipv4_service in [true, false] {
+            let signal = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let signal_addr = signal.local_addr().unwrap();
+            signal.set_nonblocking(true).unwrap();
+            let port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
+            let (sender, _receiver) = flume::bounded(100);
+            let mut daemon = super::Zeroconf::new(
+                mio::net::UdpSocket::from_std(signal),
+                mio::Poll::new().unwrap(),
+                port,
+                sender,
+                signal_addr,
+            );
+            let loopback = my_ip_interfaces(true)
+                .into_iter()
+                .find(|intf| intf.ip() == IpAddr::V4(Ipv4Addr::LOCALHOST))
+                .unwrap();
+            let index = loopback.index.unwrap();
+            // Registration and announcements use only loopback and a private
+            // port. Injected addresses below never change host configuration.
+            daemon.my_intfs.retain(|key, _| *key == index);
+            daemon.dns_registry_map.retain(|key, _| *key == index);
+            let mut service = ServiceInfo::new(
+                "_address-change._tcp.local.",
+                "address-change",
+                "address-change.local.",
+                "",
+                8080,
+                None,
+            )
+            .unwrap()
+            .enable_addr_auto();
+            service.set_interfaces(vec![if ipv4_service {
+                IfKind::IPv4
+            } else {
+                IfKind::IPv6
+            }]);
+            let fullname = service.get_fullname().to_lowercase();
+            daemon.register_service(service);
+            assert_eq!(
+                daemon.my_services[&fullname].get_status(index),
+                ServiceStatus::Probing
+            );
+            assert!(!daemon.dns_registry_map[&index].probing.is_empty());
+            // Finish real registration probes without waiting for wall-clock timers.
+            for probe in daemon
+                .dns_registry_map
+                .get_mut(&index)
+                .unwrap()
+                .probing
+                .values_mut()
+            {
+                probe.start_time = crate::current_time_millis() - 1000;
+                probe.next_send = 0;
+            }
+            daemon.probing_handler();
+            assert_eq!(
+                daemon.my_services[&fullname].get_status(index),
+                ServiceStatus::Announced
+            );
+            assert!(!daemon.dns_registry_map[&index].active.is_empty());
+            let addresses = daemon.my_services[&fullname].get_addresses().clone();
+
+            let new_addr = test_interface(
+                &loopback.name,
+                index,
+                if ipv4_service {
+                    test_ifaddr_v6("2001:db8::1234".parse().unwrap())
+                } else {
+                    test_ifaddr_v4(Ipv4Addr::new(192, 0, 2, 123))
+                },
+            );
+            daemon.add_interface(&new_addr, std::slice::from_ref(&new_addr));
+            assert!(daemon.my_intfs[&index].addrs.contains(&new_addr.addr));
+            assert_eq!(daemon.my_services[&fullname].get_addresses(), &addresses);
+            assert!(daemon.dns_registry_map[&index].probing.is_empty());
+            assert_eq!(
+                daemon.my_services[&fullname].get_status(index),
+                ServiceStatus::Announced,
+                "an excluded address must not leave the service waiting for nonexistent probes"
+            );
+        }
     }
 
     #[test]
