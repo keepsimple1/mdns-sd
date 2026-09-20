@@ -2343,10 +2343,8 @@ impl DnsIncoming {
             self.offset += 4;
 
             let Some(rr_type) = RRType::from_u16(ty) else {
-                // The name, type and class have already been consumed. An
-                // unsupported question must not discard supported questions or
-                // resource records elsewhere in this packet.
-                trace!("DNS incoming: skipping question idx {i} qtype unknown: {ty}");
+                // Skip unsupported question types instead of failing the whole message.
+                debug!("DNS incoming: skipping question idx {i} qtype unknown: {ty}");
                 continue;
             };
 
