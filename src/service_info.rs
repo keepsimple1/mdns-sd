@@ -434,15 +434,19 @@ impl ServiceInfo {
     }
 
     /// Insert `addr` into service info addresses.
-    pub(crate) fn insert_ipaddr(&mut self, intf: &Interface) {
+    ///
+    /// Returns true if the address is supported, false otherwise.
+    pub(crate) fn insert_ipaddr(&mut self, intf: &Interface) -> bool {
         if self.is_address_supported(intf) {
             self.addresses.insert(intf.addr.ip());
+            true
         } else {
             trace!(
                 "skipping unsupported address {} for service {}",
                 intf.addr.ip(),
                 self.fullname
             );
+            false
         }
     }
 

@@ -2092,7 +2092,16 @@ impl Zeroconf {
         }
     }
 
-    /// Add the address of `intf` to `my_intfs`, and announce our services on it.
+    /// Adds the address of `intf` and brings our services up on it.
+    ///
+    /// Note: this `interface` type only contains one address.
+    ///
+    /// Does nothing if the address is already known. Otherwise it joins the
+    /// multicast group on the interface and, for each `addr_auto` service, adds
+    /// the address (when supported) and announces the service, marking it as
+    /// probing when it cannot be announced yet. It then re-sends the active
+    /// browse queries on the new interface and notifies monitors with
+    /// `DaemonEvent::IpAdd`.
     ///
     /// `interfaces` is the full list the caller is applying, needed to resolve the
     /// max packet size of the interface before we send anything on it.
@@ -2175,13 +2184,11 @@ impl Zeroconf {
 
         for (_, service_info) in self.my_services.iter_mut() {
             if service_info.is_addr_auto() {
-                // An excluded address creates neither an announcement nor a
-                // probe. Do not demote an already announced service on this
-                // interface to Probing when such an address appears.
-                if !service_info.is_address_supported(intf) {
+                if !service_info.insert_ipaddr(intf) {
+                    // Skip an unsupported address. Should not try to announce it.
+                    // Otherwise could demote an already announced service into probing.
                     continue;
                 }
-                service_info.insert_ipaddr(intf);
 
                 if let Ok(true) = announce_service_on_intf(
                     dns_registry,
@@ -3433,15 +3440,6 @@ impl Zeroconf {
     fn handle_query(&mut self, msg: DnsIncoming, if_index: u32, querier_addr: SocketAddr) {
         let querier_ip = querier_addr.ip();
         let is_ipv4 = querier_ip.is_ipv4();
-        let sock_opt = if is_ipv4 {
-            &self.ipv4_sock
-        } else {
-            &self.ipv6_sock
-        };
-        let Some(sock) = sock_opt.as_ref() else {
-            debug!("handle_query: socket not available for intf {}", if_index);
-            return;
-        };
 
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         let mut delayed = false;
@@ -3634,67 +3632,95 @@ impl Zeroconf {
         }
 
         if out.answers_count() > 0 {
-            out.set_id(msg.id());
-
-            // Pick a source IfAddr on `intf` whose subnet contains the querier's IP.
-            // It's OK if it's None, `send_dns_outgoing` will then pick one address.
-            let matched_source = intf
-                .addrs
-                .iter()
-                .find(|if_addr| valid_ip_on_intf(&querier_ip, if_addr));
-
-            // RFC 6762 §6.7 (Legacy Unicast Responses): if the querier's source
-            // port is not 5353, it's a one-shot legacy querier (e.g. Android's
-            // getaddrinfo, iOS resolver fallback). The response MUST be unicast
-            // back to the querier's source IP and port; multicast replies will
-            // never reach the querier's ephemeral socket. Legacy unicast
-            // responses must also echo the question section, clear the
-            // cache-flush bit (legacy resolvers don't understand it), and cap
-            // record TTLs to 10 seconds (see update_records_for_legacy_unicast).
-            let unicast_dest = if querier_addr.port() != MDNS_PORT {
-                Some(querier_addr)
-            } else {
-                None
-            };
-
-            if unicast_dest.is_some() {
-                for q in msg.questions() {
-                    out.add_question(q.entry_name(), q.entry_type());
-                }
-                out.update_records_for_legacy_unicast();
-                out.set_multicast(false);
-            } else if msg.num_authorities() == 0 {
-                // RFC 6762 §6: a record MUST NOT be multicast on an interface
-                // more than once per second. Two exceptions skip the limit here:
-                //   - Unicast responses (handled above).
-                //   - Answering probe queries: a probe carries the proposed
-                //     records in its Authority Section, and we MUST defend our
-                //     records immediately so the prober detects the conflict.
-                dns_registry.apply_multicast_rate_limit(&mut out, current_time_millis(), is_ipv4);
-            }
-
-            if out.answers_count() > 0 {
-                debug!("sending response on intf {}", &intf.name);
-                if let Err(InternalError::IntfAddrInvalid(intf_addr)) = send_dns_outgoing(
-                    &out,
-                    intf,
-                    &sock.pktinfo,
-                    self.port,
-                    matched_source,
-                    unicast_dest,
-                ) {
-                    let invalid_intf_addr = HashSet::from([intf_addr]);
-                    let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addr));
-                }
-
-                let if_name = intf.name.clone();
-
-                self.increase_counter(Counter::Respond, 1);
-                self.notify_monitors(DaemonEvent::Respond(if_name));
-            }
+            self.send_response(&mut out, &msg, if_index, querier_addr);
         }
 
         self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count());
+    }
+
+    fn send_response(
+        &mut self,
+        out: &mut DnsOutgoing,
+        msg: &DnsIncoming,
+        if_index: u32,
+        querier_addr: SocketAddr,
+    ) {
+        let querier_ip = querier_addr.ip();
+        let is_ipv4 = querier_ip.is_ipv4();
+        let sock_opt = if is_ipv4 {
+            &self.ipv4_sock
+        } else {
+            &self.ipv6_sock
+        };
+        let Some(sock) = sock_opt.as_ref() else {
+            debug!("send_response: socket not available for intf {if_index}");
+            return;
+        };
+        let Some(intf) = self.my_intfs.get(&if_index) else {
+            debug!("send_response: no intf found for index {if_index}");
+            return;
+        };
+
+        out.set_id(msg.id());
+
+        // Pick a source IfAddr on `intf` whose subnet contains the querier's IP.
+        // It's OK if it's None, `send_dns_outgoing` will then pick one address.
+        let matched_source = intf
+            .addrs
+            .iter()
+            .find(|if_addr| valid_ip_on_intf(&querier_ip, if_addr));
+
+        // RFC 6762 §6.7 (Legacy Unicast Responses): if the querier's source
+        // port is not 5353, it's a one-shot legacy querier (e.g. Android's
+        // getaddrinfo, iOS resolver fallback). The response MUST be unicast
+        // back to the querier's source IP and port; multicast replies will
+        // never reach the querier's ephemeral socket. Legacy unicast
+        // responses must also echo the question section, clear the
+        // cache-flush bit (legacy resolvers don't understand it), and cap
+        // record TTLs to 10 seconds (see update_records_for_legacy_unicast).
+        let unicast_dest = if querier_addr.port() != MDNS_PORT {
+            Some(querier_addr)
+        } else {
+            None
+        };
+
+        if unicast_dest.is_some() {
+            for q in msg.questions() {
+                out.add_question(q.entry_name(), q.entry_type());
+            }
+            out.update_records_for_legacy_unicast();
+            out.set_multicast(false);
+        } else if msg.num_authorities() == 0 {
+            // RFC 6762 §6: a record MUST NOT be multicast on an interface
+            // more than once per second. Two exceptions skip the limit here:
+            //   - Unicast responses (handled above).
+            //   - Answering probe queries: a probe carries the proposed
+            //     records in its Authority Section, and we MUST defend our
+            //     records immediately so the prober detects the conflict.
+            if let Some(dns_registry) = self.dns_registry_map.get_mut(&if_index) {
+                dns_registry.apply_multicast_rate_limit(out, current_time_millis(), is_ipv4);
+            }
+        }
+
+        if out.answers_count() > 0 {
+            debug!("sending response on intf {}", &intf.name);
+            if let Err(InternalError::IntfAddrInvalid(intf_addr)) = send_dns_outgoing(
+                out,
+                intf,
+                &sock.pktinfo,
+                self.port,
+                matched_source,
+                unicast_dest,
+            ) {
+                let invalid_intf_addr = HashSet::from([intf_addr]);
+                let _ = self.send_cmd_to_self(Command::InvalidIntfAddrs(invalid_intf_addr));
+            }
+
+            let if_name = intf.name.clone();
+
+            self.increase_counter(Counter::Respond, 1);
+            self.notify_monitors(DaemonEvent::Respond(if_name));
+        }
     }
 
     /// Multicasts a PTR query response that was deferred per RFC 6762 §6.
