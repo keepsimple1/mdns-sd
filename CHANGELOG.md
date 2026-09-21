@@ -1,3 +1,27 @@
+# Version 0.21.4 (2026-09-20)
+
+This is a bugfix release with query-handling fixes and internal refactoring.
+
+## Bug fixes / improvements
+
+- Preserve supported questions and records when a message contains unknown question
+  types, instead of dropping the whole message. (#508)
+- Preserve service announcements after an excluded address changes, instead of
+  demoting an already-announced service back to probing. (#507)
+- Encode and send negative (NSEC) answers for absent hostname records, per
+  [RFC 6762 section 6.1](https://datatracker.ietf.org/doc/html/rfc6762#section-6.1). (#509)
+- Keep re-querying unresolved service instances while browsing. (#494)
+- Refactor `handle_query` and `insert_ipaddr` for readability, with no behavior change. (#510, #511)
+
+## All changes
+
+* `0d2477b 2026-09-20` refactor: extract answer_hostname_question from handle_query (#511) (keepsimple1)
+* `4d2ef74 2026-09-20` refactor: insert_ipaddr and handle_query (#510) (keepsimple1)
+* `7f6a723 2026-09-19` fix: preserve supported questions when unknown types are present (#508) (Joey)
+* `3ba9f03 2026-09-19` fix: preserve announcements after excluded address changes (#507) (Joey)
+* `aeb8c71 2026-09-17` fix: encode and send negative answers for absent hostname records (#509) (Joey)
+* `75d1941 2026-09-11` fix: keep re-querying unresolved instances while browsing (#494) (keepsimple1)
+
 # Version 0.21.3 (2026-09-07)
 
 This is a bugfix release that improves RFC 6762 section 6.7 compliance for legacy
