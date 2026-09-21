@@ -35,9 +35,9 @@ use crate::{
     dns_cache::{DnsCache, IpType},
     dns_parser::{
         ip_address_rr_type, max_pkt_absolute, DnsAddress, DnsEntryExt, DnsIncoming, DnsNSec,
-        DnsOutgoing, DnsPointer, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, InterfaceId, RRType,
-        ScopedIp, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
-        MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
+        DnsOutgoing, DnsPointer, DnsQuestion, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt,
+        InterfaceId, RRType, ScopedIp, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY,
+        FLAGS_QR_RESPONSE, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
     },
     error::{e_fmt, Error, Result},
     service_info::{
@@ -3497,82 +3497,14 @@ impl Zeroconf {
                     qtype,
                     RRType::A | RRType::AAAA | RRType::ANY | RRType::SVCB | RRType::HTTPS
                 ) {
-                    let mut hostname = None;
-                    let mut host_ttl = u32::MAX;
-                    let mut has_ipv4 = false;
-                    let mut has_ipv6 = false;
-                    for service in self.my_services.values() {
-                        if service.get_status(if_index) != ServiceStatus::Announced {
-                            continue;
-                        }
-
-                        let service_hostname = dns_registry.resolve_name(service.get_hostname());
-
-                        if service_hostname.to_lowercase() == question.entry_name().to_lowercase() {
-                            let ipv4 = service.get_addrs_on_my_intf_v4(intf);
-                            let ipv6 = service.get_addrs_on_my_intf_v6(intf);
-                            if ipv4.is_empty() && ipv6.is_empty() {
-                                continue;
-                            }
-                            hostname = Some(service_hostname);
-                            host_ttl = host_ttl.min(service.get_host_ttl());
-                            has_ipv4 |= !ipv4.is_empty();
-                            has_ipv6 |= !ipv6.is_empty();
-                            // Pick addresses based on the question type, not the
-                            // socket family. RFC 6762 doesn't require A queries
-                            // to come over IPv4 transport — Android's getaddrinfo
-                            // routinely sends both A and AAAA queries over its
-                            // preferred IPv6 mDNS socket and expects A records
-                            // to be answered with v4 addresses.
-                            let mut intf_addrs: Vec<IpAddr> = Vec::new();
-                            if qtype == RRType::A || qtype == RRType::ANY {
-                                intf_addrs.extend(ipv4);
-                            }
-                            if qtype == RRType::AAAA || qtype == RRType::ANY {
-                                intf_addrs.extend(ipv6);
-                            }
-                            for address in intf_addrs {
-                                out.add_answer(
-                                    &msg,
-                                    DnsAddress::new(
-                                        service_hostname,
-                                        ip_address_rr_type(&address),
-                                        CLASS_IN | CLASS_CACHE_FLUSH,
-                                        service.get_host_ttl(),
-                                        address,
-                                        intf.into(),
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                    let missing = match qtype {
-                        RRType::A => !has_ipv4,
-                        RRType::AAAA => !has_ipv6,
-                        RRType::SVCB | RRType::HTTPS => true,
-                        _ => false,
-                    };
-                    if let Some(hostname) = hostname.filter(|_| missing) {
-                        // RFC 6762 section 6.1: explicitly deny absent records
-                        // only for a hostname we own on this interface. Combine
-                        // all announced services sharing the hostname, so one
-                        // registration cannot deny another's address family.
-                        let bitmap = if has_ipv6 {
-                            vec![if has_ipv4 { 0x40 } else { 0 }, 0, 0, 0x08]
-                        } else {
-                            vec![0x40]
-                        };
-                        out.add_answer(
-                            &msg,
-                            DnsNSec::new(
-                                hostname,
-                                CLASS_IN | CLASS_CACHE_FLUSH,
-                                host_ttl,
-                                hostname.to_string(),
-                                bitmap,
-                            ),
-                        );
-                    }
+                    answer_hostname_question(
+                        &self.my_services,
+                        intf,
+                        question,
+                        dns_registry,
+                        &mut out,
+                        &msg,
+                    );
                 }
 
                 let query_name = q_name.to_lowercase();
@@ -4423,6 +4355,94 @@ fn add_answer_of_service(
                 InterfaceId::default(),
             ));
         }
+    }
+}
+
+fn answer_hostname_question(
+    services: &HashMap<String, ServiceInfo>,
+    intf: &MyIntf,
+    question: &DnsQuestion,
+    dns_registry: &DnsRegistry,
+    out: &mut DnsOutgoing,
+    msg: &DnsIncoming,
+) {
+    let if_index = intf.index;
+    let qtype = question.entry_type();
+    let mut hostname = None;
+    let mut host_ttl = u32::MAX;
+    let mut has_ipv4 = false;
+    let mut has_ipv6 = false;
+    for service in services.values() {
+        if service.get_status(if_index) != ServiceStatus::Announced {
+            continue;
+        }
+
+        let service_hostname = dns_registry.resolve_name(service.get_hostname());
+
+        if service_hostname.to_lowercase() == question.entry_name().to_lowercase() {
+            let ipv4 = service.get_addrs_on_my_intf_v4(intf);
+            let ipv6 = service.get_addrs_on_my_intf_v6(intf);
+            if ipv4.is_empty() && ipv6.is_empty() {
+                continue;
+            }
+            hostname = Some(service_hostname);
+            host_ttl = host_ttl.min(service.get_host_ttl());
+            has_ipv4 |= !ipv4.is_empty();
+            has_ipv6 |= !ipv6.is_empty();
+            // Pick addresses based on the question type, not the
+            // socket family. RFC 6762 doesn't require A queries
+            // to come over IPv4 transport — Android's getaddrinfo
+            // routinely sends both A and AAAA queries over its
+            // preferred IPv6 mDNS socket and expects A records
+            // to be answered with v4 addresses.
+            let mut intf_addrs: Vec<IpAddr> = Vec::new();
+            if qtype == RRType::A || qtype == RRType::ANY {
+                intf_addrs.extend(ipv4);
+            }
+            if qtype == RRType::AAAA || qtype == RRType::ANY {
+                intf_addrs.extend(ipv6);
+            }
+            for address in intf_addrs {
+                out.add_answer(
+                    msg,
+                    DnsAddress::new(
+                        service_hostname,
+                        ip_address_rr_type(&address),
+                        CLASS_IN | CLASS_CACHE_FLUSH,
+                        service.get_host_ttl(),
+                        address,
+                        intf.into(),
+                    ),
+                );
+            }
+        }
+    }
+    let missing = match qtype {
+        RRType::A => !has_ipv4,
+        RRType::AAAA => !has_ipv6,
+        RRType::SVCB | RRType::HTTPS => true,
+        _ => false,
+    };
+    if let Some(hostname) = hostname.filter(|_| missing) {
+        // RFC 6762 section 6.1: explicitly deny absent records
+        // only for a hostname we own on this interface. Combine
+        // all announced services sharing the hostname, so one
+        // registration cannot deny another's address family.
+        let bitmap = if has_ipv6 {
+            vec![if has_ipv4 { 0x40 } else { 0 }, 0, 0, 0x08]
+        } else {
+            vec![0x40]
+        };
+        out.add_answer(
+            msg,
+            DnsNSec::new(
+                hostname,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                host_ttl,
+                hostname.to_string(),
+                bitmap,
+            ),
+        );
     }
 }
 
