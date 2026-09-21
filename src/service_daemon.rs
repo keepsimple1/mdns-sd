@@ -4358,6 +4358,12 @@ fn add_answer_of_service(
     }
 }
 
+/// Answers a query for a hostname we own: A/AAAA (address records), SVCB/HTTPS
+/// (service-binding records), or ANY.
+///
+/// Adds the A/AAAA records held on `intf` for every announced service whose
+/// hostname matches the question. If the queried address family is absent, adds
+/// NSEC (negative) answer instead. SVCB/HTTPS always get the NSEC answer.
 fn answer_hostname_question(
     services: &HashMap<String, ServiceInfo>,
     intf: &MyIntf,
