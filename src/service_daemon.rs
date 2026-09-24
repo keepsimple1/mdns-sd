@@ -2137,9 +2137,10 @@ impl Zeroconf {
                 }
             }
             Entry::Vacant(entry) => {
+                // Keep the interface even if the join fails, like the occupied arm
+                // does. Otherwise every IP check retries the join forever.
                 if let Err(e) = join_multicast_group(&sock.pktinfo, intf) {
-                    debug!("add_interface: socket_config {}: {e}. Skipped.", &intf.name);
-                    return;
+                    debug!("add_interface: socket_config {}: {e}", &intf.name);
                 }
 
                 new_addr = true;
@@ -5436,6 +5437,48 @@ mod tests {
             broadcast: None,
             prefixlen: 64,
         })
+    }
+
+    #[test]
+    fn test_failed_multicast_join_records_interface() {
+        let signal = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let signal_addr = signal.local_addr().unwrap();
+        signal.set_nonblocking(true).unwrap();
+        let port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (sender, _receiver) = flume::bounded(100);
+        let mut daemon = super::Zeroconf::new(
+            mio::net::UdpSocket::from_std(signal),
+            mio::Poll::new().unwrap(),
+            port,
+            sender,
+            signal_addr,
+        );
+
+        // TEST-NET-1 is never assigned to a host interface, so the join fails.
+        let if_index = 65_535;
+        let intf = test_interface(
+            "mdns-sd-unjoinable",
+            if_index,
+            test_ifaddr_v4(Ipv4Addr::new(192, 0, 2, 1)),
+        );
+
+        let sock = daemon.ipv4_sock.as_ref().expect("no IPv4 socket");
+        assert!(
+            super::join_multicast_group(&sock.pktinfo, &intf).is_err(),
+            "precondition: joining the mDNS group on an unassigned address must fail"
+        );
+
+        daemon.add_interface(&intf, std::slice::from_ref(&intf));
+
+        assert!(
+            daemon.my_intfs.contains_key(&if_index),
+            "an interface whose multicast join failed must still be recorded, \
+             otherwise every IP check retries the join and logs again"
+        );
     }
 
     #[test]
