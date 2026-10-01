@@ -5488,6 +5488,7 @@ mod tests {
 
     /// Builds a daemon on a private port. `Zeroconf::new` joins the mDNS group on
     /// every host interface, loopback included.
+    #[cfg(not(windows))]
     fn new_test_zeroconf() -> super::Zeroconf {
         let signal = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let signal_addr = signal.local_addr().unwrap();
@@ -5511,6 +5512,10 @@ mod tests {
     ///
     /// Joining again is the probe: it fails with `AddrInUse` only while the
     /// membership exists.
+    ///
+    /// Not on Windows, which reports a repeated join as `WSAEINVAL`, not as
+    /// `AddrInUse`.
+    #[cfg(not(windows))]
     fn holds_ipv4_membership(daemon: &super::Zeroconf, ip: &Ipv4Addr) -> bool {
         let sock = daemon.ipv4_sock.as_ref().expect("no IPv4 socket");
         match sock.pktinfo.join_multicast_v4(&super::GROUP_ADDR_V4, ip) {
@@ -5526,11 +5531,13 @@ mod tests {
 
     /// A second interface on 127.0.0.1, standing in for the macOS pairs that share
     /// one IPv4 address (like the `bridge1NN` interfaces of VMs and containers).
+    #[cfg(not(windows))]
     fn loopback_alias() -> Interface {
         test_interface("mdns-sd-alias", 65_535, test_ifaddr_v4(Ipv4Addr::LOCALHOST))
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn test_interface_sharing_an_ipv4_address_is_recorded() {
         let mut daemon = new_test_zeroconf();
         assert!(
@@ -5550,6 +5557,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn test_removing_one_of_two_interfaces_sharing_an_ipv4_address_keeps_the_membership() {
         let mut daemon = new_test_zeroconf();
         let alias = loopback_alias();
