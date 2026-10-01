@@ -1215,6 +1215,22 @@ struct Zeroconf {
     test_down_interfaces: HashSet<String>,
 }
 
+/// Joins the IPv4 mDNS group on the interface that has `ip`.
+///
+/// The kernel picks the interface by address, so interfaces sharing an address
+/// (e.g. the `bridge1NN` and `vmenetN` pairs of VMs on macOS) share one membership.
+/// Joining it again fails with `AddrInUse`, which only means this socket already
+/// holds it, so that is treated as success.
+fn join_multicast_v4(my_sock: &PktInfoUdpSocket, ip: &Ipv4Addr) -> io::Result<()> {
+    match my_sock.join_multicast_v4(&GROUP_ADDR_V4, ip) {
+        Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
+            debug!("multicast group V4 already joined on addr {ip}");
+            Ok(())
+        }
+        result => result,
+    }
+}
+
 /// Join the multicast group for the given interface.
 fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<()> {
     let intf_ip = &intf.ip();
@@ -1222,8 +1238,7 @@ fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<
         IpAddr::V4(ip) => {
             // Join mDNS group to receive packets.
             debug!("join multicast group V4 on {} addr {ip}", intf.name);
-            my_sock
-                .join_multicast_v4(&GROUP_ADDR_V4, ip)
+            join_multicast_v4(my_sock, ip)
                 .map_err(|e| e_fmt!("PKT join multicast group on addr {}: {}", intf_ip, e))?;
         }
         IpAddr::V6(ip) => {
@@ -1970,18 +1985,17 @@ impl Zeroconf {
             );
         }
 
-        for ip in deleted_ips {
-            self.del_ip(ip);
-        }
-
         for (if_index, last_ipv4, last_ipv6) in deleted_intfs {
             let Some(my_intf) = self.my_intfs.remove(&if_index) else {
                 continue;
             };
 
             if let Some(ipv4) = last_ipv4 {
-                debug!("leave multicast for {ipv4}");
-                if let Some(sock) = self.ipv4_sock.as_mut() {
+                if self.intfs_with_ip(&IpAddr::V4(ipv4)).next().is_some() {
+                    // Leaving by address would drop the membership the other interface uses.
+                    debug!("keep multicast for {ipv4}: still used by another interface");
+                } else if let Some(sock) = self.ipv4_sock.as_mut() {
+                    debug!("leave multicast for {ipv4}");
                     if let Err(e) = sock.pktinfo.leave_multicast_v4(&GROUP_ADDR_V4, &ipv4) {
                         debug!("leave multicast group for addr {ipv4}: {e}");
                     }
@@ -2010,6 +2024,26 @@ impl Zeroconf {
             self.resolve_updated_instances(&result.modified_instances);
         }
 
+        // Handled after the removals above, so that `my_intfs` shows which of
+        // these addresses are still on another interface.
+        deleted_ips.sort();
+        deleted_ips.dedup();
+        for ip in deleted_ips {
+            if self.intfs_with_ip(&ip).next().is_none() {
+                self.del_ip(ip);
+                continue;
+            }
+
+            // The address is still on another interface. The removed interface may
+            // have been the one holding the shared IPv4 membership, which the kernel
+            // drops with it, so join again (a no-op if the membership survived).
+            if let (IpAddr::V4(ipv4), Some(sock)) = (ip, self.ipv4_sock.as_ref()) {
+                if let Err(e) = join_multicast_v4(&sock.pktinfo, &ipv4) {
+                    debug!("check_ip_changes: rejoin multicast group on addr {ipv4}: {e}");
+                }
+            }
+        }
+
         // Add newly found interfaces only if in our selections.
         self.apply_intf_selections(my_ifaddrs);
     }
@@ -2024,6 +2058,10 @@ impl Zeroconf {
             intf.ip()
         );
 
+        // Another interface with the same address still serves it, and shares its
+        // IPv4 membership, e.g. the `bridge1NN` and `vmenetN` pairs of VMs on macOS.
+        let shared = self.intfs_with_ip(&intf.ip()).any(|i| i != if_index);
+
         let Some(my_intf) = self.my_intfs.get_mut(&if_index) else {
             debug!("del_interface_addr: interface {} not found", intf.name);
             return;
@@ -2036,7 +2074,9 @@ impl Zeroconf {
 
             match intf.addr.ip() {
                 IpAddr::V4(ipv4) => {
-                    if my_intf.next_ifaddr_v4().is_none() {
+                    if shared {
+                        debug!("keep multicast for {ipv4}: still used by another interface");
+                    } else if my_intf.next_ifaddr_v4().is_none() {
                         if let Some(sock) = self.ipv4_sock.as_mut() {
                             if let Err(e) = sock.pktinfo.leave_multicast_v4(&GROUP_ADDR_V4, &ipv4) {
                                 debug!("leave multicast group for addr {ipv4}: {e}");
@@ -2084,12 +2124,20 @@ impl Zeroconf {
             }
         }
 
-        if ip_removed {
+        if ip_removed && !shared {
             // Notify the monitors.
             self.notify_monitors(DaemonEvent::IpDel(intf.ip()));
             // Remove the interface from my services that enabled `addr_auto`.
             self.del_addr_in_my_services(&intf.ip());
         }
+    }
+
+    /// Indexes of the interfaces in `my_intfs` that have `ip`.
+    fn intfs_with_ip<'a>(&'a self, ip: &'a IpAddr) -> impl Iterator<Item = u32> + 'a {
+        self.my_intfs
+            .values()
+            .filter(move |my_intf| my_intf.addrs.iter().any(|addr| addr.ip() == *ip))
+            .map(|my_intf| my_intf.index)
     }
 
     /// Adds the address of `intf` and brings our services up on it.
@@ -5436,6 +5484,93 @@ mod tests {
             broadcast: None,
             prefixlen: 64,
         })
+    }
+
+    /// Builds a daemon on a private port. `Zeroconf::new` joins the mDNS group on
+    /// every host interface, loopback included.
+    fn new_test_zeroconf() -> super::Zeroconf {
+        let signal = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let signal_addr = signal.local_addr().unwrap();
+        signal.set_nonblocking(true).unwrap();
+        let port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (sender, _receiver) = flume::bounded(100);
+        super::Zeroconf::new(
+            mio::net::UdpSocket::from_std(signal),
+            mio::Poll::new().unwrap(),
+            port,
+            sender,
+            signal_addr,
+        )
+    }
+
+    /// Whether the daemon's IPv4 socket still holds the mDNS membership for `ip`.
+    ///
+    /// Joining again is the probe: it fails with `AddrInUse` only while the
+    /// membership exists.
+    fn holds_ipv4_membership(daemon: &super::Zeroconf, ip: &Ipv4Addr) -> bool {
+        let sock = daemon.ipv4_sock.as_ref().expect("no IPv4 socket");
+        match sock.pktinfo.join_multicast_v4(&super::GROUP_ADDR_V4, ip) {
+            Ok(()) => {
+                // Not a member: leave again, so the probe changes nothing.
+                let _ = sock.pktinfo.leave_multicast_v4(&super::GROUP_ADDR_V4, ip);
+                false
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => true,
+            Err(e) => panic!("unexpected join error on {}: {}", ip, e),
+        }
+    }
+
+    /// A second interface on 127.0.0.1, standing in for the macOS pairs that share
+    /// one IPv4 address (like the `bridge1NN` interfaces of VMs and containers).
+    fn loopback_alias() -> Interface {
+        test_interface("mdns-sd-alias", 65_535, test_ifaddr_v4(Ipv4Addr::LOCALHOST))
+    }
+
+    #[test]
+    fn test_interface_sharing_an_ipv4_address_is_recorded() {
+        let mut daemon = new_test_zeroconf();
+        assert!(
+            holds_ipv4_membership(&daemon, &Ipv4Addr::LOCALHOST),
+            "precondition: the daemon joined the group on loopback at startup"
+        );
+
+        let alias = loopback_alias();
+        daemon.add_interface(&alias, std::slice::from_ref(&alias));
+
+        // Joining 127.0.0.1 again fails with `AddrInUse`. Leaving the interface
+        // out would make every IP check retry the join, forever.
+        assert!(
+            daemon.my_intfs.contains_key(&65_535),
+            "an interface sharing an already-joined IPv4 address must be recorded"
+        );
+    }
+
+    #[test]
+    fn test_removing_one_of_two_interfaces_sharing_an_ipv4_address_keeps_the_membership() {
+        let mut daemon = new_test_zeroconf();
+        let alias = loopback_alias();
+        // Recorded directly, so this tests the teardown alone.
+        daemon.my_intfs.insert(
+            65_535,
+            super::MyIntf {
+                name: alias.name.clone(),
+                index: 65_535,
+                addrs: HashSet::from([alias.addr.clone()]),
+                max_packet_size_v4: super::MAX_PKT_DEFAULT,
+                max_packet_size_v6: super::MAX_PKT_DEFAULT,
+            },
+        );
+
+        daemon.del_interface_addr(&alias);
+
+        assert!(
+            holds_ipv4_membership(&daemon, &Ipv4Addr::LOCALHOST),
+            "leaving by address would drop the membership the other interface still uses"
+        );
     }
 
     #[test]
