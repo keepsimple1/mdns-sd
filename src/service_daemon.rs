@@ -31,7 +31,6 @@
 #[cfg(feature = "logging")]
 use crate::log::{debug, error, trace};
 use crate::{
-    current_time_millis,
     dns_cache::{DnsCache, IpType},
     dns_parser::{
         ip_address_rr_type, max_pkt_absolute, DnsAddress, DnsEntryExt, DnsIncoming, DnsNSec,
@@ -57,7 +56,7 @@ use std::{
     fmt, io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, UdpSocket},
     str, thread,
-    time::Duration,
+    time::{Duration, Instant},
     vec,
 };
 
@@ -951,17 +950,16 @@ fn new_socket(addr: SocketAddr, non_block: bool) -> Result<PktInfoUdpSocket> {
     Ok(fd)
 }
 
-/// Specify a UNIX timestamp in millis to run `command` for the next time.
+/// Specify when to run `command` for the next time.
 struct ReRun {
-    /// UNIX timestamp in millis.
-    next_time: u64,
+    next_time: Instant,
     command: Command,
 }
 
 /// A query response deferred per RFC 6762 §6 (shared response).
 struct DelayedResponse {
-    /// UNIX timestamp in millis at which to send `out`.
-    next_time: u64,
+    /// When to send `out`.
+    next_time: Instant,
     out: DnsOutgoing,
     if_index: u32,
     is_ipv4: bool,
@@ -1152,7 +1150,7 @@ struct Zeroconf {
     ///
     /// The timestamps are set at the future timestamp when the command should timeout.
     /// `hostname` is case-insensitive and stored in lowercase.
-    hostname_resolvers: HashMap<String, (Sender<HostnameResolutionEvent>, Option<u64>)>, // <hostname, (channel::sender, UNIX timestamp in millis)>
+    hostname_resolvers: HashMap<String, (Sender<HostnameResolutionEvent>, Option<Instant>)>, // <hostname, (channel::sender, timeout)>
 
     /// All repeating transmissions.
     retransmissions: Vec<ReRun>,
@@ -1189,7 +1187,7 @@ struct Zeroconf {
     ///
     /// When the run loop goes through a single iteration, it will
     /// set its timeout to the earliest timer in this list.
-    timers: BinaryHeap<Reverse<u64>>,
+    timers: BinaryHeap<Reverse<Instant>>,
 
     status: DaemonStatus,
 
@@ -1535,27 +1533,29 @@ impl Zeroconf {
         }
 
         // Setup timer for IP checks.
+        // `None` when IP checks are disabled.
         let mut next_ip_check = if self.ip_check_interval > 0 {
-            current_time_millis() + self.ip_check_interval
+            Some(Instant::now() + Duration::from_millis(self.ip_check_interval))
         } else {
-            0
+            None
         };
 
-        if next_ip_check > 0 {
-            self.add_timer(next_ip_check);
+        if let Some(t) = next_ip_check {
+            self.add_timer(t);
         }
 
         // Start the run loop.
 
         let mut events = mio::Events::with_capacity(1024);
         loop {
-            let now = current_time_millis();
+            let now = Instant::now();
 
             let earliest_timer = self.peek_earliest_timer();
             let timeout = earliest_timer.map(|timer| {
                 // If `timer` already passed, set `timeout` to be 1ms.
-                let millis = if timer > now { timer - now } else { 1 };
-                Duration::from_millis(millis)
+                timer
+                    .saturating_duration_since(now)
+                    .max(Duration::from_millis(1))
             });
 
             // Process incoming packets, command events and optional timeout.
@@ -1565,7 +1565,7 @@ impl Zeroconf {
                 Err(e) => debug!("failed to select from sockets: {}", e),
             }
 
-            let now = current_time_millis();
+            let now = Instant::now();
 
             // Remove the timers if already passed.
             self.pop_timers_till(now);
@@ -1642,7 +1642,7 @@ impl Zeroconf {
             self.increase_counter(Counter::CacheRefreshAddr, query_count);
 
             // check and evict expired records in our cache
-            let now = current_time_millis();
+            let now = Instant::now();
 
             // Notify service listeners about the expired records.
             let expired_services = self.cache.evict_expired_services(now);
@@ -1671,9 +1671,10 @@ impl Zeroconf {
             self.probing_handler();
 
             // check IP changes if next_ip_check is reached.
-            if now >= next_ip_check && next_ip_check > 0 {
-                next_ip_check = now + self.ip_check_interval;
-                self.add_timer(next_ip_check);
+            if next_ip_check.is_some_and(|t| now >= t) {
+                let t = now + Duration::from_millis(self.ip_check_interval);
+                next_ip_check = Some(t);
+                self.add_timer(t);
 
                 self.check_ip_changes();
             }
@@ -1817,20 +1818,20 @@ impl Zeroconf {
         }
     }
 
-    fn add_timer(&mut self, next_time: u64) {
+    fn add_timer(&mut self, next_time: Instant) {
         self.timers.push(Reverse(next_time));
     }
 
-    fn peek_earliest_timer(&self) -> Option<u64> {
+    fn peek_earliest_timer(&self) -> Option<Instant> {
         self.timers.peek().map(|Reverse(v)| *v)
     }
 
-    fn _pop_earliest_timer(&mut self) -> Option<u64> {
+    fn _pop_earliest_timer(&mut self) -> Option<Instant> {
         self.timers.pop().map(|Reverse(v)| v)
     }
 
     /// Pop all timers that are already passed till `now`.
-    fn pop_timers_till(&mut self, now: u64) {
+    fn pop_timers_till(&mut self, now: Instant) {
         while let Some(Reverse(v)) = self.timers.peek() {
             if *v > now {
                 break;
@@ -2347,9 +2348,10 @@ impl Zeroconf {
         // RFC 6762 section 8.3.
         // ..The Multicast DNS responder MUST send at least two unsolicited
         //    responses, one second apart.
-        let next_time = current_time_millis()
-            + ANNOUNCE_SECOND_DELAY_MILLIS
-            + fastrand::u64(0..ANNOUNCE_SECOND_JITTER_MILLIS);
+        let next_time = Instant::now()
+            + Duration::from_millis(
+                ANNOUNCE_SECOND_DELAY_MILLIS + fastrand::u64(0..ANNOUNCE_SECOND_JITTER_MILLIS),
+            );
         for if_index in outgoing_intfs {
             self.add_retransmission(
                 next_time,
@@ -2362,7 +2364,7 @@ impl Zeroconf {
 
     /// Send probings or finish them if expired. Notify waiting services.
     fn probing_handler(&mut self) {
-        let now = current_time_millis();
+        let now = Instant::now();
         let mut invalid_intf_addrs = HashSet::new();
 
         for (if_index, intf) in self.my_intfs.iter() {
@@ -2440,8 +2442,10 @@ impl Zeroconf {
 
                     if announced_v4 || announced_v6 {
                         let next_time = now
-                            + ANNOUNCE_SECOND_DELAY_MILLIS
-                            + fastrand::u64(0..ANNOUNCE_SECOND_JITTER_MILLIS);
+                            + Duration::from_millis(
+                                ANNOUNCE_SECOND_DELAY_MILLIS
+                                    + fastrand::u64(0..ANNOUNCE_SECOND_JITTER_MILLIS),
+                            );
                         let command =
                             Command::RegisterResend(info.get_fullname().to_string(), *if_index);
                         self.retransmissions.push(ReRun { next_time, command });
@@ -2496,14 +2500,14 @@ impl Zeroconf {
                 0,
                 fullname.to_string(),
             ),
-            0,
+            None,
         );
 
         if let Some(sub) = info.get_subtype() {
             trace!("Adding subdomain {}", sub);
             out.add_answer_at_time(
                 DnsPointer::new(sub, RRType::PTR, CLASS_IN, 0, fullname.to_string()),
-                0,
+                None,
             );
         }
 
@@ -2517,7 +2521,7 @@ impl Zeroconf {
                 info.get_port(),
                 hostname.to_string(),
             ),
-            0,
+            None,
         );
         out.add_answer_at_time(
             DnsTxt::new(
@@ -2526,7 +2530,7 @@ impl Zeroconf {
                 0,
                 info.generate_txt(),
             ),
-            0,
+            None,
         );
 
         let if_addrs = if is_ipv4 {
@@ -2549,7 +2553,7 @@ impl Zeroconf {
                     address,
                     intf.into(),
                 ),
-                0,
+                None,
             );
         }
 
@@ -2574,7 +2578,7 @@ impl Zeroconf {
         listener: Sender<HostnameResolutionEvent>,
         timeout: Option<u64>,
     ) {
-        let real_timeout = timeout.map(|t| current_time_millis() + t);
+        let real_timeout = timeout.map(|t| Instant::now() + Duration::from_millis(t));
         self.hostname_resolvers
             .insert(hostname.to_lowercase(), (listener, real_timeout));
         if let Some(t) = real_timeout {
@@ -2618,7 +2622,7 @@ impl Zeroconf {
     /// Sends out a list of `questions` (i.e. DNS questions) via multicast.
     fn send_query_vec(&self, questions: &[(&str, RRType)]) {
         let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
-        let now = current_time_millis();
+        let now = Instant::now();
 
         for (name, qtype) in questions {
             out.add_question(name, *qtype);
@@ -2812,7 +2816,7 @@ impl Zeroconf {
     /// pending instance keeps being queried for as long as the browse is
     /// active.
     fn query_unresolved_instances(&mut self, ty_domain: &str) {
-        let now = current_time_millis();
+        let now = Instant::now();
         let mut instances = Vec::new();
         if let Some(records) = self.cache.get_ptr(ty_domain) {
             for record in records.iter().filter(|r| !r.record.expires_soon(now)) {
@@ -2835,7 +2839,7 @@ impl Zeroconf {
         &mut self,
         ty_domain: &str,
         sender: &Sender<ServiceEvent>,
-        now: u64,
+        now: Instant,
     ) {
         let mut resolved: HashSet<String> = HashSet::new();
         let mut unresolved: HashSet<String> = HashSet::new();
@@ -2917,7 +2921,7 @@ impl Zeroconf {
 
     fn add_pending_resolve(&mut self, instance: String) {
         if !self.pending_resolves.contains(&instance) {
-            let next_time = current_time_millis() + RESOLVE_RETRY_BASE_MILLIS;
+            let next_time = Instant::now() + Duration::from_millis(RESOLVE_RETRY_BASE_MILLIS);
             self.add_retransmission(next_time, Command::Resolve(instance.clone(), 1));
             self.pending_resolves.insert(instance);
         }
@@ -2929,7 +2933,7 @@ impl Zeroconf {
         ty_domain: &str,
         fullname: &str,
     ) -> Result<ResolvedService> {
-        let now = current_time_millis();
+        let now = Instant::now();
         let mut resolved_service = ResolvedService {
             ty_domain: ty_domain.to_string(),
             sub_ty_domain: None,
@@ -3063,7 +3067,7 @@ impl Zeroconf {
     /// Deal with incoming response packets.  All answers
     /// are held in the cache, and listeners are notified.
     fn handle_response(&mut self, mut msg: DnsIncoming, if_index: u32) {
-        let now = current_time_millis();
+        let now = Instant::now();
 
         // remove records that are expired.
         let mut record_predicate = |record: &DnsRecordBox| {
@@ -3309,7 +3313,7 @@ impl Zeroconf {
             // }
 
             // Probing again with the new names.
-            let create_time = current_time_millis() + fastrand::u64(0..250);
+            let create_time = Instant::now() + Duration::from_millis(fastrand::u64(0..250));
 
             let waiting_services = probe.waiting_services.clone();
 
@@ -3366,7 +3370,7 @@ impl Zeroconf {
         let mut unresolved: HashSet<String> = HashSet::new();
         let mut removed_instances = HashMap::new();
 
-        let now = current_time_millis();
+        let now = Instant::now();
 
         for (ty_domain, records) in self.cache.all_ptr().iter() {
             if !self.service_queriers.contains_key(ty_domain) {
@@ -3552,7 +3556,7 @@ impl Zeroconf {
             self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count());
             let delay =
                 fastrand::u64(SHARED_RESPONSE_DELAY_MIN_MILLIS..SHARED_RESPONSE_DELAY_MAX_MILLIS);
-            let next_time = current_time_millis() + delay;
+            let next_time = Instant::now() + Duration::from_millis(delay);
             self.delayed_responses.push(DelayedResponse {
                 next_time,
                 out,
@@ -3630,7 +3634,7 @@ impl Zeroconf {
             //     records in its Authority Section, and we MUST defend our
             //     records immediately so the prober detects the conflict.
             if let Some(dns_registry) = self.dns_registry_map.get_mut(&if_index) {
-                dns_registry.apply_multicast_rate_limit(out, current_time_millis(), is_ipv4);
+                dns_registry.apply_multicast_rate_limit(out, Instant::now(), is_ipv4);
             }
         }
 
@@ -3682,7 +3686,7 @@ impl Zeroconf {
         };
 
         if let Some(dns_registry) = self.dns_registry_map.get_mut(&if_index) {
-            dns_registry.apply_multicast_rate_limit(&mut out, current_time_millis(), is_ipv4);
+            dns_registry.apply_multicast_rate_limit(&mut out, Instant::now(), is_ipv4);
         }
         if out.answers_count() == 0 {
             return;
@@ -3735,7 +3739,7 @@ impl Zeroconf {
         }
     }
 
-    fn add_retransmission(&mut self, next_time: u64, command: Command) {
+    fn add_retransmission(&mut self, next_time: Instant, command: Command) {
         self.retransmissions.push(ReRun { next_time, command });
         self.add_timer(next_time);
     }
@@ -3922,7 +3926,7 @@ impl Zeroconf {
             return;
         }
 
-        let now = current_time_millis();
+        let now = Instant::now();
         if !repeating {
             // Binds a `listener` to querying mDNS domain type `ty`.
             //
@@ -3946,7 +3950,10 @@ impl Zeroconf {
             // RFC 6762 §5.2: delay the first query by a random jitter.
             let jitter =
                 fastrand::u64(INITIAL_QUERY_DELAY_MIN_MILLIS..INITIAL_QUERY_DELAY_MAX_MILLIS);
-            self.add_retransmission(now + jitter, Command::Browse(ty, 1, cache_only, listener));
+            self.add_retransmission(
+                now + Duration::from_millis(jitter),
+                Command::Browse(ty, 1, cache_only, listener),
+            );
             return;
         }
 
@@ -3956,7 +3963,7 @@ impl Zeroconf {
 
         self.increase_counter(Counter::Browse, 1);
 
-        let next_time = now + (next_delay * 1000) as u64;
+        let next_time = now + Duration::from_millis((next_delay * 1000) as u64);
         let max_delay = 60 * 60;
         let delay = cmp::min(next_delay * 2, max_delay);
         self.add_retransmission(next_time, Command::Browse(ty, delay, cache_only, listener));
@@ -3981,7 +3988,7 @@ impl Zeroconf {
             );
             return;
         }
-        let now = current_time_millis();
+        let now = Instant::now();
         if !repeating {
             self.add_hostname_resolver(hostname.to_owned(), listener.clone(), timeout);
             // if we already have the records in our cache, just send them
@@ -3991,7 +3998,7 @@ impl Zeroconf {
             let jitter =
                 fastrand::u64(INITIAL_QUERY_DELAY_MIN_MILLIS..INITIAL_QUERY_DELAY_MAX_MILLIS);
             self.add_retransmission(
-                now + jitter,
+                now + Duration::from_millis(jitter),
                 Command::ResolveHostname(hostname, 1, listener, None),
             );
             return;
@@ -4000,7 +4007,7 @@ impl Zeroconf {
         self.send_query_vec(&[(&hostname, RRType::A), (&hostname, RRType::AAAA)]);
         self.increase_counter(Counter::ResolveHostname, 1);
 
-        let next_time = now + u64::from(next_delay) * 1000;
+        let next_time = now + Duration::from_millis(u64::from(next_delay) * 1000);
         let max_delay = 60 * 60;
         let delay = cmp::min(next_delay * 2, max_delay);
 
@@ -4027,7 +4034,7 @@ impl Zeroconf {
             //
             // Back off exponentially
             let next_delay = RESOLVE_RETRY_BASE_MILLIS << try_count;
-            let next_time = current_time_millis() + next_delay;
+            let next_time = Instant::now() + Duration::from_millis(next_delay);
             self.add_retransmission(next_time, Command::Resolve(instance, try_count + 1));
         } else {
             // This fast-path retry chain is ending.
@@ -4054,7 +4061,7 @@ impl Zeroconf {
                         let packet = self.unregister_service(&info, intf, &sock.pktinfo);
                         // repeat for one time just in case some peers miss the message
                         if !repeating && !packet.is_empty() {
-                            let next_time = current_time_millis() + 120;
+                            let next_time = Instant::now() + Duration::from_millis(120);
                             self.retransmissions.push(ReRun {
                                 next_time,
                                 command: Command::UnregisterResend(packet, *if_index, true),
@@ -4067,7 +4074,7 @@ impl Zeroconf {
                     if let Some(sock) = self.ipv6_sock.as_ref() {
                         let packet = self.unregister_service(&info, intf, &sock.pktinfo);
                         if !repeating && !packet.is_empty() {
-                            let next_time = current_time_millis() + 120;
+                            let next_time = Instant::now() + Duration::from_millis(120);
                             self.retransmissions.push(ReRun {
                                 next_time,
                                 command: Command::UnregisterResend(packet, *if_index, false),
@@ -4236,11 +4243,11 @@ impl Zeroconf {
         though its TTL may indicate that it is not yet due to expire, that
         record SHOULD be promptly flushed from the cache.
         */
-        let now = current_time_millis();
+        let now = Instant::now();
         let expire_at = if repeating {
             None
         } else {
-            Some(now + timeout.as_millis() as u64)
+            Some(now + Duration::from_millis(timeout.as_millis() as u64))
         };
 
         // send query for the resource records.
@@ -4257,7 +4264,10 @@ impl Zeroconf {
                 self.add_timer(new_expire); // ensure a check for the new expire time.
 
                 // schedule a resend 1 second later
-                self.add_retransmission(now + 1000, Command::Verify(instance, timeout));
+                self.add_retransmission(
+                    now + Duration::from_millis(1000),
+                    Command::Verify(instance, timeout),
+                );
             }
         }
     }
@@ -4741,7 +4751,7 @@ fn call_service_listener(
 }
 
 fn call_hostname_resolution_listener(
-    listeners_map: &HashMap<String, (Sender<HostnameResolutionEvent>, Option<u64>)>,
+    listeners_map: &HashMap<String, (Sender<HostnameResolutionEvent>, Option<Instant>)>,
     hostname: &str,
     event: HostnameResolutionEvent,
 ) {
@@ -5043,7 +5053,7 @@ fn prepare_announce(
 
     let mut probing_count = 0;
     let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
-    let create_time = current_time_millis() + fastrand::u64(0..250);
+    let create_time = Instant::now() + Duration::from_millis(fastrand::u64(0..250));
 
     out.add_answer_at_time(
         DnsPointer::new(
@@ -5053,7 +5063,7 @@ fn prepare_announce(
             info.get_other_ttl(),
             service_fullname.to_string(),
         ),
-        0,
+        None,
     );
 
     if let Some(sub) = info.get_subtype() {
@@ -5066,7 +5076,7 @@ fn prepare_announce(
                 info.get_other_ttl(),
                 service_fullname.to_string(),
             ),
-            0,
+            None,
         );
     }
 
@@ -5090,7 +5100,7 @@ fn prepare_announce(
     if !info.requires_probe()
         || dns_registry.is_probing_done(&srv, info.get_fullname(), create_time)
     {
-        out.add_answer_at_time(srv, 0);
+        out.add_answer_at_time(srv, None);
     } else {
         probing_count += 1;
     }
@@ -5111,7 +5121,7 @@ fn prepare_announce(
     if !info.requires_probe()
         || dns_registry.is_probing_done(&txt, info.get_fullname(), create_time)
     {
-        out.add_answer_at_time(txt, 0);
+        out.add_answer_at_time(txt, None);
     } else {
         probing_count += 1;
     }
@@ -5136,7 +5146,7 @@ fn prepare_announce(
         if !info.requires_probe()
             || dns_registry.is_probing_done(&dns_addr, info.get_fullname(), create_time)
         {
-            out.add_answer_at_time(dns_addr, 0);
+            out.add_answer_at_time(dns_addr, None);
         } else {
             probing_count += 1;
         }
@@ -5162,7 +5172,7 @@ fn announce_service_on_intf(
     if let Some(mut out) = prepare_announce(info, intf, dns_registry, is_ipv4) {
         // RFC 6762 §6: a record MUST NOT be multicast on an interface more than
         // once per second. Announcements are unsolicited multicast responses.
-        dns_registry.apply_multicast_rate_limit(&mut out, current_time_millis(), is_ipv4);
+        dns_registry.apply_multicast_rate_limit(&mut out, Instant::now(), is_ipv4);
         if out.answers_count() > 0 {
             let _ = send_dns_outgoing(&out, intf, sock, port, None, None)?;
         }
@@ -5240,8 +5250,8 @@ fn hostname_change(original: &str) -> String {
 /// that are finished.
 fn check_probing(
     dns_registry: &mut DnsRegistry,
-    timers: &mut BinaryHeap<Reverse<u64>>,
-    now: u64,
+    timers: &mut BinaryHeap<Reverse<Instant>>,
+    now: Instant,
 ) -> (DnsOutgoing, Vec<String>) {
     let mut expired_probes = Vec::new();
     let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
@@ -5498,8 +5508,8 @@ mod tests {
                 .probing
                 .values_mut()
             {
-                probe.start_time = crate::current_time_millis() - 1000;
-                probe.next_send = 0;
+                probe.start_time = Instant::now() - Duration::from_millis(1000);
+                probe.next_send = probe.start_time;
             }
             daemon.probing_handler();
             assert_eq!(
@@ -6912,11 +6922,11 @@ mod tests {
             let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
             out.add_answer_at_time(
                 DnsPointer::new(&ty_domain, RRType::PTR, CLASS_IN, ttl, instance.clone()),
-                0,
+                None,
             );
             out.add_answer_at_time(
                 DnsSrv::new(&instance, CLASS_IN, ttl, 0, 0, port, host.clone()),
-                0,
+                None,
             );
             out.to_data_on_wire(MAX_PKT_DEFAULT, true)
         };
@@ -6933,7 +6943,7 @@ mod tests {
                     IpAddr::V4(intf_ip),
                     if_id.clone(),
                 ),
-                0,
+                None,
             );
             out.to_data_on_wire(MAX_PKT_DEFAULT, true)
         };
@@ -7090,8 +7100,8 @@ mod tests {
             .probing
             .values_mut()
         {
-            probe.start_time = crate::current_time_millis() - 1000;
-            probe.next_send = 0;
+            probe.start_time = Instant::now() - Duration::from_millis(1000);
+            probe.next_send = probe.start_time;
         }
         daemon.probing_handler();
         assert_eq!(

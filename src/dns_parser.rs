@@ -7,7 +7,6 @@
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace};
 
-use crate::current_time_millis;
 use crate::error::{e_fmt, Error, Result};
 use crate::service_info::{decode_txt, is_unicast_link_local, DnsRegistry, MyIntf, ServiceInfo};
 
@@ -25,6 +24,7 @@ use std::{
     hash::Hash,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     str,
+    time::{Duration, Instant},
 };
 
 /// Represents a network interface identifier defined by the OS.
@@ -455,13 +455,15 @@ impl DnsEntryExt for DnsQuestion {
 #[derive(Debug, Clone)]
 pub struct DnsRecord {
     pub(crate) entry: DnsEntry,
-    ttl: u32,     // in seconds, 0 means this record should not be cached
-    created: u64, // UNIX time in millis
-    expires: u64, // expires at this UNIX time in millis
+    ttl: u32, // in seconds, 0 means this record should not be cached
+    /// When this record was created (received or registered).
+    created: Instant,
+    /// When this record expires.
+    expires: Instant,
 
     /// Support re-query an instance before its PTR record expires.
     /// See https://datatracker.ietf.org/doc/html/rfc6762#section-5.2
-    refresh: u64, // UNIX time in millis
+    refresh: Instant,
 
     /// If conflict resolution decides to change the name, this is the new one.
     new_name: Option<String>,
@@ -469,7 +471,7 @@ pub struct DnsRecord {
 
 impl DnsRecord {
     fn new(name: &str, ty: RRType, class: u16, ttl: u32) -> Self {
-        let created = current_time_millis();
+        let created = Instant::now();
 
         // From RFC 6762 section 5.2:
         // "... The querier should plan to issue a query at 80% of the record
@@ -492,31 +494,31 @@ impl DnsRecord {
         self.ttl
     }
 
-    pub const fn get_expire_time(&self) -> u64 {
+    pub const fn get_expire_time(&self) -> Instant {
         self.expires
     }
 
-    pub const fn get_refresh_time(&self) -> u64 {
+    pub const fn get_refresh_time(&self) -> Instant {
         self.refresh
     }
 
-    pub const fn is_expired(&self, now: u64) -> bool {
+    pub fn is_expired(&self, now: Instant) -> bool {
         now >= self.expires
     }
 
     /// Returns whether record expires in 1 second.
     ///
     /// This is useful because mDNS sets TTL to 1 (not 0) for expiring records.
-    pub const fn expires_soon(&self, now: u64) -> bool {
-        now + 1000 >= self.expires
+    pub fn expires_soon(&self, now: Instant) -> bool {
+        now + Duration::from_millis(1000) >= self.expires
     }
 
-    pub const fn refresh_due(&self, now: u64) -> bool {
+    pub fn refresh_due(&self, now: Instant) -> bool {
         now >= self.refresh
     }
 
     /// Returns whether `now` (in millis) has passed half of TTL.
-    pub fn halflife_passed(&self, now: u64) -> bool {
+    pub fn halflife_passed(&self, now: Instant) -> bool {
         let halflife = get_expiration_time(self.created, self.ttl, 50);
         now > halflife
     }
@@ -532,7 +534,7 @@ impl DnsRecord {
     }
 
     /// Returns if this record is due for refresh. If yes, `refresh` time is updated.
-    pub fn refresh_maybe(&mut self, now: u64) -> bool {
+    pub fn refresh_maybe(&mut self, now: Instant) -> bool {
         if self.is_expired(now) || !self.refresh_due(now) {
             return false;
         }
@@ -563,18 +565,19 @@ impl DnsRecord {
     }
 
     /// Returns the remaining TTL in seconds
-    fn get_remaining_ttl(&self, now: u64) -> u32 {
-        let remaining_millis = get_expiration_time(self.created, self.ttl, 100) - now;
-        cmp::max(0, remaining_millis / 1000) as u32
+    fn get_remaining_ttl(&self, now: Instant) -> u32 {
+        get_expiration_time(self.created, self.ttl, 100)
+            .saturating_duration_since(now)
+            .as_secs() as u32
     }
 
     /// Return the absolute time for this record being created
-    pub const fn get_created(&self) -> u64 {
+    pub const fn get_created(&self) -> Instant {
         self.created
     }
 
-    /// Set the absolute expiration time in millis
-    fn set_expire(&mut self, expire_at: u64) {
+    /// Set the expiration time
+    fn set_expire(&mut self, expire_at: Instant) {
         self.expires = expire_at;
     }
 
@@ -592,11 +595,9 @@ impl DnsRecord {
     }
 
     /// Modify TTL to reflect the remaining life time from `now`.
-    pub fn update_ttl(&mut self, now: u64) {
-        if now > self.created {
-            let elapsed = now - self.created;
-            self.ttl -= (elapsed / 1000) as u32;
-        }
+    pub fn update_ttl(&mut self, now: Instant) {
+        let elapsed = now.saturating_duration_since(self.created);
+        self.ttl = self.ttl.saturating_sub(elapsed.as_secs() as u32);
     }
 
     pub fn set_new_name(&mut self, new_name: String) {
@@ -696,33 +697,33 @@ pub trait DnsRecordExt: fmt::Debug {
         self.get_record_mut().reset_ttl(other.get_record());
     }
 
-    fn get_created(&self) -> u64 {
+    fn get_created(&self) -> Instant {
         self.get_record().get_created()
     }
 
-    fn get_expire(&self) -> u64 {
+    fn get_expire(&self) -> Instant {
         self.get_record().get_expire_time()
     }
 
-    fn set_expire(&mut self, expire_at: u64) {
+    fn set_expire(&mut self, expire_at: Instant) {
         self.get_record_mut().set_expire(expire_at);
     }
 
     /// Set expire as `expire_at` if it is sooner than the current `expire`.
-    fn set_expire_sooner(&mut self, expire_at: u64) {
+    fn set_expire_sooner(&mut self, expire_at: Instant) {
         if expire_at < self.get_expire() {
             self.get_record_mut().set_expire(expire_at);
         }
     }
 
     /// Returns true if the record expires in 1 second from `now`.
-    fn expires_soon(&self, now: u64) -> bool {
+    fn expires_soon(&self, now: Instant) -> bool {
         self.get_record().expires_soon(now)
     }
 
     /// Given `now`, if the record is due to refresh, this method updates the refresh time
     /// and returns the new refresh time. Otherwise, returns None.
-    fn updated_refresh_time(&mut self, now: u64) -> Option<u64> {
+    fn updated_refresh_time(&mut self, now: Instant) -> Option<Instant> {
         if self.get_record_mut().refresh_maybe(now) {
             Some(self.get_record().get_refresh_time())
         } else {
@@ -1438,7 +1439,10 @@ impl DnsOutPacket {
     /// Writes a record (answer, authoritative answer, additional).
     ///
     /// In error cases nothing is written to the packet.
-    fn write_record(&mut self, record_ext: &dyn DnsRecordExt, now: u64) -> WriteResult {
+    /// `now` is `None` for records whose full TTL is written (authorities,
+    /// additionals); for answers it is the time the answer was added, so the
+    /// remaining TTL is written instead.
+    fn write_record(&mut self, record_ext: &dyn DnsRecordExt, now: Option<Instant>) -> WriteResult {
         let start_size = self.size();
 
         let record = record_ext.get_record();
@@ -1451,10 +1455,9 @@ impl DnsOutPacket {
             self.write_short(record.entry.class);
         }
 
-        if now == 0 {
-            self.write_u32(record.ttl);
-        } else {
-            self.write_u32(record.get_remaining_ttl(now));
+        match now {
+            None => self.write_u32(record.ttl),
+            Some(now) => self.write_u32(record.get_remaining_ttl(now)),
         }
 
         // Placeholder for record size
@@ -1797,7 +1800,8 @@ pub struct DnsOutgoing {
     id: u16,
     multicast: bool,
     questions: Vec<DnsQuestion>,
-    answers: Vec<(DnsRecordBox, u64)>,
+    /// Answers with the time they were added (`None`: write the full TTL).
+    answers: Vec<(DnsRecordBox, Option<Instant>)>,
     authorities: Vec<DnsRecordBox>,
     additionals: Vec<DnsRecordBox>,
     known_answer_count: i64, // for internal maintenance only
@@ -1822,7 +1826,7 @@ impl DnsOutgoing {
     }
 
     /// For testing purposes only.
-    pub(crate) fn _answers(&self) -> &[(DnsRecordBox, u64)] {
+    pub(crate) fn _answers(&self) -> &[(DnsRecordBox, Option<Instant>)] {
         &self.answers
     }
 
@@ -1906,7 +1910,7 @@ impl DnsOutgoing {
 
     /// A workaround as Rust doesn't allow us to pass DnsRecordBox in as `impl DnsRecordExt`
     pub fn add_answer_box(&mut self, answer_box: DnsRecordBox) {
-        self.answers.push((answer_box, 0));
+        self.answers.push((answer_box, None));
     }
 
     pub fn add_authority(&mut self, record: DnsRecordBox) {
@@ -1943,18 +1947,20 @@ impl DnsOutgoing {
             return false;
         }
 
-        self.add_answer_at_time(answer, 0)
+        self.add_answer_at_time(answer, None)
     }
 
     /// Returns true if `answer` is added to the outgoing msg.
     /// Returns false if the answer is expired `now` hence not added.
-    /// If `now` is 0, do not check if the answer expires.
+    /// If `now` is `None`, do not check if the answer expires, and write its
+    /// full TTL on the wire.
     pub fn add_answer_at_time(
         &mut self,
         answer: impl DnsRecordExt + Send + 'static,
-        now: u64,
+        now: Option<Instant>,
     ) -> bool {
-        if now == 0 || !answer.get_record().is_expired(now) {
+        let expired = now.is_some_and(|now| answer.get_record().is_expired(now));
+        if !expired {
             trace!("add_answer push: {:?}", &answer);
             self.answers.push((answer.boxed(), now));
             return true;
@@ -2128,13 +2134,13 @@ impl DnsOutgoing {
 
         for auth in self.authorities.iter() {
             builder.add(Section::Authority, |packet| {
-                packet.write_record(auth.as_ref(), 0)
+                packet.write_record(auth.as_ref(), None)
             });
         }
 
         for addi in self.additionals.iter() {
             builder.add(Section::Additional, |packet| {
-                packet.write_record(addi.as_ref(), 0)
+                packet.write_record(addi.as_ref(), None)
             });
         }
 
@@ -2852,12 +2858,12 @@ const fn u32_from_be_slice(s: &[u8]) -> u32 {
     u32::from_be_bytes(u8_array)
 }
 
-/// Returns the UNIX time in millis at which this record will have expired
-/// by a certain percentage.
-const fn get_expiration_time(created: u64, ttl: u32, percent: u32) -> u64 {
-    // 'created' is in millis, 'ttl' is in seconds, hence:
+/// Returns the time at which this record will have expired by a certain
+/// percentage of its TTL.
+fn get_expiration_time(created: Instant, ttl: u32, percent: u32) -> Instant {
+    // 'ttl' is in seconds, hence:
     // ttl * 1000 * (percent / 100) => ttl * percent * 10
-    created + (ttl as u64 * percent as u64 * 10)
+    created + Duration::from_millis(ttl as u64 * percent as u64 * 10)
 }
 
 #[cfg(test)]
@@ -3016,7 +3022,7 @@ mod tests {
                 0xaaaa5555,
                 "test-service".to_string(),
             ),
-            0,
+            None,
         );
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
@@ -3039,7 +3045,7 @@ mod tests {
                 0xaaaa5555,
                 "test-service.local".to_string(),
             ),
-            0,
+            None,
         );
         out.add_answer_at_time(
             DnsPointer::new(
@@ -3049,7 +3055,7 @@ mod tests {
                 0xffffffff,
                 "test-service.local".to_string(),
             ),
-            0,
+            None,
         );
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
@@ -3112,7 +3118,7 @@ mod tests {
                 0,
                 format!("{long_label}._test._tcp.local."),
             ),
-            0,
+            None,
         );
         out.add_answer_at_time(
             DnsPointer::new(
@@ -3122,7 +3128,7 @@ mod tests {
                 0,
                 "ok._test._tcp.local.".to_string(),
             ),
-            0,
+            None,
         );
 
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
@@ -3480,7 +3486,7 @@ mod tests {
 
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
         for i in 0..ANSWER_COUNT {
-            out.add_answer_at_time(ptr_answer(i), 0);
+            out.add_answer_at_time(ptr_answer(i), None);
         }
 
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
@@ -3549,12 +3555,12 @@ mod tests {
     #[test]
     fn test_dns_outgoing_oversized_record_sent_alone() {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        out.add_answer_at_time(ptr_answer(0), 0);
+        out.add_answer_at_time(ptr_answer(0), None);
         out.add_answer_at_time(
             DnsTxt::new("big._spill._tcp.local.", CLASS_IN, 4500, vec![b'x'; 2000]),
-            0,
+            None,
         );
-        out.add_answer_at_time(ptr_answer(1), 0);
+        out.add_answer_at_time(ptr_answer(1), None);
 
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 3, "the big record needs a packet to itself");
@@ -3580,7 +3586,7 @@ mod tests {
     #[test]
     fn test_dns_outgoing_record_over_absolute_ceiling_dropped() {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        out.add_answer_at_time(ptr_answer(0), 0);
+        out.add_answer_at_time(ptr_answer(0), None);
         out.add_answer_at_time(
             DnsTxt::new(
                 "huge._spill._tcp.local.",
@@ -3588,9 +3594,9 @@ mod tests {
                 4500,
                 vec![b'x'; MAX_PKT_ABSOLUTE_IPV6],
             ),
-            0,
+            None,
         );
-        out.add_answer_at_time(ptr_answer(1), 0);
+        out.add_answer_at_time(ptr_answer(1), None);
 
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         for packet in &packets {
@@ -3611,7 +3617,7 @@ mod tests {
     fn test_dns_outgoing_all_sections_spill() {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
         for i in 0..40 {
-            out.add_answer_at_time(ptr_answer(i), 0);
+            out.add_answer_at_time(ptr_answer(i), None);
         }
         for i in 40..80 {
             out.add_authority(Box::new(ptr_answer(i)));
@@ -3656,7 +3662,7 @@ mod tests {
                     "negative.local.".to_string(),
                     bitmap.clone(),
                 ),
-                0,
+                None,
             );
             let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
             assert_eq!(packets.len(), 1);

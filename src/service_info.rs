@@ -14,6 +14,7 @@ use std::{
     fmt,
     net::{IpAddr, Ipv4Addr},
     str::FromStr,
+    time::{Duration, Instant},
 };
 
 #[cfg(feature = "serde")]
@@ -1021,14 +1022,14 @@ pub(crate) struct Probe {
     pub(crate) waiting_services: HashSet<String>,
 
     /// The time (T) to send the first query .
-    pub(crate) start_time: u64,
+    pub(crate) start_time: Instant,
 
     /// The time to send the next (including the first) query.
-    pub(crate) next_send: u64,
+    pub(crate) next_send: Instant,
 }
 
 impl Probe {
-    pub(crate) fn new(start_time: u64) -> Self {
+    pub(crate) fn new(start_time: Instant) -> Self {
         // RFC 6762: https://datatracker.ietf.org/doc/html/rfc6762#section-8.1:
         //
         // "250 ms after the first query, the host should send a second; then,
@@ -1071,7 +1072,7 @@ impl Probe {
 
     /// Compares with `incoming` records. Postpone probe and retry if we yield.
     pub(crate) fn tiebreaking(&mut self, msg: &DnsIncoming, probe_name: &str) {
-        let now = crate::current_time_millis();
+        let now = Instant::now();
 
         // Only do tiebreaking if probe already started.
         // This check also helps avoid redo tiebreaking if start time
@@ -1116,8 +1117,8 @@ impl Probe {
         match cmp_result {
             cmp::Ordering::Less => {
                 debug!("tiebreaking '{probe_name}': LOST, will wait for one second",);
-                self.start_time = now + 1000; // wait and restart.
-                self.next_send = now + 1000;
+                self.start_time = now + Duration::from_millis(1000); // wait and restart.
+                self.next_send = now + Duration::from_millis(1000);
             }
             ordering => {
                 debug!("tiebreaking '{probe_name}': {:?}", ordering);
@@ -1125,15 +1126,15 @@ impl Probe {
         }
     }
 
-    pub(crate) fn update_next_send(&mut self, now: u64) {
-        self.next_send = now + 250;
+    pub(crate) fn update_next_send(&mut self, now: Instant) {
+        self.next_send = now + Duration::from_millis(250);
     }
 
     /// Returns whether this probe is finished.
-    pub(crate) fn expired(&self, now: u64) -> bool {
+    pub(crate) fn expired(&self, now: Instant) -> bool {
         // The 2nd query is T + 250ms, the 3rd query is T + 500ms,
         // The expire time is T + 750ms
-        now >= self.start_time + 750
+        now >= self.start_time + Duration::from_millis(750)
     }
 }
 
@@ -1156,7 +1157,7 @@ pub(crate) struct DnsRegistry {
     pub(crate) active: HashMap<String, Vec<DnsRecordBox>>,
 
     /// timers of the newly added probes.
-    pub(crate) new_timers: Vec<u64>,
+    pub(crate) new_timers: Vec<Instant>,
 
     /// Mapping from original names to new names.
     pub(crate) name_changes: HashMap<String, String>,
@@ -1170,10 +1171,10 @@ pub(crate) struct DnsRegistry {
     /// carries both address families, but they are distinct multicast groups
     /// (`224.0.0.251` and `ff02::fb`) reaching potentially different listeners,
     /// so sending a record on one group must not throttle it on the other.
-    pub(crate) last_multicast_v4: HashMap<String, u64>,
+    pub(crate) last_multicast_v4: HashMap<String, Instant>,
 
     /// Same as [`Self::last_multicast_v4`] but for this interface's IPv6 group.
-    pub(crate) last_multicast_v6: HashMap<String, u64>,
+    pub(crate) last_multicast_v6: HashMap<String, Instant>,
 }
 
 impl DnsRegistry {
@@ -1205,7 +1206,7 @@ impl DnsRegistry {
     pub(crate) fn apply_multicast_rate_limit(
         &mut self,
         out: &mut DnsOutgoing,
-        now: u64,
+        now: Instant,
         is_ipv4: bool,
     ) {
         let last_multicast = if is_ipv4 {
@@ -1216,7 +1217,10 @@ impl DnsRegistry {
 
         // Prune stale entries so the map stays bounded across name changes;
         // any record older than the one-second window is irrelevant now.
-        last_multicast.retain(|_, last| now.saturating_sub(*last) < MULTICAST_RATE_LIMIT_MILLIS);
+        last_multicast.retain(|_, last| {
+            now.saturating_duration_since(*last)
+                < Duration::from_millis(MULTICAST_RATE_LIMIT_MILLIS)
+        });
 
         out.retain_answers(|record| keep_after_rate_limit(last_multicast, record, now));
 
@@ -1238,7 +1242,7 @@ impl DnsRegistry {
         &mut self,
         answer: &T,
         service_name: &str,
-        start_time: u64,
+        start_time: Instant,
     ) -> bool
     where
         T: DnsRecordExt + Send + 'static,
@@ -1296,7 +1300,7 @@ impl DnsRegistry {
         &mut self,
         original: &str,
         new_name: &str,
-        probe_time: u64,
+        probe_time: Instant,
     ) -> bool {
         let mut found_records = Vec::new();
         let mut new_timer_added = false;
@@ -1369,13 +1373,18 @@ pub(crate) const MULTICAST_RATE_LIMIT_MILLIS: u64 = 1000;
 /// Returns whether `record` may still be multicast under the RFC 6762 section 6
 /// rate limit, updating `last_multicast` to `now` when it is kept.
 fn keep_after_rate_limit(
-    last_multicast: &mut HashMap<String, u64>,
+    last_multicast: &mut HashMap<String, Instant>,
     record: &DnsRecordBox,
-    now: u64,
+    now: Instant,
 ) -> bool {
     let key = rate_limit_key(record);
     match last_multicast.get(&key) {
-        Some(last) if now.saturating_sub(*last) < MULTICAST_RATE_LIMIT_MILLIS => false,
+        Some(last)
+            if now.saturating_duration_since(*last)
+                < Duration::from_millis(MULTICAST_RATE_LIMIT_MILLIS) =>
+        {
+            false
+        }
         _ => {
             last_multicast.insert(key, now);
             true
@@ -1512,11 +1521,14 @@ impl ResolvedService {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_txt, encode_txt, u8_slice_to_hex, DnsRegistry, ServiceInfo, TxtProperty};
+    use super::{
+        decode_txt, encode_txt, u8_slice_to_hex, DnsRegistry, Instant, ServiceInfo, TxtProperty,
+    };
     use crate::dns_parser::{DnsOutgoing, DnsPointer, RRType, CLASS_IN, FLAGS_QR_RESPONSE};
     use crate::{IfKind, IfPredicate};
     use if_addrs::{IfAddr, IfOperStatus, Ifv4Addr, Ifv6Addr, Interface};
     use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::time::Duration;
 
     /// RFC 6762 section 6: the same record must not be multicast on an
     /// interface more than once per second, but is allowed again after a
@@ -1535,12 +1547,12 @@ mod tests {
                     4500,
                     "inst._test._tcp.local.".to_string(),
                 ),
-                0,
+                None,
             );
             out
         };
 
-        let now = 1_000_000;
+        let now = Instant::now();
 
         // First multicast at `now`: the record passes through.
         let mut out = build_out();
@@ -1549,12 +1561,12 @@ mod tests {
 
         // Again 500ms later: the record is throttled (dropped).
         let mut out = build_out();
-        registry.apply_multicast_rate_limit(&mut out, now + 500, true);
+        registry.apply_multicast_rate_limit(&mut out, now + Duration::from_millis(500), true);
         assert_eq!(out.answers_count(), 0);
 
         // Exactly 1 second after the first send: allowed again.
         let mut out = build_out();
-        registry.apply_multicast_rate_limit(&mut out, now + 1000, true);
+        registry.apply_multicast_rate_limit(&mut out, now + Duration::from_millis(1000), true);
         assert_eq!(out.answers_count(), 1);
     }
 
@@ -1577,12 +1589,12 @@ mod tests {
                     4500,
                     "inst._test._tcp.local.".to_string(),
                 ),
-                0,
+                None,
             );
             out
         };
 
-        let now = 1_000_000;
+        let now = Instant::now();
 
         // Multicast the record on IPv4: passes through.
         let mut out = build_out();
@@ -1598,12 +1610,12 @@ mod tests {
         // A second IPv4 send within the window is still throttled, confirming
         // the IPv6 send did not reset (or get charged to) the IPv4 bucket.
         let mut out = build_out();
-        registry.apply_multicast_rate_limit(&mut out, now + 500, true);
+        registry.apply_multicast_rate_limit(&mut out, now + Duration::from_millis(500), true);
         assert_eq!(out.answers_count(), 0);
 
         // Likewise a second IPv6 send within the window is throttled.
         let mut out = build_out();
-        registry.apply_multicast_rate_limit(&mut out, now + 500, false);
+        registry.apply_multicast_rate_limit(&mut out, now + Duration::from_millis(500), false);
         assert_eq!(out.answers_count(), 0);
     }
 
@@ -1634,28 +1646,28 @@ mod tests {
             )
         };
 
-        let now = 1_000_000;
+        let now = Instant::now();
 
         // Send the PTR answer once so it is throttled going forward.
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        out.add_answer_at_time(ptr_answer(), 0);
+        out.add_answer_at_time(ptr_answer(), None);
         registry.apply_multicast_rate_limit(&mut out, now, true);
         assert_eq!(out.answers_count(), 1);
 
         // 100ms later: PTR answer is throttled, and `extra` rides along as an
         // additional. With no answer surviving, nothing is sent.
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        out.add_answer_at_time(ptr_answer(), 0);
+        out.add_answer_at_time(ptr_answer(), None);
         out.add_additional_answer(extra());
-        registry.apply_multicast_rate_limit(&mut out, now + 100, true);
+        registry.apply_multicast_rate_limit(&mut out, now + Duration::from_millis(100), true);
         assert_eq!(out.answers_count(), 0);
 
         // 200ms later: `extra` is now requested as a real answer. It must pass,
         // because it was never actually multicast above (only carried as an
         // unsent additional), so the 1-second limit does not apply to it.
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        out.add_answer_at_time(extra(), 0);
-        registry.apply_multicast_rate_limit(&mut out, now + 200, true);
+        out.add_answer_at_time(extra(), None);
+        registry.apply_multicast_rate_limit(&mut out, now + Duration::from_millis(200), true);
         assert_eq!(out.answers_count(), 1);
     }
 
