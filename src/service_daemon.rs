@@ -1172,6 +1172,9 @@ struct Zeroconf {
     /// Interval in millis to check IP address changes.
     ip_check_interval: u64,
 
+    /// When to run the next IP check. `None` when IP checks are disabled.
+    next_ip_check: Option<Instant>,
+
     /// All max packet size selections called to the daemon, in call order.
     /// For an interface matched by more than one, the last one wins.
     max_packet_sizes: Vec<MaxPacketSizeSelection>,
@@ -1380,6 +1383,7 @@ impl Zeroconf {
             monitors,
             service_name_len_max,
             ip_check_interval,
+            next_ip_check: None,
             max_packet_sizes: Vec::new(),
             if_selections,
             signal_sock,
@@ -1538,16 +1542,7 @@ impl Zeroconf {
         }
 
         // Setup timer for IP checks.
-        // `None` when IP checks are disabled.
-        let mut next_ip_check = if self.ip_check_interval > 0 {
-            Some(Instant::now() + Duration::from_millis(self.ip_check_interval))
-        } else {
-            None
-        };
-
-        if let Some(t) = next_ip_check {
-            self.add_timer(t);
-        }
+        self.schedule_ip_check(Instant::now());
 
         // Start the run loop.
 
@@ -1676,11 +1671,8 @@ impl Zeroconf {
             self.probing_handler();
 
             // check IP changes if next_ip_check is reached.
-            if next_ip_check.is_some_and(|t| now >= t) {
-                let t = now + Duration::from_millis(self.ip_check_interval);
-                next_ip_check = Some(t);
-                self.add_timer(t);
-
+            if self.next_ip_check.is_some_and(|t| now >= t) {
+                self.schedule_ip_check(now);
                 self.check_ip_changes();
             }
         }
@@ -1689,7 +1681,10 @@ impl Zeroconf {
     fn process_set_option(&mut self, daemon_opt: DaemonOption) {
         match daemon_opt {
             DaemonOption::ServiceNameLenMax(length) => self.service_name_len_max = length,
-            DaemonOption::IpCheckInterval(interval) => self.ip_check_interval = interval,
+            DaemonOption::IpCheckInterval(interval) => {
+                self.ip_check_interval = interval;
+                self.schedule_ip_check(Instant::now());
+            }
             DaemonOption::MaxPacketSize(if_kind, size) => self.set_max_packet_size(if_kind, size),
             DaemonOption::EnableInterface(if_kind) => self.enable_interface(if_kind),
             DaemonOption::DisableInterface(if_kind) => self.disable_interface(if_kind),
@@ -1820,6 +1815,19 @@ impl Zeroconf {
             if service_info.is_addr_auto() {
                 service_info.remove_ipaddr(addr);
             }
+        }
+    }
+
+    /// Schedules the next IP check one `ip_check_interval` after `now`, or
+    /// cancels it if the interval is 0 (IP check disabled).
+    ///
+    /// A timer left over from an earlier schedule only wakes the run loop
+    /// once; the check itself follows `next_ip_check`.
+    fn schedule_ip_check(&mut self, now: Instant) {
+        self.next_ip_check = (self.ip_check_interval > 0)
+            .then(|| now + Duration::from_millis(self.ip_check_interval));
+        if let Some(t) = self.next_ip_check {
+            self.add_timer(t);
         }
     }
 
@@ -5488,7 +5496,6 @@ mod tests {
 
     /// Builds a daemon on a private port. `Zeroconf::new` joins the mDNS group on
     /// every host interface, loopback included.
-    #[cfg(not(windows))]
     fn new_test_zeroconf() -> super::Zeroconf {
         let signal = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let signal_addr = signal.local_addr().unwrap();
@@ -5554,6 +5561,32 @@ mod tests {
             daemon.my_intfs.contains_key(&65_535),
             "an interface sharing an already-joined IPv4 address must be recorded"
         );
+    }
+
+    /// Setting the IP check interval at runtime takes effect right away:
+    /// 0 disables the check, and a nonzero interval schedules the next one
+    /// from now, even when the check was disabled before.
+    #[test]
+    fn test_set_ip_check_interval_reschedules_the_check() {
+        let mut daemon = new_test_zeroconf();
+        daemon.schedule_ip_check(Instant::now());
+        assert!(
+            daemon.next_ip_check.is_some(),
+            "precondition: the default interval schedules a check"
+        );
+
+        // Disabling must cancel the check, not schedule one for `now` that
+        // would then repeat on every run loop iteration.
+        daemon.process_set_option(super::DaemonOption::IpCheckInterval(0));
+        assert_eq!(daemon.next_ip_check, None);
+
+        let before = Instant::now();
+        daemon.process_set_option(super::DaemonOption::IpCheckInterval(30_000));
+        let next = daemon
+            .next_ip_check
+            .expect("a nonzero interval must re-enable the check");
+        assert!(next >= before + Duration::from_secs(30));
+        assert!(next <= Instant::now() + Duration::from_secs(30));
     }
 
     #[test]
