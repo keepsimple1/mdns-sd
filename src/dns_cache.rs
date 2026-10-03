@@ -5,7 +5,6 @@
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace};
 use crate::{
-    current_time_millis,
     dns_parser::{DnsAddress, DnsPointer, DnsRecordBox, DnsSrv, InterfaceId, RRType},
     service_info::{split_sub_domain, MyIntf},
     ScopedIp,
@@ -13,6 +12,7 @@ use crate::{
 use std::{
     collections::{HashMap, HashSet},
     ops::BitOr,
+    time::{Duration, Instant},
 };
 
 /// Bitflags-style type for filtering by IP version.
@@ -184,7 +184,7 @@ impl DnsCache {
     pub(crate) fn service_verify_queries(
         &mut self,
         instance: &str,
-        expire_at: Option<u64>,
+        expire_at: Option<Instant>,
     ) -> Vec<(String, RRType)> {
         let Some(srv_vec) = self.srv.get_mut(instance) else {
             return Vec::new();
@@ -227,7 +227,7 @@ impl DnsCache {
         &mut self,
         intf: &MyIntf,
         incoming: DnsRecordBox,
-        timers: &mut Vec<u64>,
+        timers: &mut Vec<Instant>,
         is_for_us: bool,
     ) -> Option<(&DnsRecordIntf, bool)> {
         let entry_name = incoming.get_name().to_string();
@@ -336,7 +336,10 @@ impl DnsCache {
 
     /// Iterates all ADDR records and remove ones that expired.
     /// Returns the expired ones in a map of names and addresses.
-    pub(crate) fn evict_expired_addr(&mut self, now: u64) -> HashMap<String, HashSet<ScopedIp>> {
+    pub(crate) fn evict_expired_addr(
+        &mut self,
+        now: Instant,
+    ) -> HashMap<String, HashSet<ScopedIp>> {
         let mut removed = HashMap::new();
 
         self.addr.retain(|_, records| {
@@ -364,7 +367,10 @@ impl DnsCache {
     /// returns the set of expired instance names for each ty_domain.
     ///
     /// An instance in the returned set indicates its PTR and/or SRV record has expired.
-    pub(crate) fn evict_expired_services(&mut self, now: u64) -> HashMap<String, HashSet<String>> {
+    pub(crate) fn evict_expired_services(
+        &mut self,
+        now: Instant,
+    ) -> HashMap<String, HashSet<String>> {
         let mut expired_instances = HashMap::new();
 
         // Check all ty_domain in the cache by following all PTR records, regardless
@@ -477,8 +483,8 @@ impl DnsCache {
 
     /// Checks refresh due for PTR records of `ty_domain`.
     /// Returns all updated refresh time.
-    pub(crate) fn refresh_due_ptr(&mut self, ty_domain: &str) -> HashSet<u64> {
-        let now = current_time_millis();
+    pub(crate) fn refresh_due_ptr(&mut self, ty_domain: &str) -> HashSet<Instant> {
+        let now = Instant::now();
 
         // Check all PTR records for this ty_domain.
         self.ptr
@@ -496,8 +502,8 @@ impl DnsCache {
     pub(crate) fn refresh_due_srv_txt(
         &mut self,
         ty_domain: &str,
-    ) -> (HashMap<String, Vec<RRType>>, HashSet<u64>) {
-        let now = current_time_millis();
+    ) -> (HashMap<String, Vec<RRType>>, HashSet<Instant>) {
+        let now = Instant::now();
 
         let instances: Vec<_> = self
             .ptr
@@ -518,7 +524,7 @@ impl DnsCache {
         let mut new_timers = HashSet::new();
         for instance in instances {
             // Check SRV records.
-            let refresh_timers: HashSet<u64> = self
+            let refresh_timers: HashSet<Instant> = self
                 .srv
                 .get_mut(instance)
                 .into_iter()
@@ -535,7 +541,7 @@ impl DnsCache {
             }
 
             // Check TXT records.
-            let refresh_timers: HashSet<u64> = self
+            let refresh_timers: HashSet<Instant> = self
                 .txt
                 .get_mut(instance)
                 .into_iter()
@@ -557,8 +563,11 @@ impl DnsCache {
 
     /// Returns the set of `host`, where refreshing the A / AAAA records is due
     /// for a `ty_domain`.
-    pub(crate) fn refresh_due_hosts(&mut self, ty_domain: &str) -> (HashSet<String>, HashSet<u64>) {
-        let now = current_time_millis();
+    pub(crate) fn refresh_due_hosts(
+        &mut self,
+        ty_domain: &str,
+    ) -> (HashSet<String>, HashSet<Instant>) {
+        let now = Instant::now();
 
         let instances: Vec<_> = self
             .ptr
@@ -597,7 +606,7 @@ impl DnsCache {
         let mut refresh_due = HashSet::new();
         let mut new_timers = HashSet::new();
         for hostname in hostnames_browsed {
-            let refresh_timers: HashSet<u64> = self
+            let refresh_timers: HashSet<Instant> = self
                 .addr
                 .get_mut(&hostname.to_lowercase())
                 .into_iter()
@@ -620,7 +629,7 @@ impl DnsCache {
         &mut self,
         hostname: &str,
     ) -> HashSet<(String, ScopedIp)> {
-        let now = current_time_millis();
+        let now = Instant::now();
 
         self.addr
             .get_mut(hostname)
@@ -654,7 +663,7 @@ impl DnsCache {
         &'a self,
         name: &str,
         qtype: RRType,
-        now: u64,
+        now: Instant,
     ) -> Vec<&'a DnsRecordIntf> {
         let records_opt = match qtype {
             RRType::PTR => self.get_ptr(name),
@@ -829,9 +838,9 @@ impl DnsCache {
 fn apply_cache_flush(
     incoming: &DnsRecordBox,
     existing_records: &mut [DnsRecordIntf],
-    timers: &mut Vec<u64>,
+    timers: &mut Vec<Instant>,
 ) {
-    let now = current_time_millis();
+    let now = Instant::now();
     let class = incoming.get_class();
     let rtype = incoming.get_type();
 
@@ -847,8 +856,8 @@ fn apply_cache_flush(
 
         if class == r.record.get_class()
             && rtype == r.record.get_type()
-            && now > r.record.get_created() + 1000
-            && r.record.get_expire() > now + 1000
+            && now > r.record.get_created() + Duration::from_millis(1000)
+            && r.record.get_expire() > now + Duration::from_millis(1000)
         {
             should_flush = true;
 
@@ -864,7 +873,7 @@ fn apply_cache_flush(
 
         if should_flush {
             trace!("FLUSH one record: {:?}", &r.record);
-            let new_expire = now + 1000;
+            let new_expire = now + Duration::from_millis(1000);
             r.record.set_expire(new_expire);
 
             // Add a timer so the run loop will handle this expire.
