@@ -1819,10 +1819,7 @@ impl Zeroconf {
     }
 
     /// Schedules the next IP check one `ip_check_interval` after `now`, or
-    /// cancels it if the interval is 0 (IP check disabled).
-    ///
-    /// A timer left over from an earlier schedule only wakes the run loop
-    /// once; the check itself follows `next_ip_check`.
+    /// disables it if the interval is 0.
     fn schedule_ip_check(&mut self, now: Instant) {
         self.next_ip_check = (self.ip_check_interval > 0)
             .then(|| now + Duration::from_millis(self.ip_check_interval));
