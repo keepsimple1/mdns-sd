@@ -334,6 +334,22 @@ impl DnsCache {
         found
     }
 
+    /// Ages every cached record by `elapsed`, so that time the system spent
+    /// asleep counts toward the records' TTLs.
+    pub(crate) fn age_records(&mut self, elapsed: Duration) {
+        let all_records = self
+            .ptr
+            .values_mut()
+            .chain(self.srv.values_mut())
+            .chain(self.txt.values_mut())
+            .chain(self.addr.values_mut())
+            .chain(self.nsec.values_mut())
+            .flatten();
+        for r in all_records {
+            r.record.age_by(elapsed);
+        }
+    }
+
     /// Iterates all ADDR records and remove ones that expired.
     /// Returns the expired ones in a map of names and addresses.
     pub(crate) fn evict_expired_addr(
@@ -1069,5 +1085,49 @@ mod tests {
             "addr map leaked: {:?}",
             cache.addr.keys()
         );
+    }
+
+    /// Aging the cache by how long the system slept expires the records whose
+    /// TTL ran out during the sleep, and keeps the rest with their remaining
+    /// lifetime.
+    #[test]
+    fn test_age_records_expires_records_that_ran_out_during_sleep() {
+        let ty_domain = "_http._tcp.local.";
+        let instance = "my-svc._http._tcp.local.";
+        let host = "myhost.local.";
+        let intf = make_intf("en0", 1);
+
+        let mut cache = DnsCache::new();
+        let mut timers = Vec::new();
+        cache.add_or_update(
+            &intf,
+            DnsPointer::new(ty_domain, RRType::PTR, CLASS_IN, 4500, instance.to_string()).boxed(),
+            &mut timers,
+            true,
+        );
+        cache.add_or_update(
+            &intf,
+            DnsSrv::new(instance, CLASS_IN, 30, 0, 0, 80, host.to_string()).boxed(),
+            &mut timers,
+            true,
+        );
+        assert!(cache.evict_expired_services(Instant::now()).is_empty());
+
+        let ptr = &cache.get_ptr(ty_domain).unwrap()[0].record;
+        let (ptr_expire, ptr_refresh) = (ptr.get_expire(), ptr.get_record().get_refresh_time());
+
+        // Longer than the SRV TTL, shorter than the PTR TTL.
+        let slept = Duration::from_secs(60);
+        cache.age_records(slept);
+
+        let expired = cache.evict_expired_services(Instant::now());
+        assert!(
+            expired[ty_domain].contains(instance),
+            "the SRV record ran out during the sleep"
+        );
+
+        let ptr = &cache.get_ptr(ty_domain).unwrap()[0].record;
+        assert_eq!(ptr.get_expire(), ptr_expire - slept);
+        assert_eq!(ptr.get_record().get_refresh_time(), ptr_refresh - slept);
     }
 }

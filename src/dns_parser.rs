@@ -581,6 +581,30 @@ impl DnsRecord {
         self.expires = expire_at;
     }
 
+    /// Moves this record's timestamps back by `elapsed`, as if `elapsed`
+    /// more time had passed since it was created.
+    ///
+    /// If a timestamp cannot be moved back that far, the record is marked
+    /// expired instead.
+    fn age_by(&mut self, elapsed: Duration) {
+        match (
+            self.created.checked_sub(elapsed),
+            self.expires.checked_sub(elapsed),
+            self.refresh.checked_sub(elapsed),
+        ) {
+            (Some(created), Some(expires), Some(refresh)) => {
+                self.created = created;
+                self.expires = expires;
+                self.refresh = refresh;
+            }
+            _ => {
+                // `created` is in the past, so the record is expired now.
+                self.expires = self.created;
+                self.refresh = self.created;
+            }
+        }
+    }
+
     fn reset_ttl(&mut self, other: &Self) {
         self.ttl = other.ttl;
         self.created = other.created;
@@ -714,6 +738,11 @@ pub trait DnsRecordExt: fmt::Debug {
         if expire_at < self.get_expire() {
             self.get_record_mut().set_expire(expire_at);
         }
+    }
+
+    /// Ages the record by `elapsed`.
+    fn age_by(&mut self, elapsed: Duration) {
+        self.get_record_mut().age_by(elapsed);
     }
 
     /// Returns true if the record expires in 1 second from `now`.
