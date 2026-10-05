@@ -2556,46 +2556,40 @@ impl Zeroconf {
         };
 
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
-        out.add_answer_at_time(
-            DnsPointer::new(
-                info.get_type(),
+        out.add_answer_record(DnsPointer::new(
+            info.get_type(),
+            RRType::PTR,
+            CLASS_IN,
+            0,
+            fullname.to_string(),
+        ));
+
+        if let Some(sub) = info.get_subtype() {
+            trace!("Adding subdomain {}", sub);
+            out.add_answer_record(DnsPointer::new(
+                sub,
                 RRType::PTR,
                 CLASS_IN,
                 0,
                 fullname.to_string(),
-            ),
-            None,
-        );
-
-        if let Some(sub) = info.get_subtype() {
-            trace!("Adding subdomain {}", sub);
-            out.add_answer_at_time(
-                DnsPointer::new(sub, RRType::PTR, CLASS_IN, 0, fullname.to_string()),
-                None,
-            );
+            ));
         }
 
-        out.add_answer_at_time(
-            DnsSrv::new(
-                fullname,
-                CLASS_IN | CLASS_CACHE_FLUSH,
-                0,
-                info.get_priority(),
-                info.get_weight(),
-                info.get_port(),
-                hostname.to_string(),
-            ),
-            None,
-        );
-        out.add_answer_at_time(
-            DnsTxt::new(
-                fullname,
-                CLASS_IN | CLASS_CACHE_FLUSH,
-                0,
-                info.generate_txt(),
-            ),
-            None,
-        );
+        out.add_answer_record(DnsSrv::new(
+            fullname,
+            CLASS_IN | CLASS_CACHE_FLUSH,
+            0,
+            info.get_priority(),
+            info.get_weight(),
+            info.get_port(),
+            hostname.to_string(),
+        ));
+        out.add_answer_record(DnsTxt::new(
+            fullname,
+            CLASS_IN | CLASS_CACHE_FLUSH,
+            0,
+            info.generate_txt(),
+        ));
 
         let if_addrs = if is_ipv4 {
             info.get_addrs_on_my_intf_v4(intf)
@@ -2608,17 +2602,14 @@ impl Zeroconf {
         }
 
         for address in if_addrs {
-            out.add_answer_at_time(
-                DnsAddress::new(
-                    hostname,
-                    ip_address_rr_type(&address),
-                    CLASS_IN | CLASS_CACHE_FLUSH,
-                    0,
-                    address,
-                    intf.into(),
-                ),
-                None,
-            );
+            out.add_answer_record(DnsAddress::new(
+                hostname,
+                ip_address_rr_type(&address),
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                0,
+                address,
+                intf.into(),
+            ));
         }
 
         // Only (at most) one packet is expected to be sent out.
@@ -5126,29 +5117,23 @@ fn prepare_announce(
     let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
     let create_time = Instant::now() + Duration::from_millis(fastrand::u64(0..250));
 
-    out.add_answer_at_time(
-        DnsPointer::new(
-            info.get_type(),
+    out.add_answer_record(DnsPointer::new(
+        info.get_type(),
+        RRType::PTR,
+        CLASS_IN,
+        info.get_other_ttl(),
+        service_fullname.to_string(),
+    ));
+
+    if let Some(sub) = info.get_subtype() {
+        trace!("Adding subdomain {}", sub);
+        out.add_answer_record(DnsPointer::new(
+            sub,
             RRType::PTR,
             CLASS_IN,
             info.get_other_ttl(),
             service_fullname.to_string(),
-        ),
-        None,
-    );
-
-    if let Some(sub) = info.get_subtype() {
-        trace!("Adding subdomain {}", sub);
-        out.add_answer_at_time(
-            DnsPointer::new(
-                sub,
-                RRType::PTR,
-                CLASS_IN,
-                info.get_other_ttl(),
-                service_fullname.to_string(),
-            ),
-            None,
-        );
+        ));
     }
 
     // SRV records.
@@ -5171,7 +5156,7 @@ fn prepare_announce(
     if !info.requires_probe()
         || dns_registry.is_probing_done(&srv, info.get_fullname(), create_time)
     {
-        out.add_answer_at_time(srv, None);
+        out.add_answer_record(srv);
     } else {
         probing_count += 1;
     }
@@ -5192,7 +5177,7 @@ fn prepare_announce(
     if !info.requires_probe()
         || dns_registry.is_probing_done(&txt, info.get_fullname(), create_time)
     {
-        out.add_answer_at_time(txt, None);
+        out.add_answer_record(txt);
     } else {
         probing_count += 1;
     }
@@ -5217,7 +5202,7 @@ fn prepare_announce(
         if !info.requires_probe()
             || dns_registry.is_probing_done(&dns_addr, info.get_fullname(), create_time)
         {
-            out.add_answer_at_time(dns_addr, None);
+            out.add_answer_record(dns_addr);
         } else {
             probing_count += 1;
         }
@@ -6731,10 +6716,10 @@ mod tests {
 
         // Check if the first answer is of type TXT
         let answer = out._answers().first().unwrap();
-        assert_eq!(answer.0.get_type(), RRType::TXT);
+        assert_eq!(answer.get_type(), RRType::TXT);
 
         // Check TTL is set properly for the TXT record
-        assert_eq!(answer.0.get_record().get_ttl(), my_service.get_other_ttl());
+        assert_eq!(answer.get_record().get_ttl(), my_service.get_other_ttl());
     }
 
     #[test]
@@ -7131,31 +7116,36 @@ mod tests {
         // A response carrying PTR + SRV, but deliberately no address record.
         let announce_packets = || {
             let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
-            out.add_answer_at_time(
-                DnsPointer::new(&ty_domain, RRType::PTR, CLASS_IN, ttl, instance.clone()),
-                None,
-            );
-            out.add_answer_at_time(
-                DnsSrv::new(&instance, CLASS_IN, ttl, 0, 0, port, host.clone()),
-                None,
-            );
+            out.add_answer_record(DnsPointer::new(
+                &ty_domain,
+                RRType::PTR,
+                CLASS_IN,
+                ttl,
+                instance.clone(),
+            ));
+            out.add_answer_record(DnsSrv::new(
+                &instance,
+                CLASS_IN,
+                ttl,
+                0,
+                0,
+                port,
+                host.clone(),
+            ));
             out.to_data_on_wire(MAX_PKT_DEFAULT, true)
         };
 
         // A response carrying just the withheld address record.
         let addr_packets = || {
             let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
-            out.add_answer_at_time(
-                DnsAddress::new(
-                    &host,
-                    RRType::A,
-                    CLASS_IN,
-                    ttl,
-                    IpAddr::V4(intf_ip),
-                    if_id.clone(),
-                ),
-                None,
-            );
+            out.add_answer_record(DnsAddress::new(
+                &host,
+                RRType::A,
+                CLASS_IN,
+                ttl,
+                IpAddr::V4(intf_ip),
+                if_id.clone(),
+            ));
             out.to_data_on_wire(MAX_PKT_DEFAULT, true)
         };
 
