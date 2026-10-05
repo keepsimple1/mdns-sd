@@ -56,7 +56,7 @@ use std::{
     fmt, io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, UdpSocket},
     str, thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
     vec,
 };
 
@@ -131,6 +131,11 @@ const SHARED_RESPONSE_DELAY_MAX_MILLIS: u64 = 50;
 /// Like the responder delay above, we use a shorter 10-50 ms window.
 const INITIAL_QUERY_DELAY_MIN_MILLIS: u64 = 10;
 const INITIAL_QUERY_DELAY_MAX_MILLIS: u64 = 50;
+
+/// The smallest gap between the wall clock and `Instant` that is taken as the
+/// system having slept. Smaller gaps are left alone: they are within the
+/// drift between the two clocks, and too short to matter for record TTLs.
+const SLEEP_DETECTION_THRESHOLD: Duration = Duration::from_secs(2);
 
 /// Response status code for the service `unregister` call.
 #[derive(Debug)]
@@ -1544,6 +1549,10 @@ impl Zeroconf {
         // Setup timer for IP checks.
         self.schedule_ip_check(Instant::now());
 
+        // Both clocks as of the previous iteration, to detect system sleep.
+        let mut last_now = Instant::now();
+        let mut last_wall_now = SystemTime::now();
+
         // Start the run loop.
 
         let mut events = mio::Events::with_capacity(1024);
@@ -1566,6 +1575,18 @@ impl Zeroconf {
             }
 
             let now = Instant::now();
+
+            // Count the time the system slept toward the cached records' TTLs.
+            let wall_now = SystemTime::now();
+            if let Some(slept) = slept_duration(
+                now.saturating_duration_since(last_now),
+                wall_now.duration_since(last_wall_now).ok(),
+            ) {
+                debug!("system slept for about {:?}: aging cached records", slept);
+                self.cache.age_records(slept);
+            }
+            last_now = now;
+            last_wall_now = wall_now;
 
             // Remove the timers if already passed.
             self.pop_timers_till(now);
@@ -4698,6 +4719,13 @@ enum DaemonOption {
 /// The length of Service Domain name supported in this lib.
 const DOMAIN_LEN: usize = "._tcp.local.".len();
 
+/// Returns how long the system slept, given how far `Instant` and the wall
+/// clock moved over the same period, or `None` if it did not sleep.
+fn slept_duration(instant_elapsed: Duration, wall_elapsed: Option<Duration>) -> Option<Duration> {
+    let gap = wall_elapsed?.checked_sub(instant_elapsed)?;
+    (gap > SLEEP_DETECTION_THRESHOLD).then_some(gap)
+}
+
 /// Validate the length of "service_name" in a "_<service_name>.<domain_name>." string.
 fn check_service_name_length(ty_domain: &str, limit: u8) -> Result<()> {
     if ty_domain.len() <= DOMAIN_LEN + 1 {
@@ -5558,6 +5586,26 @@ mod tests {
             daemon.my_intfs.contains_key(&65_535),
             "an interface sharing an already-joined IPv4 address must be recorded"
         );
+    }
+
+    #[test]
+    fn test_slept_duration() {
+        use super::{slept_duration, SLEEP_DETECTION_THRESHOLD};
+        let secs = Duration::from_secs;
+
+        // Both clocks moved together: no sleep.
+        assert_eq!(slept_duration(secs(60), Some(secs(60))), None);
+
+        // A gap within the threshold is drift between the clocks, not sleep.
+        let drift = secs(60) + SLEEP_DETECTION_THRESHOLD;
+        assert_eq!(slept_duration(secs(60), Some(drift)), None);
+
+        // The wall clock moved an hour further than `Instant`.
+        assert_eq!(slept_duration(secs(5), Some(secs(3605))), Some(secs(3600)));
+
+        // The wall clock moved less than `Instant`, or went backwards.
+        assert_eq!(slept_duration(secs(60), Some(secs(10))), None);
+        assert_eq!(slept_duration(secs(60), None), None);
     }
 
     /// Setting the IP check interval at runtime takes effect right away:
