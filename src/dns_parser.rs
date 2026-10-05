@@ -564,13 +564,6 @@ impl DnsRecord {
         true
     }
 
-    /// Returns the remaining TTL in seconds
-    fn get_remaining_ttl(&self, now: Instant) -> u32 {
-        get_expiration_time(self.created, self.ttl, 100)
-            .saturating_duration_since(now)
-            .as_secs() as u32
-    }
-
     /// Return the absolute time for this record being created
     pub const fn get_created(&self) -> Instant {
         self.created
@@ -1468,10 +1461,7 @@ impl DnsOutPacket {
     /// Writes a record (answer, authoritative answer, additional).
     ///
     /// In error cases nothing is written to the packet.
-    /// `now` is `None` for records whose full TTL is written (authorities,
-    /// additionals); for answers it is the time the answer was added, so the
-    /// remaining TTL is written instead.
-    fn write_record(&mut self, record_ext: &dyn DnsRecordExt, now: Option<Instant>) -> WriteResult {
+    fn write_record(&mut self, record_ext: &dyn DnsRecordExt) -> WriteResult {
         let start_size = self.size();
 
         let record = record_ext.get_record();
@@ -1484,10 +1474,7 @@ impl DnsOutPacket {
             self.write_short(record.entry.class);
         }
 
-        match now {
-            None => self.write_u32(record.ttl),
-            Some(now) => self.write_u32(record.get_remaining_ttl(now)),
-        }
+        self.write_u32(record.ttl);
 
         // Placeholder for record size
         self.write_short(0);
@@ -1829,8 +1816,7 @@ pub struct DnsOutgoing {
     id: u16,
     multicast: bool,
     questions: Vec<DnsQuestion>,
-    /// Answers with the time they were added (`None`: write the full TTL).
-    answers: Vec<(DnsRecordBox, Option<Instant>)>,
+    answers: Vec<DnsRecordBox>,
     authorities: Vec<DnsRecordBox>,
     additionals: Vec<DnsRecordBox>,
     known_answer_count: i64, // for internal maintenance only
@@ -1855,7 +1841,7 @@ impl DnsOutgoing {
     }
 
     /// For testing purposes only.
-    pub(crate) fn _answers(&self) -> &[(DnsRecordBox, Option<Instant>)] {
+    pub(crate) fn _answers(&self) -> &[DnsRecordBox] {
         &self.answers
     }
 
@@ -1939,7 +1925,7 @@ impl DnsOutgoing {
 
     /// A workaround as Rust doesn't allow us to pass DnsRecordBox in as `impl DnsRecordExt`
     pub fn add_answer_box(&mut self, answer_box: DnsRecordBox) {
-        self.answers.push((answer_box, None));
+        self.answers.push(answer_box);
     }
 
     pub fn add_authority(&mut self, record: DnsRecordBox) {
@@ -1951,7 +1937,7 @@ impl DnsOutgoing {
     where
         F: FnMut(&DnsRecordBox) -> bool,
     {
-        self.answers.retain(|(record, _)| keep(record));
+        self.answers.retain(|record| keep(record));
     }
 
     /// Retains only the additional records for which `keep` returns true.
@@ -1963,7 +1949,7 @@ impl DnsOutgoing {
     }
 
     /// Returns true if `answer` is added to the outgoing msg.
-    /// Returns false if `answer` was not added as it expired or suppressed by the incoming `msg`.
+    /// Returns false if `answer` was not added as it is suppressed by the incoming `msg`.
     pub fn add_answer(
         &mut self,
         msg: &DnsIncoming,
@@ -1976,25 +1962,15 @@ impl DnsOutgoing {
             return false;
         }
 
-        self.add_answer_at_time(answer, None)
+        self.add_answer_record(answer);
+        true
     }
 
-    /// Returns true if `answer` is added to the outgoing msg.
-    /// Returns false if the answer is expired `now` hence not added.
-    /// If `now` is `None`, do not check if the answer expires, and write its
-    /// full TTL on the wire.
-    pub fn add_answer_at_time(
-        &mut self,
-        answer: impl DnsRecordExt + Send + 'static,
-        now: Option<Instant>,
-    ) -> bool {
-        let expired = now.is_some_and(|now| answer.get_record().is_expired(now));
-        if !expired {
-            trace!("add_answer push: {:?}", &answer);
-            self.answers.push((answer.boxed(), now));
-            return true;
-        }
-        false
+    /// Adds `answer` to the outgoing msg unconditionally. Its full TTL is
+    /// written on the wire.
+    pub fn add_answer_record(&mut self, answer: impl DnsRecordExt + Send + 'static) {
+        trace!("add_answer push: {:?}", &answer);
+        self.answers.push(answer.boxed());
     }
 
     /// Adds a PTR answer for `service` along with recommended additional records
@@ -2107,7 +2083,7 @@ impl DnsOutgoing {
             record.entry.cache_flush = false;
             record.ttl = record.ttl.min(LEGACY_UNICAST_MAX_TTL);
         };
-        for (rec, _) in &mut self.answers {
+        for rec in &mut self.answers {
             update(rec);
         }
         for rec in &mut self.additionals {
@@ -2155,21 +2131,21 @@ impl DnsOutgoing {
             builder.add(Section::Question, |packet| packet.write_question(question));
         }
 
-        for (answer, time) in self.answers.iter() {
+        for answer in self.answers.iter() {
             builder.add(Section::Answer, |packet| {
-                packet.write_record(answer.as_ref(), *time)
+                packet.write_record(answer.as_ref())
             });
         }
 
         for auth in self.authorities.iter() {
             builder.add(Section::Authority, |packet| {
-                packet.write_record(auth.as_ref(), None)
+                packet.write_record(auth.as_ref())
             });
         }
 
         for addi in self.additionals.iter() {
             builder.add(Section::Additional, |packet| {
-                packet.write_record(addi.as_ref(), None)
+                packet.write_record(addi.as_ref())
             });
         }
 
@@ -3043,16 +3019,13 @@ mod tests {
     #[test]
     fn test_dns_outgoing_serialization_answer_at_time() {
         let mut out = DnsOutgoing::new(0);
-        out.add_answer_at_time(
-            DnsPointer::new(
-                "test",
-                RRType::PTR,
-                CLASS_IN,
-                0xaaaa5555,
-                "test-service".to_string(),
-            ),
-            None,
-        );
+        out.add_answer_record(DnsPointer::new(
+            "test",
+            RRType::PTR,
+            CLASS_IN,
+            0xaaaa5555,
+            "test-service".to_string(),
+        ));
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
         assert_eq!(
@@ -3066,26 +3039,20 @@ mod tests {
         );
 
         let mut out = DnsOutgoing::new(0);
-        out.add_answer_at_time(
-            DnsPointer::new(
-                "test",
-                RRType::CNAME,
-                CLASS_IN,
-                0xaaaa5555,
-                "test-service.local".to_string(),
-            ),
-            None,
-        );
-        out.add_answer_at_time(
-            DnsPointer::new(
-                "test",
-                RRType::AAAA,
-                CLASS_IN,
-                0xffffffff,
-                "test-service.local".to_string(),
-            ),
-            None,
-        );
+        out.add_answer_record(DnsPointer::new(
+            "test",
+            RRType::CNAME,
+            CLASS_IN,
+            0xaaaa5555,
+            "test-service.local".to_string(),
+        ));
+        out.add_answer_record(DnsPointer::new(
+            "test",
+            RRType::AAAA,
+            CLASS_IN,
+            0xffffffff,
+            "test-service.local".to_string(),
+        ));
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
         assert_eq!(
@@ -3139,26 +3106,20 @@ mod tests {
     fn test_dns_outgoing_record_label_too_long() {
         let long_label = "a".repeat(64);
         let mut out = DnsOutgoing::new(0);
-        out.add_answer_at_time(
-            DnsPointer::new(
-                "_test._tcp.local.",
-                RRType::PTR,
-                CLASS_IN,
-                0,
-                format!("{long_label}._test._tcp.local."),
-            ),
-            None,
-        );
-        out.add_answer_at_time(
-            DnsPointer::new(
-                "_test._tcp.local.",
-                RRType::PTR,
-                CLASS_IN,
-                0,
-                "ok._test._tcp.local.".to_string(),
-            ),
-            None,
-        );
+        out.add_answer_record(DnsPointer::new(
+            "_test._tcp.local.",
+            RRType::PTR,
+            CLASS_IN,
+            0,
+            format!("{long_label}._test._tcp.local."),
+        ));
+        out.add_answer_record(DnsPointer::new(
+            "_test._tcp.local.",
+            RRType::PTR,
+            CLASS_IN,
+            0,
+            "ok._test._tcp.local.".to_string(),
+        ));
 
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
@@ -3515,7 +3476,7 @@ mod tests {
 
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
         for i in 0..ANSWER_COUNT {
-            out.add_answer_at_time(ptr_answer(i), None);
+            out.add_answer_record(ptr_answer(i));
         }
 
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
@@ -3584,12 +3545,14 @@ mod tests {
     #[test]
     fn test_dns_outgoing_oversized_record_sent_alone() {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        out.add_answer_at_time(ptr_answer(0), None);
-        out.add_answer_at_time(
-            DnsTxt::new("big._spill._tcp.local.", CLASS_IN, 4500, vec![b'x'; 2000]),
-            None,
-        );
-        out.add_answer_at_time(ptr_answer(1), None);
+        out.add_answer_record(ptr_answer(0));
+        out.add_answer_record(DnsTxt::new(
+            "big._spill._tcp.local.",
+            CLASS_IN,
+            4500,
+            vec![b'x'; 2000],
+        ));
+        out.add_answer_record(ptr_answer(1));
 
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 3, "the big record needs a packet to itself");
@@ -3615,17 +3578,14 @@ mod tests {
     #[test]
     fn test_dns_outgoing_record_over_absolute_ceiling_dropped() {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        out.add_answer_at_time(ptr_answer(0), None);
-        out.add_answer_at_time(
-            DnsTxt::new(
-                "huge._spill._tcp.local.",
-                CLASS_IN,
-                4500,
-                vec![b'x'; MAX_PKT_ABSOLUTE_IPV6],
-            ),
-            None,
-        );
-        out.add_answer_at_time(ptr_answer(1), None);
+        out.add_answer_record(ptr_answer(0));
+        out.add_answer_record(DnsTxt::new(
+            "huge._spill._tcp.local.",
+            CLASS_IN,
+            4500,
+            vec![b'x'; MAX_PKT_ABSOLUTE_IPV6],
+        ));
+        out.add_answer_record(ptr_answer(1));
 
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         for packet in &packets {
@@ -3646,7 +3606,7 @@ mod tests {
     fn test_dns_outgoing_all_sections_spill() {
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
         for i in 0..40 {
-            out.add_answer_at_time(ptr_answer(i), None);
+            out.add_answer_record(ptr_answer(i));
         }
         for i in 40..80 {
             out.add_authority(Box::new(ptr_answer(i)));
@@ -3683,16 +3643,13 @@ mod tests {
             (vec![0x40, 0, 0, 8], vec![1, 28]),
         ] {
             let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | super::FLAGS_AA);
-            out.add_answer_at_time(
-                super::DnsNSec::new(
-                    "negative.local.",
-                    CLASS_IN | super::CLASS_CACHE_FLUSH,
-                    120,
-                    "negative.local.".to_string(),
-                    bitmap.clone(),
-                ),
-                None,
-            );
+            out.add_answer_record(super::DnsNSec::new(
+                "negative.local.",
+                CLASS_IN | super::CLASS_CACHE_FLUSH,
+                120,
+                "negative.local.".to_string(),
+                bitmap.clone(),
+            ));
             let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
             assert_eq!(packets.len(), 1);
             let data = packets[0].as_bytes().to_vec();

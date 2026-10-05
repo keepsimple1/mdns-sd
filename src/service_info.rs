@@ -1539,16 +1539,13 @@ mod tests {
 
         let build_out = || {
             let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-            out.add_answer_at_time(
-                DnsPointer::new(
-                    "_test._tcp.local.",
-                    RRType::PTR,
-                    CLASS_IN,
-                    4500,
-                    "inst._test._tcp.local.".to_string(),
-                ),
-                None,
-            );
+            out.add_answer_record(DnsPointer::new(
+                "_test._tcp.local.",
+                RRType::PTR,
+                CLASS_IN,
+                4500,
+                "inst._test._tcp.local.".to_string(),
+            ));
             out
         };
 
@@ -1581,16 +1578,13 @@ mod tests {
 
         let build_out = || {
             let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-            out.add_answer_at_time(
-                DnsPointer::new(
-                    "_test._tcp.local.",
-                    RRType::PTR,
-                    CLASS_IN,
-                    4500,
-                    "inst._test._tcp.local.".to_string(),
-                ),
-                None,
-            );
+            out.add_answer_record(DnsPointer::new(
+                "_test._tcp.local.",
+                RRType::PTR,
+                CLASS_IN,
+                4500,
+                "inst._test._tcp.local.".to_string(),
+            ));
             out
         };
 
@@ -1650,14 +1644,14 @@ mod tests {
 
         // Send the PTR answer once so it is throttled going forward.
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        out.add_answer_at_time(ptr_answer(), None);
+        out.add_answer_record(ptr_answer());
         registry.apply_multicast_rate_limit(&mut out, now, true);
         assert_eq!(out.answers_count(), 1);
 
         // 100ms later: PTR answer is throttled, and `extra` rides along as an
         // additional. With no answer surviving, nothing is sent.
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        out.add_answer_at_time(ptr_answer(), None);
+        out.add_answer_record(ptr_answer());
         out.add_additional_answer(extra());
         registry.apply_multicast_rate_limit(&mut out, now + Duration::from_millis(100), true);
         assert_eq!(out.answers_count(), 0);
@@ -1666,7 +1660,7 @@ mod tests {
         // because it was never actually multicast above (only carried as an
         // unsent additional), so the 1-second limit does not apply to it.
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
-        out.add_answer_at_time(extra(), None);
+        out.add_answer_record(extra());
         registry.apply_multicast_rate_limit(&mut out, now + Duration::from_millis(200), true);
         assert_eq!(out.answers_count(), 1);
     }
