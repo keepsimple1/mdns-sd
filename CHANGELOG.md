@@ -1,3 +1,28 @@
+# Version 0.21.5 (2026-10-04)
+
+This is a bugfix release.
+
+## Bug fixes
+
+- Keep the daemon's timers on a monotonic clock. Previously, setting the system clock
+  back stalled announcements, IP checks and other timers. (#516)
+- Count system sleep toward cached record TTLs. After the system wakes, records whose
+  TTL ran out during the sleep are removed and refreshed as usual, instead of being
+  kept as if no time had passed. (#518)
+- Apply `set_ip_check_interval` immediately. Setting the interval to 0 now disables
+  the IP check, instead of re-running it in a busy loop. (#517)
+- Interfaces sharing an IPv4 address (e.g. the bridge interfaces of VMs and containers
+  on macOS) no longer retry the multicast join on every IP check. (#513)
+
+## All changes
+
+* `f76eedb 2026-10-04` refactor: remove the unused per-answer timestamp from DnsOutgoing (#519) (keepsimple1)
+* `8222d6d 2026-10-04` fix: count system sleep toward cached record TTLs (#518) (keepsimple1)
+* `6c50c9c 2026-10-03` fix: apply IP check interval changes immediately (#517) (keepsimple1)
+* `cba4ab4 2026-10-03` fix: keep the daemon's timers on a monotonic clock (#516) (Jesper L. Nielsen)
+* `37c8e24 2026-10-03` fix: interfaces sharing an IPv4 address no longer retry the multicast join (#513) (David Veszelovszki)
+* `a44e673 2026-10-01` refactoring: extract duplicated code into new_multicast_socket (#515) (keepsimple1)
+
 # Version 0.21.4 (2026-09-20)
 
 This is a bugfix release with query-handling fixes and internal refactoring.
