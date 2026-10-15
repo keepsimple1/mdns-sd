@@ -1467,9 +1467,6 @@ impl Zeroconf {
     fn remove_service_subscription(&mut self, ty_domain: &str) -> Option<Sender<ServiceEvent>> {
         let sender = self.service_queriers.remove(ty_domain);
         self.clear_service_retransmissions(ty_domain);
-        if sender.is_some() {
-            self.cache.remove_service_type(ty_domain);
-        }
         sender
     }
 
@@ -1479,12 +1476,7 @@ impl Zeroconf {
     ) -> Option<(Sender<HostnameResolutionEvent>, Option<Instant>)> {
         let key = hostname.to_lowercase();
         let entry = self.hostname_resolvers.remove(&key);
-        self.retransmissions.retain(|r| {
-            !matches!(
-                &r.command,
-                Command::ResolveHostname(h, _, _, _) if h.to_lowercase() == key
-            ) && !matches!(&r.command, Command::Resolve(h, _) if h.to_lowercase() == key)
-        });
+        self.clear_hostname_retransmissions(&key);
         entry
     }
 
@@ -4328,6 +4320,9 @@ impl Zeroconf {
         match self.remove_service_subscription(&ty_domain) {
             None => debug!("StopBrowse: cannot find querier for {}", &ty_domain),
             Some(sender) => {
+                // Remove cache entries.
+                self.cache.remove_service_type(&ty_domain);
+
                 trace!("StopBrowse: removed queryer for {}", &ty_domain);
                 match sender.try_send(ServiceEvent::SearchStopped(ty_domain)) {
                     Ok(()) => trace!("Sent SearchStopped to the listener"),
@@ -7902,7 +7897,7 @@ mod tests {
     fn test_cleanup_full_listeners() {
         let mut zc = new_test_zeroconf();
         let ty = "_cleanup._tcp.local.";
-        let (sender, receiver) = flume::bounded(10);
+        let (sender, _receiver) = flume::bounded(10);
         zc.service_queriers.insert(ty.to_string(), sender.clone());
         for i in 0..10 {
             sender
@@ -7920,7 +7915,6 @@ mod tests {
         assert!(zc.service_queriers.is_empty());
         assert!(zc.hostname_resolvers.is_empty());
         assert!(zc.retransmissions.is_empty());
-        assert!(receiver.len() <= 10);
     }
 
     #[test]
