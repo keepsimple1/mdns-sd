@@ -82,6 +82,12 @@ const GROUP_ADDR_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const GROUP_ADDR_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
 const LOOPBACK_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
+/// Capacity of event channels returned by `browse`, `browse_cache`, and `resolve_hostname`.
+///
+/// flume does not preallocate, so unused capacity has no cost. If a receiver falls too far
+/// behind and the channel fills, the subscription is closed (see those APIs).
+const EVENT_CHANNEL_CAPACITY: usize = 1000;
+
 /// The first fast-path follow-up resolve query fires this soon after an
 /// instance is found via PTR. Subsequent tries back off exponentially
 /// (200ms, 400ms, 800ms, 1600ms), see `exec_command_resolve`.
@@ -430,6 +436,9 @@ impl ServiceDaemon {
     /// When a new instance is found, the daemon automatically tries to resolve, i.e.
     /// finding more details, i.e. SRV records and TXT records.
     ///
+    /// The subscription ends if the event channel is full (e.g. the receiver
+    /// falls too far behind).
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Msg`] if `service_type` does not end with
@@ -441,7 +450,7 @@ impl ServiceDaemon {
     pub fn browse(&self, service_type: &str) -> Result<Receiver<ServiceEvent>> {
         check_domain_suffix(service_type)?;
 
-        let (resp_s, resp_r) = bounded(10);
+        let (resp_s, resp_r) = bounded(EVENT_CHANNEL_CAPACITY);
         self.send_cmd(Command::Browse(service_type.to_string(), 1, false, resp_s))?;
         Ok(resp_r)
     }
@@ -455,13 +464,16 @@ impl ServiceDaemon {
     ///
     /// See [accept_unsolicited](Self::accept_unsolicited) if you want to do cache-only browsing.
     ///
+    /// The subscription ends if the event channel is full (e.g. the receiver
+    /// falls too far behind).
+    ///
     /// # Errors
     ///
     /// Same error conditions as [`browse`](Self::browse).
     pub fn browse_cache(&self, service_type: &str) -> Result<Receiver<ServiceEvent>> {
         check_domain_suffix(service_type)?;
 
-        let (resp_s, resp_r) = bounded(10);
+        let (resp_s, resp_r) = bounded(EVENT_CHANNEL_CAPACITY);
         self.send_cmd(Command::Browse(service_type.to_string(), 1, true, resp_s))?;
         Ok(resp_r)
     }
@@ -485,6 +497,9 @@ impl ServiceDaemon {
     ///
     /// The `timeout` is specified in milliseconds.
     ///
+    /// The subscription ends if the event channel is full (e.g. the receiver
+    /// falls too far behind).
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Msg`] if:
@@ -502,7 +517,7 @@ impl ServiceDaemon {
         timeout: Option<u64>,
     ) -> Result<Receiver<HostnameResolutionEvent>> {
         check_hostname(hostname)?;
-        let (resp_s, resp_r) = bounded(10);
+        let (resp_s, resp_r) = bounded(EVENT_CHANNEL_CAPACITY);
         self.send_cmd(Command::ResolveHostname(
             hostname.to_string(),
             1,
@@ -1434,6 +1449,104 @@ impl Zeroconf {
         Ok(())
     }
 
+    fn clear_service_retransmissions(&mut self, ty_domain: &str) {
+        self.retransmissions
+            .retain(|r| !matches!(&r.command, Command::Browse(t, _, _, _) if t == ty_domain));
+    }
+
+    fn clear_hostname_retransmissions(&mut self, hostname: &str) {
+        let key = hostname.to_lowercase();
+        self.retransmissions.retain(|r| {
+            !matches!(
+                &r.command,
+                Command::ResolveHostname(h, _, _, _) if h.to_lowercase() == key
+            )
+        });
+    }
+
+    fn remove_service_subscription(&mut self, ty_domain: &str) -> Option<Sender<ServiceEvent>> {
+        let sender = self.service_queriers.remove(ty_domain);
+        self.clear_service_retransmissions(ty_domain);
+        sender
+    }
+
+    fn remove_hostname_subscription(
+        &mut self,
+        hostname: &str,
+    ) -> Option<(Sender<HostnameResolutionEvent>, Option<Instant>)> {
+        let key = hostname.to_lowercase();
+        let entry = self.hostname_resolvers.remove(&key);
+        self.clear_hostname_retransmissions(&key);
+        entry
+    }
+
+    fn service_live(&self, ty_domain: &str, sender: &Sender<ServiceEvent>) -> bool {
+        self.service_queriers
+            .get(ty_domain)
+            .is_some_and(|s| s.same_channel(sender))
+    }
+
+    fn hostname_live(&self, hostname: &str, sender: &Sender<HostnameResolutionEvent>) -> bool {
+        self.hostname_resolvers
+            .get(&hostname.to_lowercase())
+            .is_some_and(|(s, _)| s.same_channel(sender))
+    }
+
+    fn push_service(&mut self, ty_domain: &str, event: ServiceEvent) {
+        let Some(sender) = self.service_queriers.get(ty_domain).cloned() else {
+            return;
+        };
+        match sender.try_send(event) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                debug!(
+                    "subscription closed: event channel full for service type {}",
+                    ty_domain
+                );
+                self.remove_service_subscription(ty_domain);
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.remove_service_subscription(ty_domain);
+            }
+        }
+    }
+
+    fn push_hostname(&mut self, hostname: &str, event: HostnameResolutionEvent) {
+        let key = hostname.to_lowercase();
+        let Some((sender, _)) = self.hostname_resolvers.get(&key).cloned() else {
+            return;
+        };
+        match sender.try_send(event) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                debug!(
+                    "subscription closed: event channel full for hostname {}",
+                    hostname
+                );
+                self.remove_hostname_subscription(&key);
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.remove_hostname_subscription(&key);
+            }
+        }
+    }
+
+    fn expire_hostname_resolvers(&mut self, now: Instant) {
+        let expired: Vec<String> = self
+            .hostname_resolvers
+            .iter()
+            .filter(|(_, (_, timeout))| timeout.map(|t| now >= t).unwrap_or(false))
+            .map(|(hostname, _)| hostname.clone())
+            .collect();
+        for hostname in expired {
+            trace!("hostname resolver timeout for {}", &hostname);
+            if let Some((sender, _)) = self.remove_hostname_subscription(&hostname) {
+                let _ = sender.try_send(HostnameResolutionEvent::SearchTimeout(hostname.clone()));
+                let _ = sender.try_send(HostnameResolutionEvent::SearchStopped(hostname));
+            }
+        }
+    }
+
     /// Clean up all resources before shutdown.
     ///
     /// This method:
@@ -1470,7 +1583,7 @@ impl Zeroconf {
             debug!("Stopping browse during shutdown: {}", &ty_domain);
             if let Some(sender) = self.service_queriers.remove(&ty_domain) {
                 // Notify the client
-                if let Err(e) = sender.send(ServiceEvent::SearchStopped(ty_domain.clone())) {
+                if let Err(e) = sender.try_send(ServiceEvent::SearchStopped(ty_domain.clone())) {
                     debug!("Failed to send SearchStopped during shutdown: {}", e);
                 }
             }
@@ -1486,7 +1599,7 @@ impl Zeroconf {
             if let Some((sender, _timeout)) = self.hostname_resolvers.remove(&hostname) {
                 // Notify the client
                 if let Err(e) =
-                    sender.send(HostnameResolutionEvent::SearchStopped(hostname.clone()))
+                    sender.try_send(HostnameResolutionEvent::SearchStopped(hostname.clone()))
                 {
                     debug!(
                         "Failed to send HostnameResolutionEvent::SearchStopped during shutdown: {}",
@@ -1592,26 +1705,7 @@ impl Zeroconf {
             self.pop_timers_till(now);
 
             // Remove hostname resolvers with expired timeouts.
-            for hostname in self
-                .hostname_resolvers
-                .clone()
-                .into_iter()
-                .filter(|(_, (_, timeout))| timeout.map(|t| now >= t).unwrap_or(false))
-                .map(|(hostname, _)| hostname)
-            {
-                trace!("hostname resolver timeout for {}", &hostname);
-                call_hostname_resolution_listener(
-                    &self.hostname_resolvers,
-                    &hostname,
-                    HostnameResolutionEvent::SearchTimeout(hostname.to_owned()),
-                );
-                call_hostname_resolution_listener(
-                    &self.hostname_resolvers,
-                    &hostname,
-                    HostnameResolutionEvent::SearchStopped(hostname.to_owned()),
-                );
-                self.hostname_resolvers.remove(&hostname);
-            }
+            self.expire_hostname_resolvers(now);
 
             // process commands from the command channel
             while let Ok(command) = receiver.try_recv() {
@@ -1678,8 +1772,7 @@ impl Zeroconf {
             // Notify hostname listeners about the expired records.
             let expired_addrs = self.cache.evict_expired_addr(now);
             for (hostname, addrs) in expired_addrs {
-                call_hostname_resolution_listener(
-                    &self.hostname_resolvers,
+                self.push_hostname(
                     &hostname,
                     HostnameResolutionEvent::AddressesRemoved(hostname.clone(), addrs),
                 );
@@ -2896,65 +2989,64 @@ impl Zeroconf {
         sender: &Sender<ServiceEvent>,
         now: Instant,
     ) {
-        let mut resolved: HashSet<String> = HashSet::new();
-        let mut unresolved: HashSet<String> = HashSet::new();
+        let aliases: Vec<String> = self
+            .cache
+            .get_ptr(ty_domain)
+            .map(|records| {
+                records
+                    .iter()
+                    .filter(|r| !r.record.expires_soon(now))
+                    .filter_map(|r| {
+                        r.record
+                            .any()
+                            .downcast_ref::<DnsPointer>()
+                            .map(|p| p.alias().to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        if let Some(records) = self.cache.get_ptr(ty_domain) {
-            for record in records.iter().filter(|r| !r.record.expires_soon(now)) {
-                if let Some(ptr) = record.record.any().downcast_ref::<DnsPointer>() {
-                    let mut new_event = None;
-                    match self.resolve_service_from_cache(ty_domain, ptr.alias()) {
-                        Ok(resolved_service) => {
-                            if resolved_service.is_valid() {
-                                debug!("Resolved service from cache: {}", ptr.alias());
-                                new_event =
-                                    Some(ServiceEvent::ServiceResolved(Box::new(resolved_service)));
-                            } else {
-                                debug!(
-                                    "query_cache_for_service: not valid: {} (host_empty={}, addrs_empty={})",
-                                    ptr.alias(),
-                                    resolved_service.get_hostname().is_empty(),
-                                    resolved_service.get_addresses().is_empty(),
-                                );
-                            }
-                        }
-                        Err(err) => {
-                            debug!("Error while resolving service from cache: {}", err);
-                            continue;
-                        }
-                    }
-
-                    match sender.send(ServiceEvent::ServiceFound(
-                        ty_domain.to_string(),
-                        ptr.alias().to_string(),
-                    )) {
-                        Ok(()) => debug!("sent service found {}", ptr.alias()),
-                        Err(e) => {
-                            debug!("failed to send service found: {}", e);
-                            continue;
-                        }
-                    }
-
-                    if let Some(event) = new_event {
-                        resolved.insert(ptr.alias().to_string());
-                        match sender.send(event) {
-                            Ok(()) => debug!("sent service resolved: {}", ptr.alias()),
-                            Err(e) => debug!("failed to send service resolved: {}", e),
-                        }
-                    } else {
-                        unresolved.insert(ptr.alias().to_string());
-                    }
+        for alias in aliases {
+            let resolved_event = match self.resolve_service_from_cache(ty_domain, &alias) {
+                Ok(resolved_service) if resolved_service.is_valid() => {
+                    debug!("Resolved service from cache: {}", alias);
+                    Some(ServiceEvent::ServiceResolved(Box::new(resolved_service)))
                 }
+                Ok(resolved_service) => {
+                    debug!(
+                        "query_cache_for_service: not valid: {} (host_empty={}, addrs_empty={})",
+                        alias,
+                        resolved_service.get_hostname().is_empty(),
+                        resolved_service.get_addresses().is_empty(),
+                    );
+                    None
+                }
+                Err(err) => {
+                    debug!("Error while resolving service from cache: {}", err);
+                    continue;
+                }
+            };
+
+            self.push_service(
+                ty_domain,
+                ServiceEvent::ServiceFound(ty_domain.to_string(), alias.clone()),
+            );
+            if !self.service_live(ty_domain, sender) {
+                return;
             }
-        }
+            debug!("sent service found {}", alias);
 
-        for instance in resolved.drain() {
-            self.pending_resolves.remove(&instance);
-            self.resolved.insert(instance);
-        }
-
-        for instance in unresolved.drain() {
-            self.add_pending_resolve(instance);
+            if let Some(event) = resolved_event {
+                self.push_service(ty_domain, event);
+                if !self.service_live(ty_domain, sender) {
+                    return;
+                }
+                debug!("sent service resolved: {}", alias);
+                self.pending_resolves.remove(&alias);
+                self.resolved.insert(alias);
+            } else {
+                self.add_pending_resolve(alias);
+            }
         }
     }
 
@@ -2967,10 +3059,14 @@ impl Zeroconf {
     ) {
         let addresses_map = self.cache.get_addresses_for_host(hostname);
         for (name, addresses) in addresses_map {
-            match sender.send(HostnameResolutionEvent::AddressesFound(name, addresses)) {
-                Ok(()) => trace!("sent hostname addresses found"),
-                Err(e) => debug!("failed to send hostname addresses found: {}", e),
+            self.push_hostname(
+                hostname,
+                HostnameResolutionEvent::AddressesFound(name, addresses),
+            );
+            if !self.hostname_live(hostname, &sender) {
+                return;
             }
+            trace!("sent hostname addresses found");
         }
     }
 
@@ -3125,6 +3221,7 @@ impl Zeroconf {
         let now = Instant::now();
 
         // remove records that are expired.
+        let mut removed_ptrs = Vec::new();
         let mut record_predicate = |record: &DnsRecordBox| {
             if !record.get_record().is_expired(now) {
                 return true;
@@ -3134,14 +3231,8 @@ impl Zeroconf {
             if self.cache.remove(record) {
                 // for PTR records, send event to listeners
                 if let Some(dns_ptr) = record.any().downcast_ref::<DnsPointer>() {
-                    call_service_listener(
-                        &self.service_queriers,
-                        dns_ptr.get_name(),
-                        ServiceEvent::ServiceRemoved(
-                            dns_ptr.get_name().to_string(),
-                            dns_ptr.alias().to_string(),
-                        ),
-                    );
+                    removed_ptrs
+                        .push((dns_ptr.get_name().to_string(), dns_ptr.alias().to_string()));
                 }
             }
             false
@@ -3149,6 +3240,9 @@ impl Zeroconf {
         msg.answers_mut().retain(&mut record_predicate);
         msg.authorities_mut().retain(&mut record_predicate);
         msg.additionals_mut().retain(&mut record_predicate);
+        for (name, alias) in removed_ptrs {
+            self.push_service(&name, ServiceEvent::ServiceRemoved(name.clone(), alias));
+        }
 
         // check possible conflicts and handle them.
         self.conflict_handler(&msg, if_index);
@@ -3197,6 +3291,7 @@ impl Zeroconf {
         // other.
         let mut changes = Vec::new();
         let mut timers = Vec::new();
+        let mut found = Vec::new();
         let Some(my_intf) = self.my_intfs.get(&if_index) else {
             return;
         };
@@ -3226,14 +3321,13 @@ impl Zeroconf {
                         if let Some(dns_ptr) = dns_record.record.any().downcast_ref::<DnsPointer>()
                         {
                             debug!("calling listener with service found: {name}");
-                            call_service_listener(
-                                &self.service_queriers,
-                                name,
+                            found.push((
+                                name.to_string(),
                                 ServiceEvent::ServiceFound(
                                     name.to_string(),
                                     dns_ptr.alias().to_string(),
                                 ),
-                            );
+                            ));
                             changes.push(InstanceChange {
                                 ty,
                                 name: dns_ptr.alias().to_string(),
@@ -3253,6 +3347,9 @@ impl Zeroconf {
                 _ => {}
             }
         }
+        for (ty_domain, event) in found {
+            self.push_service(&ty_domain, event);
+        }
 
         // Add timers for the new records.
         for t in timers {
@@ -3266,11 +3363,10 @@ impl Zeroconf {
         {
             let addr_map = self.cache.get_addresses_for_host(&change.name);
             for (name, addresses) in addr_map {
-                call_hostname_resolution_listener(
-                    &self.hostname_resolvers,
+                self.push_hostname(
                     &change.name,
                     HostnameResolutionEvent::AddressesFound(name, addresses),
-                )
+                );
             }
         }
 
@@ -3424,6 +3520,7 @@ impl Zeroconf {
         let mut resolved: HashSet<String> = HashSet::new();
         let mut unresolved: HashSet<String> = HashSet::new();
         let mut removed_instances = HashMap::new();
+        let mut deliver = Vec::new();
 
         let now = Instant::now();
 
@@ -3458,8 +3555,10 @@ impl Zeroconf {
                         resolved_service.addresses,
                     );
                     resolved.insert(instance.to_string());
-                    let event = ServiceEvent::ServiceResolved(Box::new(resolved_service));
-                    call_service_listener(&self.service_queriers, ty_domain, event);
+                    deliver.push((
+                        ty_domain.to_string(),
+                        ServiceEvent::ServiceResolved(Box::new(resolved_service)),
+                    ));
                 } else {
                     debug!(
                         "resolve_updated_instances: not valid: {instance} (host_empty={}, addrs_empty={})",
@@ -3475,6 +3574,10 @@ impl Zeroconf {
                     unresolved.insert(instance.to_string());
                 }
             }
+        }
+
+        for (ty_domain, event) in deliver {
+            self.push_service(&ty_domain, event);
         }
 
         for instance in resolved.drain() {
@@ -3801,17 +3904,18 @@ impl Zeroconf {
 
     /// Sends service removal event to listeners for expired service records.
     /// `expired`: map of service type domain to set of instance names.
-    fn notify_service_removal(&self, expired: HashMap<String, HashSet<String>>) {
-        for (ty_domain, sender) in self.service_queriers.iter() {
-            if let Some(instances) = expired.get(ty_domain) {
+    fn notify_service_removal(&mut self, expired: HashMap<String, HashSet<String>>) {
+        let domains: Vec<String> = self.service_queriers.keys().cloned().collect();
+        for ty_domain in domains {
+            if let Some(instances) = expired.get(&ty_domain) {
                 for instance_name in instances {
                     let event = ServiceEvent::ServiceRemoved(
                         ty_domain.to_string(),
                         instance_name.to_string(),
                     );
-                    match sender.send(event) {
-                        Ok(()) => debug!("notify_service_removal: sent ServiceRemoved to listener of {ty_domain}: {instance_name}"),
-                        Err(e) => debug!("Failed to send event: {}", e),
+                    self.push_service(&ty_domain, event);
+                    if self.service_queriers.contains_key(&ty_domain) {
+                        debug!("notify_service_removal: sent ServiceRemoved to listener of {ty_domain}: {instance_name}");
                     }
                 }
             }
@@ -3969,35 +4073,43 @@ impl Zeroconf {
             .map(|(if_index, itf)| format!("{} ({if_index})", itf.name))
             .collect();
 
-        if let Err(e) = listener.send(ServiceEvent::SearchStarted(format!(
+        let started = ServiceEvent::SearchStarted(format!(
             "{ty} on {} interfaces [{}]",
             pretty_addrs.len(),
             pretty_addrs.join(", ")
-        ))) {
-            debug!(
-                "Failed to send SearchStarted({})(repeating:{}): {}",
-                &ty, repeating, e
-            );
-            return;
-        }
-
-        let now = Instant::now();
+        ));
         if !repeating {
+            if let Err(e) = listener.try_send(started) {
+                debug!(
+                    "Failed to send SearchStarted({})(repeating:{}): {}",
+                    &ty, repeating, e
+                );
+                return;
+            }
+            self.clear_service_retransmissions(&ty);
             // Binds a `listener` to querying mDNS domain type `ty`.
             //
             // If there is already a `listener`, it will be updated, i.e. overwritten.
             self.service_queriers.insert(ty.clone(), listener.clone());
-
-            // if we already have the records in our cache, just send them
+            let now = Instant::now();
             self.query_cache_for_service(&ty, &listener, now);
+            if !self.service_live(&ty, &listener) {
+                return;
+            }
+        } else {
+            if !self.service_live(&ty, &listener) {
+                return;
+            }
+            self.push_service(&ty, started);
+            if !self.service_live(&ty, &listener) {
+                return;
+            }
         }
 
+        let now = Instant::now();
         if cache_only {
             // If cache_only is true, we do not send a query.
-            match listener.send(ServiceEvent::SearchStopped(ty.clone())) {
-                Ok(()) => debug!("SearchStopped sent for {}", &ty),
-                Err(e) => debug!("Failed to send SearchStopped: {}", e),
-            }
+            self.push_service(&ty, ServiceEvent::SearchStopped(ty.clone()));
             return;
         }
 
@@ -4033,22 +4145,36 @@ impl Zeroconf {
         timeout: Option<u64>,
     ) {
         let addr_list: Vec<_> = self.my_intfs.iter().collect();
-        if let Err(e) = listener.send(HostnameResolutionEvent::SearchStarted(format!(
+        let started = HostnameResolutionEvent::SearchStarted(format!(
             "{} on addrs {:?}",
             &hostname, &addr_list
-        ))) {
-            debug!(
-                "Failed to send ResolveStarted({})(repeating:{}): {}",
-                &hostname, repeating, e
-            );
-            return;
-        }
-        let now = Instant::now();
+        ));
         if !repeating {
+            if let Err(e) = listener.try_send(started) {
+                debug!(
+                    "Failed to send ResolveStarted({})(repeating:{}): {}",
+                    &hostname, repeating, e
+                );
+                return;
+            }
+            self.clear_hostname_retransmissions(&hostname);
             self.add_hostname_resolver(hostname.to_owned(), listener.clone(), timeout);
             // if we already have the records in our cache, just send them
             self.query_cache_for_hostname(&hostname, listener.clone());
-
+            if !self.hostname_live(&hostname, &listener) {
+                return;
+            }
+        } else {
+            if !self.hostname_live(&hostname, &listener) {
+                return;
+            }
+            self.push_hostname(&hostname, started);
+            if !self.hostname_live(&hostname, &listener) {
+                return;
+            }
+        }
+        let now = Instant::now();
+        if !repeating {
             // RFC 6762 §5.2: delay the first query by a random jitter.
             let jitter =
                 fastrand::u64(INITIAL_QUERY_DELAY_MIN_MILLIS..INITIAL_QUERY_DELAY_MAX_MILLIS);
@@ -4069,7 +4195,7 @@ impl Zeroconf {
         // Only add retransmission if it does not exceed the hostname resolver timeout, if any.
         if self
             .hostname_resolvers
-            .get(&hostname)
+            .get(&hostname.to_lowercase())
             .and_then(|(_sender, timeout)| *timeout)
             .map(|timeout| next_time < timeout)
             .unwrap_or(true)
@@ -4191,28 +4317,14 @@ impl Zeroconf {
     }
 
     fn exec_command_stop_browse(&mut self, ty_domain: String) {
-        match self.service_queriers.remove_entry(&ty_domain) {
+        match self.remove_service_subscription(&ty_domain) {
             None => debug!("StopBrowse: cannot find querier for {}", &ty_domain),
-            Some((ty, sender)) => {
-                // Remove pending browse commands in the reruns.
-                trace!("StopBrowse: removed queryer for {}", &ty);
-                let mut i = 0;
-                while i < self.retransmissions.len() {
-                    if let Command::Browse(t, _, _, _) = &self.retransmissions[i].command {
-                        if t == &ty {
-                            self.retransmissions.remove(i);
-                            trace!("StopBrowse: removed retransmission for {}", &ty);
-                            continue;
-                        }
-                    }
-                    i += 1;
-                }
-
+            Some(sender) => {
                 // Remove cache entries.
                 self.cache.remove_service_type(&ty_domain);
 
-                // Notify the client.
-                match sender.send(ServiceEvent::SearchStopped(ty_domain)) {
+                trace!("StopBrowse: removed queryer for {}", &ty_domain);
+                match sender.try_send(ServiceEvent::SearchStopped(ty_domain)) {
                     Ok(()) => trace!("Sent SearchStopped to the listener"),
                     Err(e) => debug!("Failed to send SearchStopped: {}", e),
                 }
@@ -4221,23 +4333,9 @@ impl Zeroconf {
     }
 
     fn exec_command_stop_resolve_hostname(&mut self, hostname: String) {
-        if let Some((host, (sender, _timeout))) = self.hostname_resolvers.remove_entry(&hostname) {
-            // Remove pending resolve commands in the reruns.
-            trace!("StopResolve: removed queryer for {}", &host);
-            let mut i = 0;
-            while i < self.retransmissions.len() {
-                if let Command::Resolve(t, _) = &self.retransmissions[i].command {
-                    if t == &host {
-                        self.retransmissions.remove(i);
-                        trace!("StopResolve: removed retransmission for {}", &host);
-                        continue;
-                    }
-                }
-                i += 1;
-            }
-
-            // Notify the client.
-            match sender.send(HostnameResolutionEvent::SearchStopped(hostname)) {
+        if let Some((sender, _timeout)) = self.remove_hostname_subscription(&hostname) {
+            trace!("StopResolve: removed queryer for {}", &hostname);
+            match sender.try_send(HostnameResolutionEvent::SearchStopped(hostname)) {
                 Ok(()) => trace!("Sent SearchStopped to the listener"),
                 Err(e) => debug!("Failed to send SearchStopped: {}", e),
             }
@@ -4797,33 +4895,6 @@ fn check_hostname(hostname: &str) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn call_service_listener(
-    listeners_map: &HashMap<String, Sender<ServiceEvent>>,
-    ty_domain: &str,
-    event: ServiceEvent,
-) {
-    if let Some(listener) = listeners_map.get(ty_domain) {
-        match listener.send(event) {
-            Ok(()) => trace!("Sent event to listener successfully"),
-            Err(e) => debug!("Failed to send event: {}", e),
-        }
-    }
-}
-
-fn call_hostname_resolution_listener(
-    listeners_map: &HashMap<String, (Sender<HostnameResolutionEvent>, Option<Instant>)>,
-    hostname: &str,
-    event: HostnameResolutionEvent,
-) {
-    let hostname_lower = hostname.to_lowercase();
-    if let Some(listener) = listeners_map.get(&hostname_lower).map(|(l, _)| l) {
-        match listener.send(event) {
-            Ok(()) => trace!("Sent event to listener successfully"),
-            Err(e) => debug!("Failed to send event: {}", e),
-        }
-    }
 }
 
 /// Returns valid network interfaces in the host system.
@@ -7491,5 +7562,441 @@ mod tests {
                 ._types(),
             [1]
         );
+    }
+
+    #[test]
+    fn test_backpressure_terminates_subscription() {
+        let mut zc = new_test_zeroconf();
+        let ty = "_blocked._tcp.local.";
+        let (sender, receiver) = flume::bounded(10);
+        zc.service_queriers.insert(ty.to_string(), sender.clone());
+        zc.add_retransmission(
+            Instant::now() + Duration::from_secs(60),
+            super::Command::Browse(ty.to_string(), 1, false, sender.clone()),
+        );
+        for i in 0..10 {
+            sender
+                .try_send(ServiceEvent::ServiceFound(ty.to_string(), format!("i{i}")))
+                .unwrap();
+        }
+        zc.push_service(
+            ty,
+            ServiceEvent::ServiceResolved(Box::new(crate::ResolvedService {
+                ty_domain: ty.to_string(),
+                sub_ty_domain: None,
+                fullname: "x._blocked._tcp.local.".to_string(),
+                host: "x.local.".to_string(),
+                port: 80,
+                addresses: HashSet::new(),
+                txt_properties: crate::TxtProperties::new(),
+            })),
+        );
+        assert!(!zc.service_queriers.contains_key(ty));
+        assert!(!zc.retransmissions.iter().any(|r| matches!(
+            &r.command,
+            super::Command::Browse(t, _, _, _) if t == ty
+        )));
+        assert_eq!(receiver.len(), 10);
+        zc.push_service(
+            ty,
+            ServiceEvent::ServiceRemoved(ty.to_string(), "x._blocked._tcp.local.".to_string()),
+        );
+        for i in 0..10 {
+            match receiver.try_recv().unwrap() {
+                ServiceEvent::ServiceFound(_, name) => assert_eq!(name, format!("i{i}")),
+                e => panic!("reordered event: {:?}", e),
+            }
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(flume::TryRecvError::Empty)
+        ));
+        drop(sender);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(flume::TryRecvError::Disconnected)
+        ));
+
+        let hostname = "blocked.local.";
+        let (hsender, hreceiver) = flume::bounded(10);
+        zc.hostname_resolvers
+            .insert(hostname.to_string(), (hsender.clone(), None));
+        for i in 0..10 {
+            hsender
+                .try_send(HostnameResolutionEvent::SearchStarted(format!("{i}")))
+                .unwrap();
+        }
+        zc.push_hostname(
+            hostname,
+            HostnameResolutionEvent::AddressesFound(hostname.to_string(), HashSet::new()),
+        );
+        assert!(!zc.hostname_resolvers.contains_key(hostname));
+        zc.push_hostname(
+            hostname,
+            HostnameResolutionEvent::AddressesRemoved(hostname.to_string(), HashSet::new()),
+        );
+        assert_eq!(hreceiver.len(), 10);
+        drop(hsender);
+        while hreceiver.try_recv().is_ok() {}
+        assert!(matches!(
+            hreceiver.try_recv(),
+            Err(flume::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn test_stale_retransmission_no_revive() {
+        let mut zc = new_test_zeroconf();
+        let ty = "_stale._tcp.local.";
+        let (old_sender, old_receiver) = flume::bounded(10);
+        zc.service_queriers
+            .insert(ty.to_string(), old_sender.clone());
+        for i in 0..10 {
+            old_sender
+                .try_send(ServiceEvent::ServiceFound(ty.to_string(), format!("i{i}")))
+                .unwrap();
+        }
+        zc.push_service(
+            ty,
+            ServiceEvent::ServiceFound(ty.to_string(), "overflow".to_string()),
+        );
+        assert!(!zc.service_queriers.contains_key(ty));
+        let (new_sender, new_receiver) = flume::bounded(10);
+        zc.service_queriers
+            .insert(ty.to_string(), new_sender.clone());
+        let retrans_before = zc.retransmissions.len();
+        zc.exec_command_browse(true, ty.to_string(), 1, false, old_sender.clone());
+        assert!(zc
+            .service_queriers
+            .get(ty)
+            .unwrap()
+            .same_channel(&new_sender));
+        assert_eq!(new_receiver.len(), 0);
+        assert_eq!(zc.retransmissions.len(), retrans_before);
+        drop(old_sender);
+        while old_receiver.try_recv().is_ok() {}
+        assert!(matches!(
+            old_receiver.try_recv(),
+            Err(flume::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn test_cache_replay_overflow_terminates() {
+        let mut zc = new_test_zeroconf();
+        zc.accept_unsolicited = true;
+        let ty = "_replay._tcp.local.";
+        let index = my_ip_interfaces(true)
+            .into_iter()
+            .find(|intf| intf.ip() == IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .unwrap()
+            .index
+            .unwrap();
+        let interface_id = InterfaceId {
+            name: "test".to_string(),
+            index,
+        };
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+        for i in 0..12 {
+            out.add_answer_record(DnsPointer::new(
+                ty,
+                RRType::PTR,
+                CLASS_IN,
+                120,
+                format!("i{i}._replay._tcp.local."),
+            ));
+        }
+        for packet in out.to_data_on_wire(MAX_PKT_DEFAULT, true) {
+            let msg = DnsIncoming::new(packet, interface_id.clone()).unwrap();
+            zc.handle_response(msg, index);
+        }
+        assert_eq!(zc.cache.get_ptr(ty).map(|v| v.len()).unwrap_or(0), 12);
+        let (sender, receiver) = flume::bounded(10);
+        zc.exec_command_browse(false, ty.to_string(), 1, false, sender);
+        assert!(!zc.service_queriers.contains_key(ty));
+        assert!(!zc.retransmissions.iter().any(|r| matches!(
+            &r.command,
+            super::Command::Browse(t, _, _, _) if t == ty
+        )));
+        assert_eq!(receiver.len(), 10);
+        match receiver.try_recv().unwrap() {
+            ServiceEvent::SearchStarted(_) => {}
+            e => panic!("expected SearchStarted first: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_retransmission_overflow_terminates() {
+        let mut zc = new_test_zeroconf();
+        let ty = "_retr._tcp.local.";
+        let (sender, receiver) = flume::bounded(10);
+        zc.service_queriers.insert(ty.to_string(), sender.clone());
+        for i in 0..10 {
+            sender
+                .try_send(ServiceEvent::ServiceFound(ty.to_string(), format!("i{i}")))
+                .unwrap();
+        }
+        let retrans_before = zc.retransmissions.len();
+        zc.exec_command_browse(true, ty.to_string(), 1, false, sender.clone());
+        assert!(!zc.service_queriers.contains_key(ty));
+        assert_eq!(zc.retransmissions.len(), retrans_before);
+        assert_eq!(receiver.len(), 10);
+
+        let hostname = "retr.local.";
+        let (hsender, hreceiver) = flume::bounded(10);
+        zc.hostname_resolvers
+            .insert(hostname.to_string(), (hsender.clone(), None));
+        for i in 0..10 {
+            hsender
+                .try_send(HostnameResolutionEvent::SearchStarted(format!("{i}")))
+                .unwrap();
+        }
+        let retrans_before = zc.retransmissions.len();
+        zc.exec_command_resolve_hostname(true, hostname.to_string(), 1, hsender.clone(), None);
+        assert!(!zc.hostname_resolvers.contains_key(hostname));
+        assert_eq!(zc.retransmissions.len(), retrans_before);
+        assert_eq!(hreceiver.len(), 10);
+    }
+
+    #[test]
+    fn test_hostname_timeout_releases_ownership() {
+        let mut zc = new_test_zeroconf();
+        let hostname = "timeout.local.";
+        let (sender, receiver) = flume::bounded(10);
+        zc.hostname_resolvers.insert(
+            hostname.to_string(),
+            (
+                sender.clone(),
+                Some(Instant::now() - Duration::from_secs(1)),
+            ),
+        );
+        zc.add_retransmission(
+            Instant::now() + Duration::from_secs(60),
+            super::Command::ResolveHostname(hostname.to_string(), 1, sender.clone(), None),
+        );
+        zc.expire_hostname_resolvers(Instant::now());
+        assert!(!zc.hostname_resolvers.contains_key(hostname));
+        assert!(!zc.retransmissions.iter().any(|r| matches!(
+            &r.command,
+            super::Command::ResolveHostname(h, _, _, _) if h == hostname
+        )));
+        drop(sender);
+        let mut saw_timeout = false;
+        let mut saw_stopped = false;
+        while let Ok(event) = receiver.try_recv() {
+            match event {
+                HostnameResolutionEvent::SearchTimeout(_) => saw_timeout = true,
+                HostnameResolutionEvent::SearchStopped(_) => saw_stopped = true,
+                e => panic!("unexpected event: {:?}", e),
+            }
+        }
+        assert!(saw_timeout && saw_stopped);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(flume::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn test_hostname_timeout_full_releases_ownership() {
+        let mut zc = new_test_zeroconf();
+        let hostname = "timeout-full.local.";
+        let (sender, receiver) = flume::bounded(10);
+        zc.hostname_resolvers.insert(
+            hostname.to_string(),
+            (
+                sender.clone(),
+                Some(Instant::now() - Duration::from_secs(1)),
+            ),
+        );
+        for i in 0..10 {
+            sender
+                .try_send(HostnameResolutionEvent::SearchStarted(format!("{i}")))
+                .unwrap();
+        }
+        zc.expire_hostname_resolvers(Instant::now());
+        assert!(!zc.hostname_resolvers.contains_key(hostname));
+        assert!(!zc.retransmissions.iter().any(|r| matches!(
+            &r.command,
+            super::Command::ResolveHostname(h, _, _, _) if h == hostname
+        )));
+        assert_eq!(receiver.len(), 10);
+        drop(sender);
+        while receiver.try_recv().is_ok() {}
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(flume::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn test_stop_and_resubscribe_after_stall() {
+        let mut zc = new_test_zeroconf();
+        let ty = "_restall._tcp.local.";
+        let (sender, receiver) = flume::bounded(10);
+        zc.service_queriers.insert(ty.to_string(), sender.clone());
+        zc.add_retransmission(
+            Instant::now() + Duration::from_secs(60),
+            super::Command::Browse(ty.to_string(), 1, false, sender.clone()),
+        );
+        for i in 0..10 {
+            let _ = sender.try_send(ServiceEvent::ServiceFound(ty.to_string(), format!("i{i}")));
+        }
+        zc.exec_command_stop_browse(ty.to_string());
+        assert!(!zc.service_queriers.contains_key(ty));
+        assert!(!zc.retransmissions.iter().any(|r| matches!(
+            &r.command,
+            super::Command::Browse(t, _, _, _) if t == ty
+        )));
+        drop(sender);
+        while receiver.try_recv().is_ok() {}
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(flume::TryRecvError::Disconnected)
+        ));
+        let (sender2, receiver2) = flume::bounded(10);
+        zc.service_queriers.insert(ty.to_string(), sender2);
+        zc.push_service(
+            ty,
+            ServiceEvent::ServiceFound(ty.to_string(), "new".to_string()),
+        );
+        match receiver2.try_recv().unwrap() {
+            ServiceEvent::ServiceFound(t, name) => {
+                assert_eq!(t, ty);
+                assert_eq!(name, "new");
+            }
+            e => panic!("unexpected event: {:?}", e),
+        }
+
+        let hostname = "restall.local.";
+        let (hsender, hreceiver) = flume::bounded(10);
+        zc.hostname_resolvers
+            .insert(hostname.to_string(), (hsender.clone(), None));
+        zc.add_retransmission(
+            Instant::now() + Duration::from_secs(60),
+            super::Command::ResolveHostname(hostname.to_string(), 1, hsender.clone(), None),
+        );
+        for i in 0..10 {
+            let _ = hsender.try_send(HostnameResolutionEvent::SearchStarted(format!("{i}")));
+        }
+        zc.exec_command_stop_resolve_hostname(hostname.to_string());
+        assert!(!zc.hostname_resolvers.contains_key(hostname));
+        assert!(!zc.retransmissions.iter().any(|r| matches!(
+            &r.command,
+            super::Command::ResolveHostname(h, _, _, _) if h == hostname
+        )));
+        drop(hsender);
+        while hreceiver.try_recv().is_ok() {}
+        assert!(matches!(
+            hreceiver.try_recv(),
+            Err(flume::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn test_cleanup_full_listeners() {
+        let mut zc = new_test_zeroconf();
+        let ty = "_cleanup._tcp.local.";
+        let (sender, _receiver) = flume::bounded(10);
+        zc.service_queriers.insert(ty.to_string(), sender.clone());
+        for i in 0..10 {
+            sender
+                .try_send(ServiceEvent::ServiceFound(ty.to_string(), format!("i{i}")))
+                .unwrap();
+        }
+        let hostname = "cleanup.local.";
+        let (hsender, _) = flume::bounded(10);
+        zc.hostname_resolvers
+            .insert(hostname.to_string(), (hsender.clone(), None));
+        for i in 0..10 {
+            let _ = hsender.try_send(HostnameResolutionEvent::SearchStarted(format!("{i}")));
+        }
+        zc.cleanup();
+        assert!(zc.service_queriers.is_empty());
+        assert!(zc.hostname_resolvers.is_empty());
+        assert!(zc.retransmissions.is_empty());
+    }
+
+    #[test]
+    fn test_replace_browse_releases_old_generation() {
+        let mut zc = new_test_zeroconf();
+        let ty = "_replace._tcp.local.";
+        let (sender_a, receiver_a) = flume::bounded(10);
+        let probe_a = sender_a.clone();
+        zc.exec_command_browse(false, ty.to_string(), 1, false, sender_a);
+        assert!(zc.service_queriers.get(ty).unwrap().same_channel(&probe_a));
+        assert!(zc.retransmissions.iter().any(|r| matches!(
+            &r.command,
+            super::Command::Browse(t, _, _, s) if t == ty && s.same_channel(&probe_a)
+        )));
+
+        let (sender_b, receiver_b) = flume::bounded(10);
+        let probe_b = sender_b.clone();
+        zc.exec_command_browse(false, ty.to_string(), 1, false, sender_b);
+        assert!(zc.service_queriers.get(ty).unwrap().same_channel(&probe_b));
+        assert!(!zc.retransmissions.iter().any(|r| matches!(
+            &r.command,
+            super::Command::Browse(t, _, _, s) if t == ty && s.same_channel(&probe_a)
+        )));
+        drop(probe_a);
+        while receiver_a.try_recv().is_ok() {}
+        assert!(matches!(
+            receiver_a.try_recv(),
+            Err(flume::TryRecvError::Disconnected)
+        ));
+
+        zc.exec_command_browse(true, ty.to_string(), 1, false, probe_b.clone());
+        assert!(zc.service_queriers.get(ty).unwrap().same_channel(&probe_b));
+        assert!(matches!(
+            receiver_b.try_recv(),
+            Ok(ServiceEvent::SearchStarted(_))
+        ));
+    }
+
+    #[test]
+    fn test_replace_hostname_releases_old_generation() {
+        let mut zc = new_test_zeroconf();
+        let hostname = "replace.local.";
+        let (sender_a, receiver_a) = flume::bounded(10);
+        let probe_a = sender_a.clone();
+        zc.exec_command_resolve_hostname(false, hostname.to_string(), 1, sender_a, None);
+        assert!(zc
+            .hostname_resolvers
+            .get(hostname)
+            .unwrap()
+            .0
+            .same_channel(&probe_a));
+
+        let (sender_b, receiver_b) = flume::bounded(10);
+        let probe_b = sender_b.clone();
+        zc.exec_command_resolve_hostname(false, hostname.to_string(), 1, sender_b, None);
+        assert!(zc
+            .hostname_resolvers
+            .get(hostname)
+            .unwrap()
+            .0
+            .same_channel(&probe_b));
+        assert!(!zc.retransmissions.iter().any(|r| matches!(
+            &r.command,
+            super::Command::ResolveHostname(h, _, s, _) if h == hostname && s.same_channel(&probe_a)
+        )));
+        drop(probe_a);
+        while receiver_a.try_recv().is_ok() {}
+        assert!(matches!(
+            receiver_a.try_recv(),
+            Err(flume::TryRecvError::Disconnected)
+        ));
+
+        zc.exec_command_resolve_hostname(true, hostname.to_string(), 1, probe_b.clone(), None);
+        assert!(zc
+            .hostname_resolvers
+            .get(hostname)
+            .unwrap()
+            .0
+            .same_channel(&probe_b));
+        assert!(matches!(
+            receiver_b.try_recv(),
+            Ok(HostnameResolutionEvent::SearchStarted(_))
+        ));
     }
 }
