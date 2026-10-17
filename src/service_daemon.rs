@@ -52,7 +52,7 @@ use socket2::Domain;
 use socket_pktinfo::PktInfoUdpSocket;
 use std::{
     cmp::{self, Reverse},
-    collections::{hash_map::Entry, BinaryHeap, HashMap, HashSet},
+    collections::{BinaryHeap, HashMap, HashSet},
     fmt, io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, UdpSocket},
     str, thread,
@@ -1277,6 +1277,60 @@ fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<
     Ok(())
 }
 
+/// Records the address of `intf` in `my_intfs`, joining the multicast group first
+/// if its interface does not hold the membership yet.
+///
+/// The membership is per interface and per IP version, and is held as long as the
+/// interface has a recorded address of that version, as only a successful join
+/// records the first one. Joining again for another address would fail
+/// (`AddrInUse` on most platforms, `WSAEINVAL` on Windows), so that is skipped.
+///
+/// Returns `false`, recording nothing, if the address is already recorded or the
+/// join fails. A failed address is then retried by the next IP check.
+fn add_intf_addr(
+    my_intfs: &mut HashMap<u32, MyIntf>,
+    sock: &PktInfoUdpSocket,
+    intf: &Interface,
+) -> bool {
+    let if_index = intf.index.unwrap_or(0);
+    let my_intf = my_intfs.get(&if_index);
+
+    if my_intf.is_some_and(|v| v.addrs.contains(&intf.addr)) {
+        trace!("address {} on {} already exists", intf.ip(), intf.name);
+        return false;
+    }
+
+    let has_membership = my_intf.is_some_and(|v| {
+        if intf.ip().is_ipv4() {
+            v.next_ifaddr_v4().is_some()
+        } else {
+            v.next_ifaddr_v6().is_some()
+        }
+    });
+
+    if !has_membership {
+        if let Err(e) = join_multicast_group(sock, intf) {
+            debug!("failed to join multicast on {}: {e}. Skipped.", intf.name);
+            return false;
+        }
+    }
+
+    my_intfs
+        .entry(if_index)
+        .and_modify(|v| {
+            v.addrs.insert(intf.addr.clone());
+        })
+        .or_insert_with(|| MyIntf {
+            name: intf.name.clone(),
+            index: if_index,
+            addrs: HashSet::from([intf.addr.clone()]),
+            max_packet_size_v4: MAX_PKT_DEFAULT,
+            max_packet_size_v6: MAX_PKT_DEFAULT,
+        });
+
+    true
+}
+
 /// Creates a socket for sending and receiving multicast packets on `addr`.
 /// Works for both IPv4 and IPv6.
 ///
@@ -1350,29 +1404,11 @@ impl Zeroconf {
                 continue;
             };
 
-            if let Err(e) = join_multicast_group(&sock.pktinfo, &intf) {
-                debug!("failed to join multicast: {}: {e}. Skipped.", &intf.ip());
+            if add_intf_addr(&mut my_intfs, &sock.pktinfo, &intf) {
+                dns_registry_map
+                    .entry(intf.index.unwrap_or(0))
+                    .or_insert_with(DnsRegistry::new);
             }
-
-            let if_index = intf.index.unwrap_or(0);
-
-            // Add this interface address if not already present.
-            dns_registry_map
-                .entry(if_index)
-                .or_insert_with(DnsRegistry::new);
-
-            my_intfs
-                .entry(if_index)
-                .and_modify(|v: &mut MyIntf| {
-                    v.addrs.insert(intf.addr.clone());
-                })
-                .or_insert(MyIntf {
-                    name: intf.name.clone(),
-                    index: if_index,
-                    addrs: HashSet::from([intf.addr]),
-                    max_packet_size_v4: MAX_PKT_DEFAULT,
-                    max_packet_size_v6: MAX_PKT_DEFAULT,
-                });
         }
 
         let monitors = Vec::new();
@@ -2254,8 +2290,8 @@ impl Zeroconf {
     ///
     /// Note: this `interface` type only contains one address.
     ///
-    /// Does nothing if the address is already known. Otherwise it joins the
-    /// multicast group on the interface and, for each `addr_auto` service, adds
+    /// Does nothing if the address is already known, or if joining the multicast
+    /// group fails (see `add_intf_addr`). Otherwise, for each `addr_auto` service, it adds
     /// the address (when supported) and announces the service, marking it as
     /// probing when it cannot be announced yet. It then re-sends the active
     /// browse queries on the new interface and notifies monitors with
@@ -2279,43 +2315,11 @@ impl Zeroconf {
             return;
         };
 
-        let if_index = intf.index.unwrap_or(0);
-        let mut new_addr = false;
-
-        match self.my_intfs.entry(if_index) {
-            Entry::Occupied(mut entry) => {
-                // If intf has a new address, add it to the existing interface.
-                let my_intf = entry.get_mut();
-                if !my_intf.addrs.contains(&intf.addr) {
-                    if let Err(e) = join_multicast_group(&sock.pktinfo, intf) {
-                        debug!("add_interface: socket_config {}: {e}", &intf.name);
-                    }
-                    my_intf.addrs.insert(intf.addr.clone());
-                    new_addr = true;
-                }
-            }
-            Entry::Vacant(entry) => {
-                if let Err(e) = join_multicast_group(&sock.pktinfo, intf) {
-                    debug!("add_interface: socket_config {}: {e}. Skipped.", &intf.name);
-                    return;
-                }
-
-                new_addr = true;
-                let new_intf = MyIntf {
-                    name: intf.name.clone(),
-                    index: if_index,
-                    addrs: HashSet::from([intf.addr.clone()]),
-                    max_packet_size_v4: MAX_PKT_DEFAULT,
-                    max_packet_size_v6: MAX_PKT_DEFAULT,
-                };
-                entry.insert(new_intf);
-            }
-        }
-
-        if !new_addr {
-            trace!("add_interface: interface {} already exists", &intf.name);
+        if !add_intf_addr(&mut self.my_intfs, &sock.pktinfo, intf) {
             return;
         }
+
+        let if_index = intf.index.unwrap_or(0);
 
         debug!("add new interface {}: {}", intf.name, intf.ip());
 
@@ -5641,6 +5645,91 @@ mod tests {
         assert!(
             daemon.my_intfs.contains_key(&65_535),
             "an interface sharing an already-joined IPv4 address must be recorded"
+        );
+    }
+
+    /// Records `addrs` for a made-up interface, as if it had joined the mDNS group
+    /// on each IP version in there. Nothing on the host has these addresses, so
+    /// joining on them fails.
+    fn add_fake_intf(daemon: &mut super::Zeroconf, index: u32, addrs: &[IfAddr]) {
+        daemon.my_intfs.insert(
+            index,
+            MyIntf {
+                name: "mdns-sd-fake".to_string(),
+                index,
+                addrs: addrs.iter().cloned().collect(),
+                max_packet_size_v4: MAX_PKT_DEFAULT,
+                max_packet_size_v6: MAX_PKT_DEFAULT,
+            },
+        );
+    }
+
+    #[test]
+    fn test_second_address_reuses_interface_membership() {
+        let mut daemon = new_test_zeroconf();
+        let index = 65_534;
+        add_fake_intf(
+            &mut daemon,
+            index,
+            &[
+                test_ifaddr_v4(Ipv4Addr::new(192, 0, 2, 1)),
+                test_ifaddr_v6("2001:db8::1".parse().unwrap()),
+            ],
+        );
+
+        // The interface already holds both memberships, so no join is attempted
+        // (one would fail here), and the addresses are recorded.
+        let second_v4 = test_interface(
+            "mdns-sd-fake",
+            index,
+            test_ifaddr_v4(Ipv4Addr::new(192, 0, 2, 2)),
+        );
+        let second_v6 = test_interface(
+            "mdns-sd-fake",
+            index,
+            test_ifaddr_v6("2001:db8::2".parse().unwrap()),
+        );
+        for intf in [second_v4, second_v6] {
+            daemon.add_interface(&intf, std::slice::from_ref(&intf));
+            assert!(
+                daemon.my_intfs[&index].addrs.contains(&intf.addr),
+                "{} must be recorded under the existing membership",
+                intf.ip()
+            );
+        }
+    }
+
+    #[test]
+    fn test_failed_join_does_not_record_address() {
+        let mut daemon = new_test_zeroconf();
+        let (monitor, events) = flume::bounded(10);
+        daemon.monitors.push(monitor);
+        let index = 65_534;
+
+        // A new interface: nothing is recorded for it.
+        let v4 = test_interface(
+            "mdns-sd-fake",
+            index,
+            test_ifaddr_v4(Ipv4Addr::new(192, 0, 2, 1)),
+        );
+        daemon.add_interface(&v4, std::slice::from_ref(&v4));
+        assert!(!daemon.my_intfs.contains_key(&index));
+
+        // A known interface without an IPv4 membership: the IPv4 address is left
+        // out, so the next IP check tries to join again.
+        add_fake_intf(
+            &mut daemon,
+            index,
+            &[test_ifaddr_v6("2001:db8::1".parse().unwrap())],
+        );
+        daemon.add_interface(&v4, std::slice::from_ref(&v4));
+        assert!(!daemon.my_intfs[&index].addrs.contains(&v4.addr));
+
+        let events: Vec<_> = events.try_iter().collect();
+        assert!(
+            !events.iter().any(|e| matches!(e, DaemonEvent::IpAdd(_))),
+            "a failed join must not be reported as IpAdd: {:?}",
+            events
         );
     }
 
