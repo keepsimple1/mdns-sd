@@ -163,8 +163,7 @@ pub enum DaemonStatus {
     Shutdown,
 }
 
-/// The state of a running daemon, as of when it handled the
-/// [`status`](ServiceDaemon::status) request.
+/// A snapshot state of a running daemon.
 #[derive(Debug, PartialEq, Clone, Eq)]
 #[non_exhaustive]
 pub struct RunningState {
