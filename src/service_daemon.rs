@@ -976,13 +976,17 @@ struct ReRun {
     command: Command,
 }
 
-/// A query response deferred per RFC 6762 §6 (shared response).
+/// A query response deferred per RFC 6762 §6: a shared response, or a probe
+/// answer held back to the 250 ms probe-answer floor.
 struct DelayedResponse {
     /// When to send `out`.
     next_time: Instant,
     out: DnsOutgoing,
     if_index: u32,
     is_ipv4: bool,
+    /// The names probed by the query being answered (see [`probed_names`]),
+    /// empty for a shared response.
+    probed_names: HashSet<String>,
 }
 
 /// Specify kinds of interfaces. It is used to enable or to disable interfaces in the daemon.
@@ -3724,9 +3728,40 @@ impl Zeroconf {
                 out,
                 if_index,
                 is_ipv4,
+                probed_names: HashSet::new(),
             });
             self.add_timer(next_time);
             return;
+        }
+
+        // Answering a probe query (RFC 6762 §6, §8.1): a probed unique record
+        // may be multicast again 250 ms after its last multicast. If it went out
+        // more recently, delay the response rather than drop the record, so the
+        // prober still hears our defense within its probing window.
+        let probed_names = probed_names(&msg);
+        if !probed_names.is_empty() && querier_addr.port() == MDNS_PORT && out.answers_count() > 0 {
+            let now = Instant::now();
+            let delay = self
+                .dns_registry_map
+                .get(&if_index)
+                .map_or(Duration::ZERO, |dns_registry| {
+                    dns_registry.probe_answer_delay(&out, now, is_ipv4, &probed_names)
+                });
+            if delay > Duration::ZERO {
+                debug!("delaying probe answer on intf {if_index} by {delay:?}");
+                out.set_id(msg.id());
+                self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count());
+                let next_time = now + delay;
+                self.delayed_responses.push(DelayedResponse {
+                    next_time,
+                    out,
+                    if_index,
+                    is_ipv4,
+                    probed_names,
+                });
+                self.add_timer(next_time);
+                return;
+            }
         }
 
         if out.answers_count() > 0 {
@@ -3788,16 +3823,16 @@ impl Zeroconf {
             }
             out.update_records_for_legacy_unicast();
             out.set_multicast(false);
-        } else if msg.num_authorities() == 0 {
+        } else if let Some(dns_registry) = self.dns_registry_map.get_mut(&if_index) {
             // RFC 6762 §6: a record MUST NOT be multicast on an interface
-            // more than once per second. Two exceptions skip the limit here:
-            //   - Unicast responses (handled above).
-            //   - Answering probe queries: a probe carries the proposed
-            //     records in its Authority Section, and we MUST defend our
-            //     records immediately so the prober detects the conflict.
-            if let Some(dns_registry) = self.dns_registry_map.get_mut(&if_index) {
-                dns_registry.apply_multicast_rate_limit(out, Instant::now(), is_ipv4);
-            }
+            // more than once per second. Unicast responses (handled above)
+            // skip the limit. Answers to probe queries get a 250 ms floor
+            // instead: a probe carries the proposed records in its Authority
+            // Section, and we must defend our unique records for those names
+            // promptly so the prober detects the conflict. `handle_query` has
+            // already delayed the response as needed to meet that floor.
+            let probed_names = probed_names(msg);
+            dns_registry.apply_probe_answer_rate_limit(out, Instant::now(), is_ipv4, &probed_names);
         }
 
         if out.answers_count() > 0 {
@@ -3827,13 +3862,14 @@ impl Zeroconf {
     /// call from the timer loop after the borrows taken while building the
     /// response are gone. The original querier is no longer known, so the
     /// response is always a plain multicast (no unicast destination, no
-    /// source-address preference); the §6 once-per-second multicast rate limit
-    /// still applies.
+    /// source-address preference); the §6 multicast rate limit still applies,
+    /// with the 250 ms floor for probe answers.
     fn send_delayed_response(&mut self, resp: DelayedResponse) {
         let DelayedResponse {
             mut out,
             if_index,
             is_ipv4,
+            probed_names,
             ..
         } = resp;
 
@@ -3848,7 +3884,12 @@ impl Zeroconf {
         };
 
         if let Some(dns_registry) = self.dns_registry_map.get_mut(&if_index) {
-            dns_registry.apply_multicast_rate_limit(&mut out, Instant::now(), is_ipv4);
+            dns_registry.apply_probe_answer_rate_limit(
+                &mut out,
+                Instant::now(),
+                is_ipv4,
+                &probed_names,
+            );
         }
         if out.answers_count() == 0 {
             return;
@@ -5288,6 +5329,15 @@ fn prepare_announce(
     }
 
     Some(out)
+}
+
+/// RFC 6762 §8.1: a probe query carries the records being probed for in its
+/// Authority Section. Returns their names, lowercased; empty for a regular query.
+fn probed_names(msg: &DnsIncoming) -> HashSet<String> {
+    msg.authorities()
+        .iter()
+        .map(|record| record.get_name().to_lowercase())
+        .collect()
 }
 
 /// Send an unsolicited response for owned service via `intf` and `sock`.
@@ -6875,7 +6925,7 @@ mod tests {
         );
 
         // Check if the first answer is of type TXT
-        let answer = out._answers().first().unwrap();
+        let answer = out.answers().first().unwrap();
         assert_eq!(answer.get_type(), RRType::TXT);
 
         // Check TTL is set properly for the TXT record
