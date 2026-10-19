@@ -47,15 +47,17 @@ use crate::{
 };
 use flume::{bounded, Sender, TrySendError};
 use if_addrs::{IfAddr, Interface};
-use mio::{event::Source, net::UdpSocket as MioUdpSocket, Interest, Poll, Registry, Token};
+use mio::{event::Source, net::UdpSocket as MioUdpSocket, Interest, Poll, Registry, Token, Waker};
 use socket2::Domain;
 use socket_pktinfo::PktInfoUdpSocket;
 use std::{
     cmp::{self, Reverse},
     collections::{BinaryHeap, HashMap, HashSet},
     fmt, io,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, UdpSocket},
-    str, thread,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    str,
+    sync::Arc,
+    thread,
     time::{Duration, Instant, SystemTime},
     vec,
 };
@@ -80,8 +82,6 @@ pub const MDNS_PORT: u16 = 5353;
 
 const GROUP_ADDR_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const GROUP_ADDR_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
-const LOOPBACK_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
-
 /// Capacity of event channels returned by `browse`, `browse_cache`, and `resolve_hostname`.
 ///
 /// flume does not preallocate, so unused capacity has no cost. If a receiver falls too far
@@ -289,7 +289,9 @@ pub type Metrics = HashMap<String, i64>;
 
 const IPV4_SOCK_EVENT_KEY: usize = 4; // Pick a key just to indicate IPv4.
 const IPV6_SOCK_EVENT_KEY: usize = 6; // Pick a key just to indicate IPv6.
-const SIGNAL_SOCK_EVENT_KEY: usize = usize::MAX - 1; // avoid to overlap with zc.poll_ids
+/// Token for the single `mio::Waker` registered with the daemon `Poll`.
+/// Distinct from the IPv4 and IPv6 socket tokens.
+const WAKER_EVENT_KEY: usize = usize::MAX - 1;
 
 /// A daemon thread for mDNS
 ///
@@ -299,12 +301,31 @@ pub struct ServiceDaemon {
     /// Sender handle of the channel to the daemon.
     sender: Sender<Command>,
 
-    /// Send to this addr to signal that a `Command` is coming.
+    /// Wakes the daemon `Poll` after a command is queued.
     ///
-    /// The daemon listens on this addr together with other mDNS sockets,
-    /// to avoid busy polling the flume channel. If there is a way to poll
-    /// the channel and mDNS sockets together, then this can be removed.
-    signal_addr: SocketAddr,
+    /// Cloned handles share this one `Waker`. mio allows only one `Waker`
+    /// per `Poll`, and the daemon thread keeps its own `Arc` clone so the
+    /// registration stays alive for the life of the event loop.
+    waker: Arc<Waker>,
+}
+
+/// Enqueue `cmd`, then wake the poller.
+///
+/// The wake is not a command count: mio may coalesce many `wake` calls into
+/// one event. A failed enqueue does not wake. If `wake` fails after a
+/// successful enqueue, the command stays queued and this returns the wake
+/// error rather than pretending the command was never accepted.
+fn enqueue_and_wake(sender: &Sender<Command>, waker: &Waker, cmd: Command) -> Result<()> {
+    sender.try_send(cmd).map_err(|e| match e {
+        TrySendError::Full(_) => Error::Again,
+        TrySendError::Disconnected(_) => Error::DaemonShutdown,
+    })?;
+
+    waker
+        .wake()
+        .map_err(|e| e_fmt!("failed to wake daemon: {e}"))?;
+
+    Ok(())
 }
 
 impl ServiceDaemon {
@@ -359,70 +380,35 @@ impl ServiceDaemon {
     /// reported by this constructor — listen for such failures via
     /// [`monitor`](Self::monitor).
     pub fn new_with_port(port: u16) -> Result<Self> {
-        // Use port 0 to allow the system assign a random available port,
-        // no need for a pre-defined port number.
-        let signal_addr = SocketAddrV4::new(LOOPBACK_V4, 0);
-
-        let signal_sock = UdpSocket::bind(signal_addr)
-            .map_err(|e| e_fmt!("failed to create signal_sock for daemon: {}", e))?;
-
-        // Get the socket with the OS chosen port
-        let signal_addr = signal_sock
-            .local_addr()
-            .map_err(|e| e_fmt!("failed to get signal sock addr: {}", e))?;
-
-        // Must be nonblocking so we can listen to it together with mDNS sockets.
-        signal_sock
-            .set_nonblocking(true)
-            .map_err(|e| e_fmt!("failed to set nonblocking for signal socket: {}", e))?;
-
         let poller = Poll::new().map_err(|e| e_fmt!("failed to create mio Poll: {e}"))?;
+        // Created before the thread starts so a registration failure is
+        // reported here, and so a command queued during startup is already
+        // visible to the first `poll`.
+        let waker = Arc::new(
+            Waker::new(poller.registry(), Token(WAKER_EVENT_KEY))
+                .map_err(|e| e_fmt!("failed to create mio Waker: {e}"))?,
+        );
 
         let (sender, receiver) = bounded(100);
 
-        // Spawn the daemon thread
-        let mio_sock = MioUdpSocket::from_std(signal_sock);
         let cmd_sender = sender.clone();
+        let thread_waker = waker.clone();
         thread::Builder::new()
             .name("mDNS_daemon".to_string())
-            .spawn(move || {
-                Self::daemon_thread(mio_sock, poller, receiver, port, cmd_sender, signal_addr)
-            })
+            .spawn(move || Self::daemon_thread(thread_waker, poller, receiver, port, cmd_sender))
             .map_err(|e| e_fmt!("thread builder failed to spawn: {}", e))?;
 
-        Ok(Self {
-            sender,
-            signal_addr,
-        })
+        Ok(Self { sender, waker })
     }
 
-    /// Sends `cmd` to the daemon via its channel, and sends a signal
-    /// to its sock addr to notify.
+    /// Enqueues `cmd`, then wakes the daemon poller.
+    ///
+    /// Wakeups are coalesced, so the command queue is what gets processed.
+    /// `wake` runs only after a successful enqueue. A later `wake` error does
+    /// not mean the command was rejected: it is already queued and can still
+    /// run on the next poll.
     fn send_cmd(&self, cmd: Command) -> Result<()> {
-        let cmd_name = cmd.to_string();
-
-        // First, send to the flume channel.
-        self.sender.try_send(cmd).map_err(|e| match e {
-            TrySendError::Full(_) => Error::Again,
-            TrySendError::Disconnected(_) => Error::DaemonShutdown,
-        })?;
-
-        // Second, send a signal to notify the daemon.
-        let addr = SocketAddrV4::new(LOOPBACK_V4, 0);
-        let socket = UdpSocket::bind(addr)
-            .map_err(|e| e_fmt!("Failed to create socket to send signal: {}", e))?;
-        socket
-            .send_to(cmd_name.as_bytes(), self.signal_addr)
-            .map_err(|e| {
-                e_fmt!(
-                    "signal socket send_to {} ({}) failed: {}",
-                    self.signal_addr,
-                    cmd_name,
-                    e
-                )
-            })?;
-
-        Ok(())
+        enqueue_and_wake(&self.sender, &self.waker, cmd)
     }
 
     /// Starts browsing for a specific service type.
@@ -848,14 +834,13 @@ impl ServiceDaemon {
     }
 
     fn daemon_thread(
-        signal_sock: MioUdpSocket,
+        waker: Arc<Waker>,
         poller: Poll,
         receiver: Receiver<Command>,
         port: u16,
         cmd_sender: Sender<Command>,
-        signal_addr: SocketAddr,
     ) {
-        let mut zc = Zeroconf::new(signal_sock, poller, port, cmd_sender, signal_addr);
+        let mut zc = Zeroconf::new(waker, poller, port, cmd_sender);
 
         if let Some(cmd) = zc.run(receiver) {
             match cmd {
@@ -1202,9 +1187,6 @@ struct Zeroconf {
     /// All interface selections called to the daemon.
     if_selections: Vec<IfSelection>,
 
-    /// Socket for signaling.
-    signal_sock: MioUdpSocket,
-
     /// Timestamps marking where we need another iteration of the run loop,
     /// to react to events like retransmissions, cache refreshes, interface IP address changes, etc.
     ///
@@ -1230,7 +1212,9 @@ struct Zeroconf {
 
     cmd_sender: Sender<Command>,
 
-    signal_addr: SocketAddr,
+    /// Same `Waker` the public handles use. Kept here so it outlives those
+    /// handles and stays registered for the whole event loop.
+    waker: Arc<Waker>,
 
     #[cfg(test)]
     test_down_interfaces: HashSet<String>,
@@ -1356,13 +1340,7 @@ fn new_multicast_socket(addr: SocketAddr) -> Result<MyUdpSocket> {
 }
 
 impl Zeroconf {
-    fn new(
-        signal_sock: MioUdpSocket,
-        poller: Poll,
-        port: u16,
-        cmd_sender: Sender<Command>,
-        signal_addr: SocketAddr,
-    ) -> Self {
+    fn new(waker: Arc<Waker>, poller: Poll, port: u16, cmd_sender: Sender<Command>) -> Self {
         // Get interfaces.
         let my_ifaddrs = my_ip_interfaces(true);
 
@@ -1442,7 +1420,6 @@ impl Zeroconf {
             next_ip_check: None,
             max_packet_sizes: Vec::new(),
             if_selections,
-            signal_sock,
             timers,
             status,
             pending_resolves: HashSet::new(),
@@ -1452,37 +1429,21 @@ impl Zeroconf {
             accept_unsolicited: false,
             include_apple_p2p: false,
             cmd_sender,
-            signal_addr,
+            waker,
 
             #[cfg(test)]
             test_down_interfaces: HashSet::new(),
         }
     }
 
-    /// Send a Command into the daemon channel and poke the signal socket to wake the poll loop.
+    /// Send a command into the daemon channel and wake the poll loop.
+    ///
+    /// Callers inside the command-drain loop would observe the command on
+    /// the next `try_recv`, but this also runs after that drain (for example
+    /// while sending a delayed response). Skipping the wake would leave the
+    /// command queued until some later socket event or timer.
     fn send_cmd_to_self(&self, cmd: Command) -> Result<()> {
-        let cmd_name = cmd.to_string();
-
-        self.cmd_sender.try_send(cmd).map_err(|e| match e {
-            TrySendError::Full(_) => Error::Again,
-            TrySendError::Disconnected(_) => Error::DaemonShutdown,
-        })?;
-
-        let addr = SocketAddrV4::new(LOOPBACK_V4, 0);
-        let socket = UdpSocket::bind(addr)
-            .map_err(|e| e_fmt!("Failed to create socket to send signal: {}", e))?;
-        socket
-            .send_to(cmd_name.as_bytes(), self.signal_addr)
-            .map_err(|e| {
-                e_fmt!(
-                    "signal socket send_to {} ({}) failed: {}",
-                    self.signal_addr,
-                    cmd_name,
-                    e
-                )
-            })?;
-
-        Ok(())
+        enqueue_and_wake(&self.cmd_sender, &self.waker, cmd)
     }
 
     fn clear_service_retransmissions(&mut self, ty_domain: &str) {
@@ -1663,16 +1624,7 @@ impl Zeroconf {
     /// 4. announce its registered services.
     /// 5. process retransmissions if any.
     fn run(&mut self, receiver: Receiver<Command>) -> Option<Command> {
-        // Add the daemon's signal socket to the poller.
-        if let Err(e) = self.poller.registry().register(
-            &mut self.signal_sock,
-            mio::Token(SIGNAL_SOCK_EVENT_KEY),
-            mio::Interest::READABLE,
-        ) {
-            debug!("failed to add signal socket to the poller: {}", e);
-            return None;
-        }
-
+        // The `Waker` is already registered with this poller.
         if let Some(sock) = self.ipv4_sock.as_mut() {
             if let Err(e) = self.poller.registry().register(
                 sock,
@@ -3175,18 +3127,10 @@ impl Zeroconf {
     fn handle_poller_events(&mut self, events: &mio::Events) {
         for ev in events.iter() {
             trace!("event received with key {:?}", ev.token());
-            if ev.token().0 == SIGNAL_SOCK_EVENT_KEY {
-                // Drain signals as we will drain commands as well.
-                self.signal_sock_drain();
-
-                if let Err(e) = self.poller.registry().reregister(
-                    &mut self.signal_sock,
-                    ev.token(),
-                    mio::Interest::READABLE,
-                ) {
-                    debug!("failed to modify poller for signal socket: {}", e);
-                }
-                continue; // Next event.
+            if ev.token().0 == WAKER_EVENT_KEY {
+                // Nothing to read. Wakeups coalesce, and the command queue
+                // is drained after this function returns.
+                continue;
             }
 
             // Read until no more packets available.
@@ -3887,18 +3831,6 @@ impl Zeroconf {
     fn set_counter(&mut self, counter: Counter, count: i64) {
         let key = counter.to_string();
         self.counters.insert(key, count);
-    }
-
-    fn signal_sock_drain(&self) {
-        let mut signal_buf = [0; 1024];
-
-        // This recv is non-blocking as the socket is non-blocking.
-        while let Ok(sz) = self.signal_sock.recv(&mut signal_buf) {
-            trace!(
-                "signal socket recvd: {}",
-                String::from_utf8_lossy(&signal_buf[0..sz])
-            );
-        }
     }
 
     fn add_retransmission(&mut self, next_time: Instant, command: Command) {
@@ -5544,6 +5476,7 @@ mod tests {
     use std::{
         collections::HashSet,
         net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket},
+        thread,
         time::{Duration, Instant, SystemTime},
     };
     use test_log::test;
@@ -5582,22 +5515,173 @@ mod tests {
     /// Builds a daemon on a private port. `Zeroconf::new` joins the mDNS group on
     /// every host interface, loopback included.
     fn new_test_zeroconf() -> super::Zeroconf {
-        let signal = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let signal_addr = signal.local_addr().unwrap();
-        signal.set_nonblocking(true).unwrap();
+        let (daemon, _receiver) = new_test_zeroconf_with_receiver();
+        daemon
+    }
+
+    /// Same setup as [`new_test_zeroconf`], plus the command receiver.
+    fn new_test_zeroconf_with_receiver() -> (super::Zeroconf, flume::Receiver<super::Command>) {
         let port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
             .unwrap()
             .local_addr()
             .unwrap()
             .port();
-        let (sender, _receiver) = flume::bounded(100);
-        super::Zeroconf::new(
-            mio::net::UdpSocket::from_std(signal),
-            mio::Poll::new().unwrap(),
-            port,
+        let (sender, receiver) = flume::bounded(100);
+        let poller = mio::Poll::new().unwrap();
+        let waker = std::sync::Arc::new(
+            mio::Waker::new(poller.registry(), mio::Token(super::WAKER_EVENT_KEY)).unwrap(),
+        );
+        (super::Zeroconf::new(waker, poller, port, sender), receiver)
+    }
+
+    fn recv_status(receiver: &flume::Receiver<super::DaemonStatus>) -> super::DaemonStatus {
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("daemon command was not processed within 2s")
+    }
+
+    /// Submit `status` until it is accepted or the deadline passes.
+    /// `Error::Again` is retried because the command channel is bounded.
+    fn status_until_accepted(daemon: &ServiceDaemon) -> flume::Receiver<super::DaemonStatus> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match daemon.status() {
+                Ok(receiver) => return receiver,
+                Err(crate::Error::Again) if Instant::now() < deadline => thread::yield_now(),
+                Err(e) => panic!("status command was not accepted: {}", e),
+            }
+        }
+    }
+
+    #[test]
+    fn test_waker_wakes_sleeping_daemon() {
+        let daemon = ServiceDaemon::new().unwrap();
+        // The first response means the thread has already run a loop iteration
+        // and returned to `poll` before the second command is submitted.
+        let first = status_until_accepted(&daemon);
+        assert_eq!(recv_status(&first), super::DaemonStatus::Running);
+
+        let second = status_until_accepted(&daemon);
+        assert_eq!(recv_status(&second), super::DaemonStatus::Running);
+
+        let shutdown = daemon.shutdown().unwrap();
+        assert_eq!(recv_status(&shutdown), super::DaemonStatus::Shutdown);
+    }
+
+    #[test]
+    fn test_command_submitted_immediately_after_construction() {
+        let daemon = ServiceDaemon::new().unwrap();
+        let status = daemon.status().expect("enqueue during startup");
+        assert_eq!(recv_status(&status), super::DaemonStatus::Running);
+        let shutdown = daemon.shutdown().unwrap();
+        assert_eq!(recv_status(&shutdown), super::DaemonStatus::Shutdown);
+    }
+
+    #[test]
+    fn test_concurrent_commands_from_cloned_handles() {
+        let daemon = ServiceDaemon::new().unwrap();
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let daemon = daemon.clone();
+            handles.push(thread::spawn(move || {
+                let mut statuses = Vec::new();
+                for _ in 0..20 {
+                    let receiver = status_until_accepted(&daemon);
+                    statuses.push(recv_status(&receiver));
+                }
+                statuses
+            }));
+        }
+
+        for handle in handles {
+            let statuses = handle.join().expect("status thread");
+            assert_eq!(statuses.len(), 20);
+            assert!(statuses.iter().all(|s| *s == super::DaemonStatus::Running));
+        }
+
+        let shutdown = daemon.shutdown().unwrap();
+        assert_eq!(recv_status(&shutdown), super::DaemonStatus::Shutdown);
+    }
+
+    #[test]
+    fn test_send_cmd_to_self_wakes_poll_and_queues_every_command() {
+        let (mut daemon, receiver) = new_test_zeroconf_with_receiver();
+        for i in 0..5 {
+            daemon
+                .send_cmd_to_self(super::Command::StopBrowse(format!("svc{i}._udp.local.")))
+                .unwrap();
+        }
+
+        let started = Instant::now();
+        let mut events = mio::Events::with_capacity(16);
+        daemon
+            .poller
+            .poll(&mut events, Some(Duration::from_secs(2)))
+            .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "poll waited on a timer instead of the waker"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|ev| ev.token().0 == super::WAKER_EVENT_KEY),
+            "expected a waker event"
+        );
+
+        let mut queued = 0;
+        while receiver.try_recv().is_ok() {
+            queued += 1;
+        }
+        assert_eq!(queued, 5, "coalesced wakeups must not drop queued commands");
+    }
+
+    #[test]
+    fn test_command_channel_full_and_disconnected() {
+        let poller = mio::Poll::new().unwrap();
+        let waker = std::sync::Arc::new(
+            mio::Waker::new(poller.registry(), mio::Token(super::WAKER_EVENT_KEY)).unwrap(),
+        );
+        let (sender, receiver) = flume::bounded(1);
+        let daemon = ServiceDaemon {
             sender,
-            signal_addr,
-        )
+            waker: waker.clone(),
+        };
+
+        daemon
+            .send_cmd(super::Command::StopBrowse("_full._udp.local.".to_string()))
+            .unwrap();
+        assert_eq!(
+            daemon
+                .send_cmd(super::Command::StopBrowse("_full._udp.local.".to_string()))
+                .unwrap_err(),
+            crate::Error::Again
+        );
+
+        drop(receiver);
+        assert_eq!(
+            daemon
+                .send_cmd(super::Command::StopBrowse(
+                    "_closed._udp.local.".to_string()
+                ))
+                .unwrap_err(),
+            crate::Error::DaemonShutdown
+        );
+        // Keep the poller alive for the waker registration above.
+        drop(poller);
+    }
+
+    #[test]
+    fn test_dropped_clone_does_not_stop_waking_remaining_handle() {
+        let daemon = ServiceDaemon::new().unwrap();
+        let remaining = daemon.clone();
+        drop(daemon);
+
+        let status = status_until_accepted(&remaining);
+        assert_eq!(recv_status(&status), super::DaemonStatus::Running);
+
+        let shutdown = remaining.shutdown().unwrap();
+        assert_eq!(recv_status(&shutdown), super::DaemonStatus::Shutdown);
     }
 
     /// Whether the daemon's IPv4 socket still holds the mDNS membership for `ip`.
@@ -5809,22 +5893,7 @@ mod tests {
         use crate::service_info::ServiceStatus;
 
         for ipv4_service in [true, false] {
-            let signal = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-            let signal_addr = signal.local_addr().unwrap();
-            signal.set_nonblocking(true).unwrap();
-            let port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-                .unwrap()
-                .local_addr()
-                .unwrap()
-                .port();
-            let (sender, _receiver) = flume::bounded(100);
-            let mut daemon = super::Zeroconf::new(
-                mio::net::UdpSocket::from_std(signal),
-                mio::Poll::new().unwrap(),
-                port,
-                sender,
-                signal_addr,
-            );
+            let (mut daemon, _receiver) = new_test_zeroconf_with_receiver();
             let loopback = my_ip_interfaces(true)
                 .into_iter()
                 .find(|intf| intf.ip() == IpAddr::V4(Ipv4Addr::LOCALHOST))
@@ -7408,22 +7477,7 @@ mod tests {
         );
     }
     fn negative_answer_test_daemon() -> (super::Zeroconf, u32) {
-        let signal = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let signal_addr = signal.local_addr().unwrap();
-        signal.set_nonblocking(true).unwrap();
-        let port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let (sender, _receiver) = flume::bounded(100);
-        let mut daemon = super::Zeroconf::new(
-            mio::net::UdpSocket::from_std(signal),
-            mio::Poll::new().unwrap(),
-            port,
-            sender,
-            signal_addr,
-        );
+        let (mut daemon, _receiver) = new_test_zeroconf_with_receiver();
         let index = my_ip_interfaces(true)
             .iter()
             .find(|intf| intf.ip() == IpAddr::V4(Ipv4Addr::LOCALHOST))
