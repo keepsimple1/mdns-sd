@@ -9,9 +9,7 @@ This is a bugfix release.
   receiver falls too far behind and its event channel fills (or the receiver is
   dropped), that subscription is closed and its pending queries are stopped. In this
   case the receiver gets no `SearchStopped` event: after the queued events, the channel
-  is simply disconnected (e.g. a `for event in receiver` loop ends). Cached records are
-  kept, so `browse_cache` still works. The event channel capacity is increased from 10
-  to 1000. (#522)
+  is simply disconnected. Cached records are kept, so `browse_cache` still works. (#522)
 - Do not record an interface address whose multicast join failed. Previously such an
   address was kept (and `IpAdd` was emitted), so the IP check never retried the join.
   Now the join is retried on the next IP check. (#523)
