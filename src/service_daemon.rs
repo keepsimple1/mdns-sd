@@ -3574,9 +3574,9 @@ impl Zeroconf {
 
             if qtype == RRType::PTR {
                 // PTR answers are shared records: defer the response unless this
-                // is a legacy-unicast (source port != 5353) or probe-defense
+                // is a legacy-unicast (source port differs from ours) or probe-defense
                 // (records in the Authority Section) query.
-                if querier_addr.port() == MDNS_PORT && msg.num_authorities() == 0 {
+                if querier_addr.port() == self.port && msg.num_authorities() == 0 {
                     delayed = true;
                 }
                 for service in self.my_services.values() {
@@ -3713,14 +3713,14 @@ impl Zeroconf {
             .find(|if_addr| valid_ip_on_intf(&querier_ip, if_addr));
 
         // RFC 6762 §6.7 (Legacy Unicast Responses): if the querier's source
-        // port is not 5353, it's a one-shot legacy querier (e.g. Android's
+        // port differs from ours, it's a one-shot legacy querier (e.g. Android's
         // getaddrinfo, iOS resolver fallback). The response MUST be unicast
         // back to the querier's source IP and port; multicast replies will
         // never reach the querier's ephemeral socket. Legacy unicast
         // responses must also echo the question section, clear the
         // cache-flush bit (legacy resolvers don't understand it), and cap
         // record TTLs to 10 seconds (see update_records_for_legacy_unicast).
-        let unicast_dest = if querier_addr.port() != MDNS_PORT {
+        let unicast_dest = if querier_addr.port() != self.port {
             Some(querier_addr)
         } else {
             None
@@ -6111,6 +6111,83 @@ mod tests {
         assert!(valid_instance_name("my-laser._printer._tcp.local."));
         assert!(valid_instance_name("my-laser.._printer._tcp.local."));
         assert!(!valid_instance_name("_printer._tcp.local."));
+    }
+
+    #[test]
+    fn test_custom_port_shared_response_is_delayed() {
+        let mut daemon = new_test_zeroconf();
+        let address = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let index = daemon
+            .my_intfs
+            .values()
+            .find(|intf| intf.addrs.iter().any(|addr| addr.ip() == address))
+            .unwrap()
+            .index;
+        let mut service = ServiceInfo::new(
+            "_custom-query._udp.local.",
+            "instance",
+            "custom-query.local.",
+            address,
+            8080,
+            None,
+        )
+        .unwrap();
+        service.set_status(index, crate::service_info::ServiceStatus::Announced);
+        daemon
+            .my_services
+            .insert(service.get_fullname().to_lowercase(), service);
+        let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        query.add_question("_custom-query._udp.local.", RRType::PTR);
+        let interface = InterfaceId {
+            name: "test".to_string(),
+            index,
+        };
+        let packet = query
+            .to_data_on_wire(MAX_PKT_DEFAULT, address.is_ipv4())
+            .remove(0);
+        let query = DnsIncoming::new(packet, interface).unwrap();
+        daemon.handle_query(query, index, (address, daemon.port).into());
+        assert_eq!(daemon.delayed_responses.len(), 1);
+        assert_eq!(daemon.delayed_responses[0].out.answers_count(), 1);
+    }
+
+    #[test]
+    fn test_custom_port_response_preserves_multicast_records() {
+        let mut daemon = new_test_zeroconf();
+        let address = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let index = daemon
+            .my_intfs
+            .values()
+            .find(|intf| intf.addrs.iter().any(|addr| addr.ip() == address))
+            .unwrap()
+            .index;
+        let interface = InterfaceId {
+            name: "test".to_string(),
+            index,
+        };
+        let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        query.add_question("custom-query.local.", RRType::A);
+        let packet = query
+            .to_data_on_wire(MAX_PKT_DEFAULT, address.is_ipv4())
+            .remove(0);
+        let query = DnsIncoming::new(packet, interface.clone()).unwrap();
+        let mut response = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+        response.add_answer_record(DnsAddress::new(
+            "custom-query.local.",
+            RRType::A,
+            CLASS_IN | super::CLASS_CACHE_FLUSH,
+            120,
+            address,
+            interface.clone(),
+        ));
+        daemon.send_response(&mut response, &query, index, (address, daemon.port).into());
+        let packet = response
+            .to_data_on_wire(MAX_PKT_DEFAULT, address.is_ipv4())
+            .remove(0);
+        let response = DnsIncoming::new(packet, interface).unwrap();
+        assert!(response.questions().is_empty());
+        assert_eq!(response.answers()[0].get_record().get_ttl(), 120);
+        assert!(response.answers()[0].get_record().is_unique());
     }
 
     #[test]
