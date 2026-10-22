@@ -120,4 +120,4 @@ jobs:
           tool: cargo-fuzz
 
       - name: Build fuzz targets
-        run: cargo fuzz build
+        run: cargo fuzz build --target x86_64-unknown-linux-gnu
