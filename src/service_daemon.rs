@@ -3553,6 +3553,7 @@ impl Zeroconf {
 
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         let mut delayed = false;
+        let legacy_querier = self.is_legacy_querier(querier_addr);
 
         // Special meta-query "_services._dns-sd._udp.<Domain>".
         // See https://datatracker.ietf.org/doc/html/rfc6763#section-9
@@ -3576,7 +3577,7 @@ impl Zeroconf {
                 // PTR answers are shared records: defer the response unless this
                 // is a legacy-unicast (source port differs from ours) or probe-defense
                 // (records in the Authority Section) query.
-                if querier_addr.port() == self.port && msg.num_authorities() == 0 {
+                if !legacy_querier && msg.num_authorities() == 0 {
                     delayed = true;
                 }
                 for service in self.my_services.values() {
@@ -3680,6 +3681,10 @@ impl Zeroconf {
         self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count());
     }
 
+    fn is_legacy_querier(&self, addr: SocketAddr) -> bool {
+        addr.port() != self.port
+    }
+
     fn send_response(
         &mut self,
         out: &mut DnsOutgoing,
@@ -3720,7 +3725,7 @@ impl Zeroconf {
         // responses must also echo the question section, clear the
         // cache-flush bit (legacy resolvers don't understand it), and cap
         // record TTLs to 10 seconds (see update_records_for_legacy_unicast).
-        let unicast_dest = if querier_addr.port() != self.port {
+        let unicast_dest = if self.is_legacy_querier(querier_addr) {
             Some(querier_addr)
         } else {
             None
