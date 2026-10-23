@@ -21,14 +21,14 @@ env:
 jobs:
   lint:
     name: Lint and Documentation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: rustfmt, clippy
 
@@ -56,14 +56,14 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-latest
-          - windows-latest
-          - macos-latest
+          - ubuntu-24.04
+          - windows-2025
+          - macos-15
     env:
       RUST_LOG: debug
     steps:
@@ -71,9 +71,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        if: runner.os == 'Windows'
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Test default features
         run: cargo test
@@ -83,7 +89,7 @@ jobs:
 
   msrv:
     name: MSRV (Rust 1.71.0)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -102,7 +108,7 @@ jobs:
 
   fuzz:
     name: Build Fuzz Targets
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
