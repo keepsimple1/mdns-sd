@@ -6845,8 +6845,12 @@ mod tests {
         // Create a mDNS client for resolving the hostname.
         let client = ServiceDaemon::new().expect("Failed to create client");
         let event_receiver = client.resolve_hostname(hostname, None).unwrap();
+
+        // Bound the wait so the test fails instead of hanging when the
+        // address is never resolved (e.g. multicast blocked on the interface).
+        let resolve_timeout = Duration::from_secs(5);
         let resolved = loop {
-            match event_receiver.recv() {
+            match event_receiver.recv_timeout(resolve_timeout) {
                 Ok(HostnameResolutionEvent::AddressesFound(found_hostname, addresses)) => {
                     assert_eq!(found_hostname, hostname);
                     assert!(addresses.contains(&service_ip_addr));
