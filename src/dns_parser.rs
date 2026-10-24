@@ -1840,8 +1840,7 @@ impl DnsOutgoing {
         &self.questions
     }
 
-    /// For testing purposes only.
-    pub(crate) fn _answers(&self) -> &[DnsRecordBox] {
+    pub(crate) fn answers(&self) -> &[DnsRecordBox] {
         &self.answers
     }
 

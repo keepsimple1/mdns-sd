@@ -1201,13 +1201,37 @@ impl DnsRegistry {
     /// Drops from `out` any answer or additional record that was multicast within the
     /// last second, and records `now` as the last-multicast time for the records kept.
     ///
-    /// This must NOT be applied to probe queries, legacy unicast responses, or
-    /// goodbye packets, which are exempt from the rate limit.
+    /// This must NOT be applied to legacy unicast responses or goodbye packets,
+    /// which are exempt from the rate limit. Answers to probe queries use
+    /// [`Self::apply_probe_answer_rate_limit`] instead.
     pub(crate) fn apply_multicast_rate_limit(
         &mut self,
         out: &mut DnsOutgoing,
         now: Instant,
         is_ipv4: bool,
+    ) {
+        self.apply_probe_answer_rate_limit(out, now, is_ipv4, &HashSet::new());
+    }
+
+    /// Same as [`Self::apply_multicast_rate_limit`], but for a response to a
+    /// probe query whose Authority Section names `probed_names` (lowercased).
+    ///
+    /// RFC 6762 section 6: "In the special case of answering probe queries
+    /// (Section 8.1) with a unique record, a Multicast DNS responder is only
+    /// required to delay its transmission as necessary to ensure an interval of
+    /// at least 250 ms since the last time the record was multicast on that
+    /// interface." So a unique record named in `probed_names` is only dropped
+    /// if multicast within the last 250 ms; every other record keeps the
+    /// one-second limit. Callers delay the response by
+    /// [`Self::probe_answer_delay`] first, so the probed records are not dropped.
+    ///
+    /// An empty `probed_names` is the plain one-second limit.
+    pub(crate) fn apply_probe_answer_rate_limit(
+        &mut self,
+        out: &mut DnsOutgoing,
+        now: Instant,
+        is_ipv4: bool,
+        probed_names: &HashSet<String>,
     ) {
         let last_multicast = if is_ipv4 {
             &mut self.last_multicast_v4
@@ -1222,12 +1246,45 @@ impl DnsRegistry {
                 < Duration::from_millis(MULTICAST_RATE_LIMIT_MILLIS)
         });
 
-        out.retain_answers(|record| keep_after_rate_limit(last_multicast, record, now));
+        out.retain_answers(|record| {
+            let window = rate_limit_window(record, probed_names);
+            keep_after_rate_limit(last_multicast, record, now, window)
+        });
 
         // Only touch additionals if an answer survived.
         if out.answers_count() > 0 {
-            out.retain_additionals(|record| keep_after_rate_limit(last_multicast, record, now));
+            out.retain_additionals(|record| {
+                let window = rate_limit_window(record, probed_names);
+                keep_after_rate_limit(last_multicast, record, now, window)
+            });
         }
+    }
+
+    /// Returns how long a response to a probe query must be delayed so that
+    /// none of its probed unique answers (see
+    /// [`Self::apply_probe_answer_rate_limit`]) is multicast within 250 ms of
+    /// its last multicast on this interface. Returns zero if it can go now.
+    pub(crate) fn probe_answer_delay(
+        &self,
+        out: &DnsOutgoing,
+        now: Instant,
+        is_ipv4: bool,
+        probed_names: &HashSet<String>,
+    ) -> Duration {
+        let last_multicast = if is_ipv4 {
+            &self.last_multicast_v4
+        } else {
+            &self.last_multicast_v6
+        };
+        let floor = Duration::from_millis(PROBE_ANSWER_RATE_LIMIT_MILLIS);
+
+        out.answers()
+            .iter()
+            .filter(|record| is_probe_answer(record, probed_names))
+            .filter_map(|record| last_multicast.get(&rate_limit_key(record)))
+            .map(|last| floor.saturating_sub(now.saturating_duration_since(*last)))
+            .max()
+            .unwrap_or(Duration::ZERO)
     }
 
     /// Returns the renamed name if a name change exists, otherwise returns the original name.
@@ -1296,6 +1353,9 @@ impl DnsRegistry {
     /// check all records in "probing" and "active":
     /// if the record is SRV, and hostname is set to original, remove it.
     /// and create a new SRV with "host" set to "new_name" and put into "probing".
+    ///
+    /// Returns true if a probe was (re)started at `probe_time`, i.e. the caller
+    /// needs a timer at `probe_time`.
     pub(crate) fn update_hostname(
         &mut self,
         original: &str,
@@ -1340,7 +1400,13 @@ impl DnsRegistry {
         for record in found_records {
             let probe = match self.probing.get_mut(record.get_name()) {
                 Some(p) => {
-                    p.start_time = probe_time; // restart this probe.
+                    // Restart this probe. `next_send` must be reset as well: it may
+                    // be far ahead of `probe_time` (e.g. one second after a lost
+                    // tiebreak), and if it is later than `probe_time + 750ms` the
+                    // probe would expire without ever sending the new SRV.
+                    p.start_time = probe_time;
+                    p.next_send = probe_time;
+                    new_timer_added = true;
                     p
                 }
                 None => {
@@ -1370,21 +1436,38 @@ impl DnsRegistry {
 /// elapsed since it was last multicast on that interface.
 pub(crate) const MULTICAST_RATE_LIMIT_MILLIS: u64 = 1000;
 
+/// RFC 6762 section 6 floor for answering probe queries (section 8.1) with a
+/// unique record: at least this many millis since the record was last multicast
+/// on that interface.
+pub(crate) const PROBE_ANSWER_RATE_LIMIT_MILLIS: u64 = 250;
+
+/// Returns whether `record` answers a probe for it: a unique record named in
+/// `probed_names` (the lowercased names in a probe query's Authority Section).
+fn is_probe_answer(record: &DnsRecordBox, probed_names: &HashSet<String>) -> bool {
+    record.get_record().is_unique() && probed_names.contains(&record.get_name().to_lowercase())
+}
+
+/// Returns the rate-limit window for `record`: the probe-answer floor if it
+/// answers a probe (see [`is_probe_answer`]), otherwise the one-second limit.
+fn rate_limit_window(record: &DnsRecordBox, probed_names: &HashSet<String>) -> Duration {
+    if is_probe_answer(record, probed_names) {
+        Duration::from_millis(PROBE_ANSWER_RATE_LIMIT_MILLIS)
+    } else {
+        Duration::from_millis(MULTICAST_RATE_LIMIT_MILLIS)
+    }
+}
+
 /// Returns whether `record` may still be multicast under the RFC 6762 section 6
-/// rate limit, updating `last_multicast` to `now` when it is kept.
+/// rate limit `window`, updating `last_multicast` to `now` when it is kept.
 fn keep_after_rate_limit(
     last_multicast: &mut HashMap<String, Instant>,
     record: &DnsRecordBox,
     now: Instant,
+    window: Duration,
 ) -> bool {
     let key = rate_limit_key(record);
     match last_multicast.get(&key) {
-        Some(last)
-            if now.saturating_duration_since(*last)
-                < Duration::from_millis(MULTICAST_RATE_LIMIT_MILLIS) =>
-        {
-            false
-        }
+        Some(last) if now.saturating_duration_since(*last) < window => false,
         _ => {
             last_multicast.insert(key, now);
             true
@@ -1522,11 +1605,16 @@ impl ResolvedService {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_txt, encode_txt, u8_slice_to_hex, DnsRegistry, Instant, ServiceInfo, TxtProperty,
+        decode_txt, encode_txt, u8_slice_to_hex, DnsRegistry, Instant, Probe, ServiceInfo,
+        TxtProperty,
     };
-    use crate::dns_parser::{DnsOutgoing, DnsPointer, RRType, CLASS_IN, FLAGS_QR_RESPONSE};
+    use crate::dns_parser::{
+        DnsOutgoing, DnsPointer, DnsRecordExt, DnsSrv, RRType, CLASS_CACHE_FLUSH, CLASS_IN,
+        FLAGS_QR_RESPONSE,
+    };
     use crate::{IfKind, IfPredicate};
     use if_addrs::{IfAddr, IfOperStatus, Ifv4Addr, Ifv6Addr, Interface};
+    use std::collections::HashSet;
     use std::net::{Ipv4Addr, Ipv6Addr};
     use std::time::Duration;
 
@@ -1663,6 +1751,164 @@ mod tests {
         out.add_answer_record(extra());
         registry.apply_multicast_rate_limit(&mut out, now + Duration::from_millis(200), true);
         assert_eq!(out.answers_count(), 1);
+    }
+
+    /// RFC 6762 section 6: answering a probe query with a unique record only
+    /// needs 250 ms since that record's last multicast on the interface, not
+    /// one second. Inside the floor the caller is told how long to delay, and
+    /// records the querier is not probing keep the one-second limit.
+    #[test]
+    fn test_probe_answer_rate_limit() {
+        let mut registry = DnsRegistry::new();
+
+        let instance = "Inst._test._tcp.local.";
+        let srv = || {
+            DnsSrv::new(
+                instance,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                120,
+                0,
+                0,
+                5200,
+                "host.local.".to_string(),
+            )
+        };
+        let build_out = || {
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+            out.add_answer_record(srv());
+            out
+        };
+        // The prober's Authority Section names our instance, lowercased.
+        let probed = HashSet::from([instance.to_lowercase()]);
+        let not_probed = HashSet::new();
+
+        let now = Instant::now();
+
+        // Multicast the SRV once (e.g. an announcement).
+        let mut out = build_out();
+        registry.apply_multicast_rate_limit(&mut out, now, true);
+        assert_eq!(out.answers_count(), 1);
+
+        // A probe 100 ms later: the answer must wait until 250 ms have passed.
+        let t = now + Duration::from_millis(100);
+        let out = build_out();
+        assert_eq!(
+            registry.probe_answer_delay(&out, t, true, &probed),
+            Duration::from_millis(150)
+        );
+        // Sending it anyway inside the floor drops it.
+        let mut out = build_out();
+        registry.apply_probe_answer_rate_limit(&mut out, t, true, &probed);
+        assert_eq!(out.answers_count(), 0);
+
+        // The other family has its own bucket: no delay there.
+        assert_eq!(
+            registry.probe_answer_delay(&build_out(), t, false, &probed),
+            Duration::ZERO
+        );
+
+        // A non-probe query at the same time is not delayed, it is throttled
+        // by the one-second limit.
+        assert_eq!(
+            registry.probe_answer_delay(&build_out(), t, true, &not_probed),
+            Duration::ZERO
+        );
+        let mut out = build_out();
+        registry.apply_probe_answer_rate_limit(&mut out, t, true, &not_probed);
+        assert_eq!(out.answers_count(), 0);
+
+        // At the 250 ms floor the probe answer goes out, well inside one second.
+        let t = now + Duration::from_millis(250);
+        assert_eq!(
+            registry.probe_answer_delay(&build_out(), t, true, &probed),
+            Duration::ZERO
+        );
+        let mut out = build_out();
+        registry.apply_probe_answer_rate_limit(&mut out, t, true, &probed);
+        assert_eq!(out.answers_count(), 1);
+
+        // The probe answer counts as a multicast: a regular response 500 ms
+        // after it is still throttled by the one-second limit.
+        let mut out = build_out();
+        registry.apply_multicast_rate_limit(&mut out, t + Duration::from_millis(500), true);
+        assert_eq!(out.answers_count(), 0);
+    }
+
+    /// The probe-answer floor is only for unique records: a shared record
+    /// (no cache-flush bit) keeps the one-second limit even when its name is
+    /// being probed, and never asks for a delay.
+    #[test]
+    fn test_probe_answer_rate_limit_shared_record() {
+        let mut registry = DnsRegistry::new();
+
+        let name = "_test._tcp.local.";
+        let build_out = || {
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+            out.add_answer_record(DnsPointer::new(
+                name,
+                RRType::PTR,
+                CLASS_IN,
+                4500,
+                "inst._test._tcp.local.".to_string(),
+            ));
+            out
+        };
+        let probed = HashSet::from([name.to_string()]);
+
+        let now = Instant::now();
+        let mut out = build_out();
+        registry.apply_multicast_rate_limit(&mut out, now, true);
+        assert_eq!(out.answers_count(), 1);
+
+        let t = now + Duration::from_millis(300);
+        assert_eq!(
+            registry.probe_answer_delay(&build_out(), t, true, &probed),
+            Duration::ZERO
+        );
+        let mut out = build_out();
+        registry.apply_probe_answer_rate_limit(&mut out, t, true, &probed);
+        assert_eq!(out.answers_count(), 0);
+    }
+
+    /// Issue #506: a host rename restarts the SRV probe that names the host.
+    /// The restart must reset `next_send` too: after a lost tiebreak it is a
+    /// second ahead, past `start_time + 750ms`, so the probe would otherwise
+    /// expire without ever sending the renamed SRV.
+    #[test]
+    fn test_update_hostname_restarts_probe_send() {
+        let mut registry = DnsRegistry::new();
+
+        let instance = "inst._test._tcp.local.";
+        let now = Instant::now();
+
+        let mut probe = Probe::new(now);
+        probe.insert_record(
+            DnsSrv::new(
+                instance,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                120,
+                0,
+                0,
+                5200,
+                "host.local.".to_string(),
+            )
+            .boxed(),
+        );
+        // As if this probe just lost a tiebreak.
+        probe.start_time = now + Duration::from_millis(1000);
+        probe.next_send = now + Duration::from_millis(1000);
+        registry.probing.insert(instance.to_string(), probe);
+
+        let probe_time = now + Duration::from_millis(100);
+        assert!(registry.update_hostname("host.local.", "host-2.local.", probe_time));
+
+        let probe = &registry.probing[instance];
+        assert_eq!(probe.start_time, probe_time);
+        assert_eq!(probe.next_send, probe_time);
+        assert!(!probe.expired(probe.next_send));
+
+        let srv = probe.records[0].any().downcast_ref::<DnsSrv>().unwrap();
+        assert_eq!(srv.host(), "host-2.local.");
     }
 
     #[test]
