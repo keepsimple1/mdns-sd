@@ -951,7 +951,7 @@ fn new_socket(addr: SocketAddr, non_block: bool) -> Result<PktInfoUdpSocket> {
     fd.bind(&addr.into())
         .map_err(|e| e_fmt!("socket bind to {} failed: {}", &addr, e))?;
 
-    trace!("new socket bind to {}", &addr);
+    trace!("new socket bind to {}", addr);
     Ok(fd)
 }
 
@@ -1536,7 +1536,7 @@ impl Zeroconf {
             .map(|(hostname, _)| hostname.clone())
             .collect();
         for hostname in expired {
-            trace!("hostname resolver timeout for {}", &hostname);
+            trace!("hostname resolver timeout for {}", hostname);
             if let Some((sender, _)) = self.remove_hostname_subscription(&hostname) {
                 let _ = sender.try_send(HostnameResolutionEvent::SearchTimeout(hostname.clone()));
                 let _ = sender.try_send(HostnameResolutionEvent::SearchStopped(hostname));
@@ -1559,7 +1559,7 @@ impl Zeroconf {
         let service_names: Vec<String> = self.my_services.keys().cloned().collect();
         for fullname in service_names {
             if let Some(info) = self.my_services.get(&fullname) {
-                debug!("Unregistering service during shutdown: {}", &fullname);
+                debug!("Unregistering service during shutdown: {}", fullname);
 
                 for intf in self.my_intfs.values() {
                     if let Some(sock) = self.ipv4_sock.as_ref() {
@@ -1577,7 +1577,7 @@ impl Zeroconf {
         // 2. Stop all browse operations
         let browse_types: Vec<String> = self.service_queriers.keys().cloned().collect();
         for ty_domain in browse_types {
-            debug!("Stopping browse during shutdown: {}", &ty_domain);
+            debug!("Stopping browse during shutdown: {}", ty_domain);
             if let Some(sender) = self.service_queriers.remove(&ty_domain) {
                 // Notify the client
                 if let Err(e) = sender.try_send(ServiceEvent::SearchStopped(ty_domain.clone())) {
@@ -1589,10 +1589,7 @@ impl Zeroconf {
         // 3. Stop all hostname resolution operations
         let hostnames: Vec<String> = self.hostname_resolvers.keys().cloned().collect();
         for hostname in hostnames {
-            debug!(
-                "Stopping hostname resolution during shutdown: {}",
-                &hostname
-            );
+            debug!("Stopping hostname resolution during shutdown: {}", hostname);
             if let Some((sender, _timeout)) = self.hostname_resolvers.remove(&hostname) {
                 // Notify the client
                 if let Err(e) =
@@ -1733,7 +1730,7 @@ impl Zeroconf {
 
             // Refresh cached A/AAAA records with active queriers
             let mut query_count = 0;
-            for (hostname, _sender) in self.hostname_resolvers.iter() {
+            for hostname in self.hostname_resolvers.keys() {
                 for (hostname, ip_addr) in
                     self.cache.refresh_due_hostname_resolutions(hostname).iter()
                 {
@@ -1902,7 +1899,7 @@ impl Zeroconf {
         // Only retain the monitors that are still connected.
         self.monitors.retain(|sender| {
             if let Err(e) = sender.try_send(event.clone()) {
-                debug!("notify_monitors: try_send: {}", &e);
+                debug!("notify_monitors: try_send: {}", e);
                 if matches!(e, TrySendError::Disconnected(_)) {
                     return false; // This monitor is dropped.
                 }
@@ -1913,7 +1910,7 @@ impl Zeroconf {
 
     /// Remove `addr` in my services that enabled `addr_auto`.
     fn del_addr_in_my_services(&mut self, addr: &IpAddr) {
-        for (_, service_info) in self.my_services.iter_mut() {
+        for service_info in self.my_services.values_mut() {
             if service_info.is_addr_auto() {
                 service_info.remove_ipaddr(addr);
             }
@@ -2296,7 +2293,7 @@ impl Zeroconf {
                 .or_insert_with(DnsRegistry::new),
         };
 
-        for (_, service_info) in self.my_services.iter_mut() {
+        for service_info in self.my_services.values_mut() {
             if service_info.is_addr_auto() {
                 if !service_info.insert_ipaddr(intf) {
                     // Skip an unsupported address. Should not try to announce it.
@@ -2351,7 +2348,7 @@ impl Zeroconf {
     fn register_service(&mut self, mut info: ServiceInfo) {
         // Check the service name length.
         if let Err(e) = check_service_name_length(info.get_type(), self.service_name_len_max) {
-            error!("check_service_name_length: {}", &e);
+            error!("check_service_name_length: {}", e);
             self.notify_monitors(DaemonEvent::Error(e));
             return;
         }
@@ -2364,13 +2361,13 @@ impl Zeroconf {
             }
         }
 
-        debug!("register service {:?}", &info);
+        debug!("register service {:?}", info);
 
         let outgoing_addrs = self.send_unsolicited_response(&mut info);
         if !outgoing_addrs.is_empty() {
             self.notify_monitors(DaemonEvent::Announce(
                 info.get_fullname().to_string(),
-                format!("{:?}", &outgoing_addrs),
+                format!("{:?}", outgoing_addrs),
             ));
         }
 
@@ -2571,7 +2568,7 @@ impl Zeroconf {
                         debug!("wake up: announce service {} on {}", fullname, intf.name);
                         notify_monitors(
                             &mut self.monitors,
-                            DaemonEvent::Announce(fullname, format!("{}:{}", hostname, &intf.name)),
+                            DaemonEvent::Announce(fullname, format!("{}:{}", hostname, intf.name)),
                         );
 
                         info.set_status(*if_index, ServiceStatus::Announced);
@@ -2747,7 +2744,7 @@ impl Zeroconf {
         }
 
         let mut invalid_intf_addrs = HashSet::new();
-        for (_, intf) in self.my_intfs.iter() {
+        for intf in self.my_intfs.values() {
             if let Some(sock) = self.ipv4_sock.as_ref() {
                 if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
                     send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None, None)
@@ -3257,7 +3254,7 @@ impl Zeroconf {
 
                     // Positive dump: a new record was accepted into the cache.
                     // Counterpart to the "skipping record" debug line in the parser.
-                    debug!("cache: new record: {:?}", &dns_record.record);
+                    debug!("cache: new record: {:?}", dns_record.record);
 
                     // Only process PTR that does not expire soon (i.e. TTL > 1).
                     if ty == RRType::PTR && dns_record.record.get_record().get_ttl() > 1 {
@@ -3540,7 +3537,7 @@ impl Zeroconf {
         if !removed_instances.is_empty() {
             debug!(
                 "resolve_updated_instances: removed {}",
-                &removed_instances.len()
+                removed_instances.len()
             );
             self.notify_service_removal(removed_instances);
         }
@@ -3592,7 +3589,7 @@ impl Zeroconf {
                         let alias = service.get_type().to_string();
                         let ptr = DnsPointer::new(q_name, RRType::PTR, CLASS_IN, ttl, alias);
                         if !out.add_answer(&msg, ptr) {
-                            trace!("answer was not added for meta-query {:?}", &question);
+                            trace!("answer was not added for meta-query {:?}", question);
                         }
                     }
                 }
@@ -3641,7 +3638,7 @@ impl Zeroconf {
                 if intf_addrs.is_empty() {
                     debug!(
                         "Cannot find valid addrs for TYPE_SRV response on intf {:?}",
-                        &intf
+                        intf
                     );
                     continue;
                 }
@@ -3750,7 +3747,7 @@ impl Zeroconf {
         }
 
         if out.answers_count() > 0 {
-            debug!("sending response on intf {}", &intf.name);
+            debug!("sending response on intf {}", intf.name);
             if let Err(InternalError::IntfAddrInvalid(intf_addr)) = send_dns_outgoing(
                 out,
                 intf,
@@ -3809,7 +3806,7 @@ impl Zeroconf {
         };
 
         let if_name = intf.name.clone();
-        debug!("sending delayed response on intf {}", &if_name);
+        debug!("sending delayed response on intf {}", if_name);
         let send_result = send_dns_outgoing(&out, intf, &sock.pktinfo, self.port, None, None);
 
         if let Err(InternalError::IntfAddrInvalid(intf_addr)) = send_result {
@@ -3867,7 +3864,7 @@ impl Zeroconf {
     ///
     /// `repeating`: whether this is a retransmission.
     fn exec_command(&mut self, command: Command, repeating: bool) {
-        trace!("exec_command: {:?} repeating: {}", &command, repeating);
+        trace!("exec_command: {:?} repeating: {}", command, repeating);
         match command {
             Command::Browse(ty, next_delay, cache_only, listener) => {
                 self.exec_command_browse(repeating, ty, next_delay, cache_only, listener);
@@ -3885,7 +3882,7 @@ impl Zeroconf {
             }
 
             Command::RegisterResend(fullname, intf) => {
-                trace!("register-resend service: {fullname} on {}", &intf);
+                trace!("register-resend service: {fullname} on {}", intf);
                 if let Err(InternalError::IntfAddrInvalid(intf_addr)) =
                     self.exec_command_register_resend(fullname, intf)
                 {
@@ -3895,7 +3892,7 @@ impl Zeroconf {
             }
 
             Command::Unregister(fullname, resp_s) => {
-                trace!("unregister service {} repeat {}", &fullname, &repeating);
+                trace!("unregister service {} repeat {}", fullname, repeating);
                 self.exec_command_unregister(repeating, fullname, resp_s);
             }
 
@@ -3949,7 +3946,7 @@ impl Zeroconf {
             }
 
             _ => {
-                debug!("unexpected command: {:?}", &command);
+                debug!("unexpected command: {:?}", command);
             }
         }
     }
@@ -4023,7 +4020,7 @@ impl Zeroconf {
             if let Err(e) = listener.try_send(started) {
                 debug!(
                     "Failed to send SearchStarted({})(repeating:{}): {}",
-                    &ty, repeating, e
+                    ty, repeating, e
                 );
                 return;
             }
@@ -4088,13 +4085,13 @@ impl Zeroconf {
         let addr_list: Vec<_> = self.my_intfs.iter().collect();
         let started = HostnameResolutionEvent::SearchStarted(format!(
             "{} on addrs {:?}",
-            &hostname, &addr_list
+            hostname, addr_list
         ));
         if !repeating {
             if let Err(e) = listener.try_send(started) {
                 debug!(
                     "Failed to send ResolveStarted({})(repeating:{}): {}",
-                    &hostname, repeating, e
+                    hostname, repeating, e
                 );
                 return;
             }
@@ -4172,7 +4169,7 @@ impl Zeroconf {
     ) {
         let response = match self.my_services.remove_entry(&fullname) {
             None => {
-                debug!("unregister: cannot find such service {}", &fullname);
+                debug!("unregister: cannot find such service {}", fullname);
                 UnregisterStatus::NotFound
             }
             Some((_k, info)) => {
@@ -4259,12 +4256,12 @@ impl Zeroconf {
 
     fn exec_command_stop_browse(&mut self, ty_domain: String) {
         match self.remove_service_subscription(&ty_domain) {
-            None => debug!("StopBrowse: cannot find querier for {}", &ty_domain),
+            None => debug!("StopBrowse: cannot find querier for {}", ty_domain),
             Some(sender) => {
                 // Remove cache entries.
                 self.cache.remove_service_type(&ty_domain);
 
-                trace!("StopBrowse: removed queryer for {}", &ty_domain);
+                trace!("StopBrowse: removed queryer for {}", ty_domain);
                 match sender.try_send(ServiceEvent::SearchStopped(ty_domain)) {
                     Ok(()) => trace!("Sent SearchStopped to the listener"),
                     Err(e) => debug!("Failed to send SearchStopped: {}", e),
@@ -4275,7 +4272,7 @@ impl Zeroconf {
 
     fn exec_command_stop_resolve_hostname(&mut self, hostname: String) {
         if let Some((sender, _timeout)) = self.remove_hostname_subscription(&hostname) {
-            trace!("StopResolve: removed queryer for {}", &hostname);
+            trace!("StopResolve: removed queryer for {}", hostname);
             match sender.try_send(HostnameResolutionEvent::SearchStopped(hostname)) {
                 Ok(()) => trace!("Sent SearchStopped to the listener"),
                 Err(e) => debug!("Failed to send SearchStopped: {}", e),
@@ -4285,7 +4282,7 @@ impl Zeroconf {
 
     fn exec_command_register_resend(&mut self, fullname: String, if_index: u32) -> MyResult<()> {
         let Some(info) = self.my_services.get_mut(&fullname) else {
-            trace!("announce: cannot find such service {}", &fullname);
+            trace!("announce: cannot find such service {}", fullname);
             return Ok(());
         };
 
@@ -4316,7 +4313,7 @@ impl Zeroconf {
 
             notify_monitors(
                 &mut self.monitors,
-                DaemonEvent::Announce(service_name, format!("{}:{}", hostname, &intf.name)),
+                DaemonEvent::Announce(service_name, format!("{}:{}", hostname, intf.name)),
             );
             info.set_status(if_index, ServiceStatus::Announced);
         } else {
@@ -4373,7 +4370,7 @@ impl Zeroconf {
         let mut new_timers = HashSet::new();
         let mut query_addr_count = 0;
 
-        for (ty_domain, _sender) in self.service_queriers.iter() {
+        for ty_domain in self.service_queriers.keys() {
             let refreshed_timers = self.cache.refresh_due_ptr(ty_domain);
             if !refreshed_timers.is_empty() {
                 trace!("sending refresh query for PTR: {}", ty_domain);
@@ -4384,7 +4381,7 @@ impl Zeroconf {
 
             let (instances, timers) = self.cache.refresh_due_srv_txt(ty_domain);
             for (instance, types) in instances {
-                trace!("sending refresh query for: {}", &instance);
+                trace!("sending refresh query for: {}", instance);
                 let query_vec = types
                     .into_iter()
                     .map(|ty| (instance.as_str(), ty))
@@ -5032,7 +5029,7 @@ fn unicast_on_intf(packet: &[u8], if_name: &str, dest: SocketAddr, socket: &PktI
         Err(e) => trace!(
             "Failed to send unicast to {} via {:?}: {}",
             dest,
-            &if_name,
+            if_name,
             e
         ),
     }
@@ -5072,7 +5069,7 @@ fn multicast_on_intf(
             if_index,
             if_addr.ip()
         ),
-        Err(e) => trace!("Failed to send to {} via {:?}: {}", addr, &if_name, e),
+        Err(e) => trace!("Failed to send to {} via {:?}: {}", addr, if_name, e),
     }
 }
 
@@ -5086,7 +5083,7 @@ fn valid_instance_name(name: &str) -> bool {
 fn notify_monitors(monitors: &mut Vec<Sender<DaemonEvent>>, event: DaemonEvent) {
     monitors.retain(|sender| {
         if let Err(e) = sender.try_send(event.clone()) {
-            debug!("notify_monitors: try_send: {}", &e);
+            debug!("notify_monitors: try_send: {}", e);
             if matches!(e, TrySendError::Disconnected(_)) {
                 return false; // This monitor is dropped.
             }
@@ -5112,7 +5109,7 @@ fn prepare_announce(
     if intf_addrs.is_empty() {
         debug!(
             "prepare_announce (ipv4: {is_ipv4}): no valid addrs on interface {}",
-            &intf.name
+            intf.name
         );
         return None;
     }
@@ -5122,7 +5119,7 @@ fn prepare_announce(
 
     debug!(
         "prepare to announce service {service_fullname} on {:?}",
-        &intf_addrs
+        intf_addrs
     );
 
     let mut probing_count = 0;
@@ -5384,7 +5381,7 @@ fn handle_expired_probes(
                     rr_type: record.get_type(),
                     intf_name: intf_name.to_string(),
                 };
-                debug!("Name change event: {:?}", &event);
+                debug!("Name change event: {:?}", event);
                 notify_monitors(monitors, DaemonEvent::NameChange(event));
             }
         }
@@ -6672,7 +6669,7 @@ mod tests {
             match event {
                 ServiceEvent::ServiceResolved(info) => {
                     resolved = true;
-                    println!("Resolved a service of {}", &info.fullname);
+                    println!("Resolved a service of {}", info.fullname);
                     break;
                 }
                 e => {
@@ -6754,7 +6751,7 @@ mod tests {
             match event {
                 ServiceEvent::ServiceResolved(info) => {
                     resolved = true;
-                    println!("Resolved a service of {}", &info.fullname);
+                    println!("Resolved a service of {}", info.fullname);
                     break;
                 }
                 e => {
@@ -6795,7 +6792,7 @@ mod tests {
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
             if let ServiceEvent::ServiceResolved(info) = event {
                 resolved = true;
-                println!("Resolved a service of {}", &info.fullname);
+                println!("Resolved a service of {}", info.fullname);
                 break;
             }
         }
@@ -6809,7 +6806,7 @@ mod tests {
         let expire_timeout = Duration::from_secs(new_ttl as u64);
         while let Ok(event) = browse_chan.recv_timeout(expire_timeout) {
             if let ServiceEvent::ServiceRemoved(service_type, full_name) = event {
-                println!("Service removed: {}: {}", &service_type, &full_name);
+                println!("Service removed: {}: {}", service_type, full_name);
                 break;
             }
         }
@@ -6854,7 +6851,7 @@ mod tests {
                 Ok(HostnameResolutionEvent::AddressesFound(found_hostname, addresses)) => {
                     assert_eq!(found_hostname, hostname);
                     assert!(addresses.contains(&service_ip_addr));
-                    println!("address found: {:?}", &addresses);
+                    println!("address found: {:?}", addresses);
                     break true;
                 }
                 Ok(HostnameResolutionEvent::SearchStopped(_)) => break false,
@@ -6878,7 +6875,7 @@ mod tests {
 
                     println!(
                         "address removed: hostname: {} addresses: {:?}",
-                        &hostname, &addresses
+                        hostname, addresses
                     );
                     break true;
                 }
@@ -6933,7 +6930,7 @@ mod tests {
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
             if let ServiceEvent::ServiceResolved(info) = event {
                 resolved = true;
-                println!("Resolved a service of {}", &info.fullname);
+                println!("Resolved a service of {}", info.fullname);
                 break;
             }
         }
@@ -6943,7 +6940,7 @@ mod tests {
         // wait over 80% of TTL, and refresh PTR should be sent out.
         let timeout = Duration::from_millis(new_ttl as u64 * 1000 * 90 / 100);
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
-            println!("event: {:?}", &event);
+            println!("event: {:?}", event);
         }
 
         // verify refresh counter.
@@ -7090,7 +7087,7 @@ mod tests {
         client.set_ip_check_interval(1).unwrap();
 
         // Now shutdown the interface and expect the client to lose the service.
-        println!("Shutting down interface {}", &intf_name);
+        println!("Shutting down interface {}", intf_name);
         client.test_down_interface(&intf_name).unwrap();
 
         let mut got_removed = false;
@@ -7104,7 +7101,7 @@ mod tests {
         }
         assert!(got_removed, "Should receive ServiceRemoved event");
 
-        println!("Bringing up interface {}", &intf_name);
+        println!("Bringing up interface {}", intf_name);
         client.test_up_interface(&intf_name).unwrap();
         let mut got_data = false;
         while let Ok(event) = receiver.recv_timeout(timeout) {
@@ -7167,7 +7164,7 @@ mod tests {
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
             if let ServiceEvent::ServiceResolved(info) = event {
                 resolved = true;
-                println!("Resolved a service of {}", &info.get_fullname());
+                println!("Resolved a service of {}", info.get_fullname());
                 break;
             }
         }
@@ -7219,7 +7216,7 @@ mod tests {
         while let Ok(event) = browse_chan.recv_timeout(timeout) {
             if let ServiceEvent::ServiceResolved(info) = event {
                 resolved = true;
-                println!("Resolved a service of {}", &info.get_fullname());
+                println!("Resolved a service of {}", info.get_fullname());
                 break;
             }
         }
