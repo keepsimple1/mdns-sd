@@ -1,3 +1,26 @@
+# Version 0.21.6 (2026-10-18)
+
+This is a bugfix release.
+
+## Bug fixes
+
+- Fix daemon deadlocks under event backpressure. Delivering events to `browse`,
+  `browse_cache` and `resolve_hostname` receivers no longer blocks the daemon. If a
+  receiver falls too far behind and its event channel fills (or the receiver is
+  dropped), that subscription is closed and its pending queries are stopped. In this
+  case the receiver gets no `SearchStopped` event: after the queued events, the channel
+  is simply disconnected. Cached records are kept, so `browse_cache` still works. (#522)
+- Do not record an interface address whose multicast join failed. Previously such an
+  address was kept (and `IpAdd` was emitted), so the IP check never retried the join.
+  Now the join is retried on the next IP check. (#523)
+
+## All changes
+
+* `9ca5b67 2026-10-16` fix: do not record an interface address whose multicast join failed (#523) (keepsimple1)
+* `d0941f9 2026-10-16` Fix daemon deadlocks under event backpressure (#522) (oriel haim)
+
+Thanks and welcome our new contributor @orielhaim !
+
 # Version 0.21.5 (2026-10-04)
 
 This is a bugfix release.
