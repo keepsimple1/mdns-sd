@@ -2103,20 +2103,24 @@ fn test_name_conflict_3() {
         .register(info3)
         .expect("failed to register service2");
 
+    // Wait for the instance (SRV) rename. The host (A) rename usually comes
+    // first, and browsing before the instance is renamed can see a duplicate.
     let server3_monitor = server3.monitor().unwrap();
     let timeout = Duration::from_secs(3);
-    name_changed = false;
+    let mut instance_renamed = false;
     while let Ok(event) = server3_monitor.recv_timeout(timeout) {
         match event {
             DaemonEvent::NameChange(change) => {
                 println!("server3 daemon event: {:?}", change);
-                name_changed = true;
-                break;
+                if change.rr_type == RRType::SRV {
+                    instance_renamed = true;
+                    break;
+                }
             }
             other => println!("server3 other event: {:?}", other),
         }
     }
-    assert!(name_changed);
+    assert!(instance_renamed);
 
     // Verify all services are resolved.
     let client = ServiceDaemon::new().expect("failed to create mdns client");

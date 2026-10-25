@@ -1296,6 +1296,9 @@ impl DnsRegistry {
     /// check all records in "probing" and "active":
     /// if the record is SRV, and hostname is set to original, remove it.
     /// and create a new SRV with "host" set to "new_name" and put into "probing".
+    ///
+    /// Returns true if a probe was (re)started at `probe_time`, i.e. the caller
+    /// needs a timer at `probe_time`.
     pub(crate) fn update_hostname(
         &mut self,
         original: &str,
@@ -1340,7 +1343,10 @@ impl DnsRegistry {
         for record in found_records {
             let probe = match self.probing.get_mut(record.get_name()) {
                 Some(p) => {
-                    p.start_time = probe_time; // restart this probe.
+                    // Restart this probe. `next_send` must be reset as well.
+                    p.start_time = probe_time;
+                    p.next_send = probe_time;
+                    new_timer_added = true;
                     p
                 }
                 None => {
@@ -1522,9 +1528,13 @@ impl ResolvedService {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_txt, encode_txt, u8_slice_to_hex, DnsRegistry, Instant, ServiceInfo, TxtProperty,
+        decode_txt, encode_txt, u8_slice_to_hex, DnsRegistry, Instant, Probe, ServiceInfo,
+        TxtProperty,
     };
-    use crate::dns_parser::{DnsOutgoing, DnsPointer, RRType, CLASS_IN, FLAGS_QR_RESPONSE};
+    use crate::dns_parser::{
+        DnsOutgoing, DnsPointer, DnsRecordExt, DnsSrv, RRType, CLASS_CACHE_FLUSH, CLASS_IN,
+        FLAGS_QR_RESPONSE,
+    };
     use crate::{IfKind, IfPredicate};
     use if_addrs::{IfAddr, IfOperStatus, Ifv4Addr, Ifv6Addr, Interface};
     use std::net::{Ipv4Addr, Ipv6Addr};
@@ -1663,6 +1673,46 @@ mod tests {
         out.add_answer_record(extra());
         registry.apply_multicast_rate_limit(&mut out, now + Duration::from_millis(200), true);
         assert_eq!(out.answers_count(), 1);
+    }
+
+    /// The restart must reset `next_send` too: after a lost tiebreak it is a
+    /// second ahead, past `start_time + 750ms`, so the probe would otherwise
+    /// expire without ever sending the renamed SRV.
+    #[test]
+    fn test_update_hostname_restarts_probe_send() {
+        let mut registry = DnsRegistry::new();
+
+        let instance = "inst._test._tcp.local.";
+        let now = Instant::now();
+
+        let mut probe = Probe::new(now);
+        probe.insert_record(
+            DnsSrv::new(
+                instance,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                120,
+                0,
+                0,
+                5200,
+                "host.local.".to_string(),
+            )
+            .boxed(),
+        );
+        // As if this probe just lost a tiebreak.
+        probe.start_time = now + Duration::from_millis(1000);
+        probe.next_send = now + Duration::from_millis(1000);
+        registry.probing.insert(instance.to_string(), probe);
+
+        let probe_time = now + Duration::from_millis(100);
+        assert!(registry.update_hostname("host.local.", "host-2.local.", probe_time));
+
+        let probe = &registry.probing[instance];
+        assert_eq!(probe.start_time, probe_time);
+        assert_eq!(probe.next_send, probe_time);
+        assert!(!probe.expired(probe.next_send));
+
+        let srv = probe.records[0].any().downcast_ref::<DnsSrv>().unwrap();
+        assert_eq!(srv.host(), "host-2.local.");
     }
 
     #[test]
