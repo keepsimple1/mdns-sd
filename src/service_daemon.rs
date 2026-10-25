@@ -3569,6 +3569,19 @@ impl Zeroconf {
             return;
         };
 
+        // RFC 6762 §11 (Source Address Check): a query from a source that is
+        // not on the link it arrived on is not answered. Multicast queries
+        // cannot cross a router, so such a query was sent to this host's
+        // unicast address from elsewhere, possibly with a spoofed source, and
+        // a reply would make this host a reflector.
+        if !is_on_link(&querier_ip, intf) {
+            debug!(
+                "handle_query: ignoring query from {} not on the link of intf {}",
+                querier_ip, intf.name
+            );
+            return;
+        }
+
         for question in msg.questions().iter() {
             let qtype = question.entry_type();
             let q_name = question.entry_name();
@@ -5456,6 +5469,20 @@ fn resolve_addr_to_index(if_kind: IfKind, interfaces: &[Interface]) -> IfKind {
         }
     }
     if_kind
+}
+
+/// Whether `addr` is on the link of `intf`: inside the subnet of one of its
+/// addresses, or a link-local address, which is on-link by definition.
+fn is_on_link(addr: &IpAddr, intf: &MyIntf) -> bool {
+    let link_local = match addr {
+        IpAddr::V4(v4) => v4.is_link_local(),
+        IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+    };
+    link_local
+        || intf
+            .addrs
+            .iter()
+            .any(|if_addr| valid_ip_on_intf(addr, if_addr))
 }
 
 #[cfg(test)]
@@ -7646,6 +7673,81 @@ mod tests {
             }
             Err(error) => panic!("receiving test response: {}", error),
         }
+    }
+
+    #[test]
+    fn test_query_from_off_link_source_is_not_answered() {
+        let (mut daemon, index) = negative_answer_test_daemon();
+        register_negative_answer_test_service(
+            &mut daemon,
+            index,
+            "offlink",
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        );
+        // Narrow the loopback interface to 127.0.0.1/32, so another loopback
+        // address stands in for a source off the link.
+        let intf = daemon.my_intfs.get_mut(&index).unwrap();
+        intf.addrs = std::iter::once(IfAddr::V4(Ifv4Addr {
+            ip: Ipv4Addr::LOCALHOST,
+            netmask: Ipv4Addr::new(255, 255, 255, 255),
+            prefixlen: 32,
+            broadcast: None,
+        }))
+        .collect();
+
+        let ask = |daemon: &mut super::Zeroconf, from: Ipv4Addr| -> bool {
+            let querier = UdpSocket::bind((from, 0)).unwrap();
+            querier
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            let mut out = DnsOutgoing::new(FLAGS_QR_QUERY);
+            out.add_question("negative.local.", RRType::A);
+            let interface = InterfaceId {
+                name: "loopback-test".to_string(),
+                index,
+            };
+            let packets = out.to_data_on_wire(MAX_PKT_DEFAULT, true);
+            let incoming = DnsIncoming::new(packets[0].clone(), interface).unwrap();
+            daemon.handle_query(incoming, index, querier.local_addr().unwrap());
+            let mut data = [0; 4096];
+            querier.recv_from(&mut data).is_ok()
+        };
+
+        assert!(
+            ask(&mut daemon, Ipv4Addr::LOCALHOST),
+            "an on-link querier must be answered"
+        );
+        assert!(
+            !ask(&mut daemon, Ipv4Addr::new(127, 0, 0, 2)),
+            "an off-link querier must not be answered"
+        );
+    }
+
+    #[test]
+    fn test_link_local_sources_are_on_link() {
+        let intf = MyIntf {
+            name: "test".to_string(),
+            index: 1,
+            addrs: HashSet::new(),
+            max_packet_size_v4: MAX_PKT_DEFAULT,
+            max_packet_size_v6: MAX_PKT_DEFAULT,
+        };
+        assert!(super::is_on_link(
+            &IpAddr::V4(Ipv4Addr::new(169, 254, 7, 9)),
+            &intf
+        ));
+        assert!(super::is_on_link(
+            &IpAddr::V6("fe80::1".parse().unwrap()),
+            &intf
+        ));
+        assert!(!super::is_on_link(
+            &IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            &intf
+        ));
+        assert!(!super::is_on_link(
+            &IpAddr::V6("2001:db8::1".parse().unwrap()),
+            &intf
+        ));
     }
 
     #[test]
