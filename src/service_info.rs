@@ -1343,10 +1343,7 @@ impl DnsRegistry {
         for record in found_records {
             let probe = match self.probing.get_mut(record.get_name()) {
                 Some(p) => {
-                    // Restart this probe. `next_send` must be reset as well: it may
-                    // be far ahead of `probe_time` (e.g. one second after a lost
-                    // tiebreak), and if it is later than `probe_time + 750ms` the
-                    // probe would expire without ever sending the new SRV.
+                    // Restart this probe. `next_send` must be reset as well.
                     p.start_time = probe_time;
                     p.next_send = probe_time;
                     new_timer_added = true;
@@ -1678,7 +1675,6 @@ mod tests {
         assert_eq!(out.answers_count(), 1);
     }
 
-    /// Issue #506: a host rename restarts the SRV probe that names the host.
     /// The restart must reset `next_send` too: after a lost tiebreak it is a
     /// second ahead, past `start_time + 750ms`, so the probe would otherwise
     /// expire without ever sending the renamed SRV.
