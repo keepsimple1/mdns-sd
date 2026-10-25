@@ -117,7 +117,7 @@ fn main() {
     mdns.register(service_info)
         .expect("Failed to register mDNS service");
 
-    println!("Registered service {}.{}", &instance_name, &service_type);
+    println!("Registered service {}.{}", instance_name, service_type);
 
     if should_unreg {
         let wait_in_secs = 2;
@@ -126,12 +126,12 @@ fn main() {
 
         let receiver = mdns.unregister(&service_fullname).unwrap();
         while let Ok(event) = receiver.recv() {
-            println!("unregister result: {:?}", &event);
+            println!("unregister result: {:?}", event);
         }
     } else {
         // Monitor the daemon events.
         while let Ok(event) = monitor.recv() {
-            println!("Daemon event: {:?}", &event);
+            println!("Daemon event: {:?}", event);
             if let DaemonEvent::Error(e) = event {
                 println!("Failed: {}", e);
                 break;
@@ -151,7 +151,7 @@ fn print_usage() {
     println!();
     println!("For example:");
     println!("cargo run --example register _my-hello._udp instance1 host1");
-    println!("");
+    println!();
     println!("To see the debug log, set the RUST_LOG environment variable and write a logfile:");
     println!("RUST_LOG=mdns_sd=debug cargo run --example register _my-hello._udp instance1 host1 --logfile");
 }
