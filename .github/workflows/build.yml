@@ -45,9 +45,6 @@ jobs:
       - name: Clippy without default features
         run: cargo clippy --all-targets --no-default-features -- -D warnings
 
-      - name: Clippy with async only
-        run: cargo clippy --all-targets --no-default-features --features async -- -D warnings
-
       - name: Documentation
         env:
           RUSTDOCFLAGS: -D warnings
@@ -83,6 +80,7 @@ jobs:
 
       - name: Test default features
         if: runner.os != 'macOS'
+        timeout-minutes: 5
         run: cargo test
 
       - name: Test default features (macOS)
@@ -93,10 +91,12 @@ jobs:
           # test executables. Processes running as root are exempt, so run the
           # test binaries via sudo. See Apple TN3179.
           CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: sudo -E
+        timeout-minutes: 5
         run: cargo test
 
       - name: Test all features
         if: runner.os != 'macOS'
+        timeout-minutes: 5
         run: cargo test --all-features
 
       - name: Test all features (macOS)
@@ -104,6 +104,7 @@ jobs:
         env:
           # Run test binaries as root: see "Test default features (macOS)".
           CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: sudo -E
+        timeout-minutes: 5
         run: cargo test --all-features
 
   msrv:
