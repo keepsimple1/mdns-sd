@@ -541,7 +541,7 @@ impl DnsRecord {
 
         trace!(
             "{} qtype {} is due to refresh",
-            &self.entry.name,
+            self.entry.name,
             self.entry.ty
         );
 
@@ -1193,7 +1193,7 @@ impl DnsRecordExt for DnsHostInfo {
     }
 
     fn write(&self, packet: &mut DnsOutPacket) -> WriteResult {
-        debug!("Writing HInfo: cpu {} os {}", &self.cpu, &self.os);
+        debug!("Writing HInfo: cpu {} os {}", self.cpu, self.os);
         packet.write_bytes(self.cpu.as_bytes());
         packet.write_bytes(self.os.as_bytes());
         Ok(())
@@ -1919,7 +1919,7 @@ impl DnsOutgoing {
 
     //    o  All address records (type "A" and "AAAA") named in the SRV rdata.
     pub fn add_additional_answer(&mut self, answer: impl DnsRecordExt + 'static) {
-        trace!("add_additional_answer: {:?}", &answer);
+        trace!("add_additional_answer: {:?}", answer);
         self.additionals.push(answer.boxed());
     }
 
@@ -1969,7 +1969,7 @@ impl DnsOutgoing {
     /// Adds `answer` to the outgoing msg unconditionally. Its full TTL is
     /// written on the wire.
     pub fn add_answer_record(&mut self, answer: impl DnsRecordExt + Send + 'static) {
-        trace!("add_answer push: {:?}", &answer);
+        trace!("add_answer push: {:?}", answer);
         self.answers.push(answer.boxed());
     }
 
@@ -2337,7 +2337,7 @@ impl DnsIncoming {
     }
 
     fn read_questions(&mut self) -> Result<()> {
-        trace!("read_questions: {}", &self.num_questions);
+        trace!("read_questions: {}", self.num_questions);
         for i in 0..self.num_questions {
             let name = self.read_name()?;
 
@@ -2420,7 +2420,7 @@ impl DnsIncoming {
             if slice.len() < RR_HEADER_REMAIN {
                 return Err(Error::Msg(format!(
                     "read_others: RR '{}' is too short after name: {} bytes",
-                    &name,
+                    name,
                     slice.len()
                 )));
             }
@@ -2455,22 +2455,22 @@ impl DnsIncoming {
             match self.read_rdata(ty, class, ttl, rdata_len, &name) {
                 Ok(Some(record)) => {
                     if self.offset == next_offset {
-                        trace!("read_rr_records: {:?}", &record);
+                        trace!("read_rr_records: {:?}", record);
                         rr_records.push(record);
                     } else {
                         debug!(
                             "skipping record '{}' (type {}): RDATA ended at {}, expected {}",
-                            &name, ty, self.offset, next_offset
+                            name, ty, self.offset, next_offset
                         );
                     }
                 }
                 Ok(None) => {
-                    trace!("Unsupported DNS record type: {} name: {}", ty, &name);
+                    trace!("Unsupported DNS record type: {} name: {}", ty, name);
                 }
                 Err(e) => {
                     debug!(
                         "skipping record '{}' (type {}) with invalid RDATA: {}",
-                        &name, ty, e,
+                        name, ty, e,
                     );
                 }
             }
