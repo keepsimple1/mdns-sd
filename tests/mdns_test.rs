@@ -1181,7 +1181,8 @@ fn my_ip_interfaces() -> Vec<Interface> {
         .unwrap_or_default()
         .into_iter()
         .filter_map(|i| {
-            if i.is_loopback() || i.is_p2p() || is_apple_p2p_by_name(&i.name) {
+            // Skip operationally down interfaces, as the daemon does.
+            if !i.is_oper_up() || i.is_loopback() || i.is_p2p() || is_apple_p2p_by_name(&i.name) {
                 None
             } else {
                 match &i.addr {
