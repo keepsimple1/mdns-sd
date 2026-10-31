@@ -156,11 +156,99 @@ pub enum UnregisterStatus {
 #[derive(Debug, PartialEq, Clone, Eq)]
 #[non_exhaustive]
 pub enum DaemonStatus {
-    /// The daemon is running as normal.
-    Running,
+    /// The daemon is running, with at least one of its IPv4 and IPv6 sockets bound.
+    Running(RunningState),
 
     /// The daemon has been shutdown.
     Shutdown,
+}
+
+/// A snapshot state of a running daemon.
+#[derive(Debug, PartialEq, Clone, Eq)]
+#[non_exhaustive]
+pub struct RunningState {
+    ipv4: Ipv4State,
+    ipv6: Ipv6State,
+}
+
+impl RunningState {
+    /// The state of the IPv4 side of the daemon.
+    pub fn ipv4(&self) -> &Ipv4State {
+        &self.ipv4
+    }
+
+    /// The state of the IPv6 side of the daemon.
+    pub fn ipv6(&self) -> &Ipv6State {
+        &self.ipv6
+    }
+}
+
+/// The state of the IPv4 side of a running daemon.
+#[derive(Debug, PartialEq, Clone, Eq)]
+#[non_exhaustive]
+pub struct Ipv4State {
+    socket: SocketState,
+}
+
+impl Ipv4State {
+    /// Whether the IPv4 multicast socket was bound successfully.
+    pub fn is_bound(&self) -> bool {
+        self.socket.is_bound()
+    }
+
+    /// The error from setting up the IPv4 multicast socket, if it failed.
+    pub fn bind_error(&self) -> Option<&str> {
+        self.socket.bind_error()
+    }
+}
+
+/// The state of the IPv6 side of a running daemon.
+#[derive(Debug, PartialEq, Clone, Eq)]
+#[non_exhaustive]
+pub struct Ipv6State {
+    socket: SocketState,
+}
+
+impl Ipv6State {
+    /// Whether the IPv6 multicast socket was bound successfully.
+    pub fn is_bound(&self) -> bool {
+        self.socket.is_bound()
+    }
+
+    /// The error from setting up the IPv6 multicast socket, if it failed.
+    pub fn bind_error(&self) -> Option<&str> {
+        self.socket.bind_error()
+    }
+}
+
+/// Outcome of setting up the multicast socket of one IP version.
+///
+/// Sockets are only set up when the daemon starts, so this does not change
+/// while it runs.
+#[derive(Debug, PartialEq, Clone, Eq)]
+enum SocketState {
+    Bound,
+    Failed(String),
+}
+
+impl SocketState {
+    fn new(sock: &Result<MyUdpSocket>) -> Self {
+        match sock {
+            Ok(_) => Self::Bound,
+            Err(e) => Self::Failed(e.to_string()),
+        }
+    }
+
+    fn is_bound(&self) -> bool {
+        matches!(self, Self::Bound)
+    }
+
+    fn bind_error(&self) -> Option<&str> {
+        match self {
+            Self::Bound => None,
+            Self::Failed(e) => Some(e),
+        }
+    }
 }
 
 /// Different counters included in the metrics.
@@ -340,10 +428,11 @@ impl ServiceDaemon {
     /// Returns [`Error::Msg`] if the daemon cannot be initialized. This wraps an
     /// underlying OS-level failure.
     ///
-    /// Note that this constructor does not open the mDNS multicast sockets — those
-    /// are opened lazily by the daemon thread once it starts, so platform issues
-    /// such as "multicast not permitted" are surfaced later via [`DaemonEvent`] from
-    /// [`monitor`](Self::monitor) rather than here.
+    /// This includes failing to set up both the IPv4 and the IPv6 multicast
+    /// sockets, e.g. when the port is held by another process without
+    /// `SO_REUSEADDR`. If only one of them fails, e.g. on a host without IPv6,
+    /// the daemon still runs, and [`status`](Self::status) tells which one
+    /// is bound.
     pub fn new() -> Result<Self> {
         Self::new_with_port(MDNS_PORT)
     }
@@ -374,11 +463,7 @@ impl ServiceDaemon {
     /// # Errors
     ///
     /// See [`new`](Self::new) for the set of OS-level failures that may surface
-    /// here. Note that `port` is *not* validated against the kernel until the
-    /// daemon thread tries to bind the mDNS sockets, so an unusable `port`
-    /// (e.g., already in use, requires elevated privileges) will not be
-    /// reported by this constructor — listen for such failures via
-    /// [`monitor`](Self::monitor).
+    /// here, including failing to bind both multicast sockets to `port`.
     pub fn new_with_port(port: u16) -> Result<Self> {
         let poller = Poll::new().map_err(|e| e_fmt!("failed to create mio Poll: {e}"))?;
         // Created before the thread starts so a registration failure is
@@ -391,11 +476,23 @@ impl ServiceDaemon {
 
         let (sender, receiver) = bounded(100);
 
+        // Created here rather than in the daemon thread, so that a daemon
+        // without any multicast socket is reported to the caller.
+        let sockets = MulticastSockets::new(port);
+        if let (Err(e4), Err(e6)) = (&sockets.ipv4, &sockets.ipv6) {
+            return Err(e_fmt!(
+                "no mDNS socket on port {port}: IPv4: {e4}; IPv6: {e6}"
+            ));
+        }
+
         let cmd_sender = sender.clone();
         let thread_waker = waker.clone();
         thread::Builder::new()
             .name("mDNS_daemon".to_string())
-            .spawn(move || Self::daemon_thread(thread_waker, poller, receiver, port, cmd_sender))
+            .spawn(move || {
+                let zc = Zeroconf::new(thread_waker, poller, sockets, port, cmd_sender);
+                Self::daemon_thread(zc, receiver)
+            })
             .map_err(|e| e_fmt!("thread builder failed to spawn: {}", e))?;
 
         Ok(Self { sender, waker })
@@ -593,6 +690,10 @@ impl ServiceDaemon {
     }
 
     /// Returns the status of the daemon.
+    ///
+    /// The status is a snapshot, as of when the daemon handled the request.
+    /// While running, it tells which of the IPv4 and IPv6 multicast sockets
+    /// are bound, see [`RunningState`].
     ///
     /// # Errors
     ///
@@ -833,15 +934,7 @@ impl ServiceDaemon {
         self.send_cmd(Command::Verify(instance_fullname, timeout))
     }
 
-    fn daemon_thread(
-        waker: Arc<Waker>,
-        poller: Poll,
-        receiver: Receiver<Command>,
-        port: u16,
-        cmd_sender: Sender<Command>,
-    ) {
-        let mut zc = Zeroconf::new(waker, poller, port, cmd_sender);
-
+    fn daemon_thread(mut zc: Zeroconf, receiver: Receiver<Command>) {
         if let Some(cmd) = zc.run(receiver) {
             match cmd {
                 Command::Exit(resp_s) => {
@@ -1339,8 +1432,43 @@ fn new_multicast_socket(addr: SocketAddr) -> Result<MyUdpSocket> {
     MyUdpSocket::new(sock).map_err(|e| e_fmt!("create MyUdpSocket for {}: {}", addr, e))
 }
 
+/// The IPv4 and IPv6 multicast sockets of a daemon, or why each failed.
+struct MulticastSockets {
+    ipv4: Result<MyUdpSocket>,
+    ipv6: Result<MyUdpSocket>,
+}
+
+impl MulticastSockets {
+    /// Creates both sockets on `port`. Either one may fail, e.g. on a host
+    /// without IPv6.
+    ///
+    /// Use the same socket for receiving and sending multicast packets.
+    /// Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
+    fn new(port: u16) -> Self {
+        let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port);
+        let ipv4 = new_multicast_socket(addr.into());
+        if let Err(e) = &ipv4 {
+            debug!("failed to set up IPv4 socket: {e}");
+        }
+
+        let addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), port, 0, 0);
+        let ipv6 = new_multicast_socket(addr.into());
+        if let Err(e) = &ipv6 {
+            debug!("failed to set up IPv6 socket: {e}");
+        }
+
+        Self { ipv4, ipv6 }
+    }
+}
+
 impl Zeroconf {
-    fn new(waker: Arc<Waker>, poller: Poll, port: u16, cmd_sender: Sender<Command>) -> Self {
+    fn new(
+        waker: Arc<Waker>,
+        poller: Poll,
+        sockets: MulticastSockets,
+        port: u16,
+        cmd_sender: Sender<Command>,
+    ) -> Self {
         // Get interfaces.
         let my_ifaddrs = my_ip_interfaces(true);
 
@@ -1350,21 +1478,16 @@ impl Zeroconf {
         let mut my_intfs = HashMap::new();
         let mut dns_registry_map = HashMap::new();
 
-        // Use the same socket for receiving and sending multicast packets.
-        // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
-        let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port);
-        let ipv4_sock = new_multicast_socket(addr.into());
-        if let Err(e) = &ipv4_sock {
-            debug!("failed to set up IPv4 socket: {e}");
-        }
-        let ipv4_sock = ipv4_sock.ok();
-
-        let addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), port, 0, 0);
-        let ipv6_sock = new_multicast_socket(addr.into());
-        if let Err(e) = &ipv6_sock {
-            debug!("failed to set up IPv6 socket: {e}");
-        }
-        let ipv6_sock = ipv6_sock.ok();
+        let status = DaemonStatus::Running(RunningState {
+            ipv4: Ipv4State {
+                socket: SocketState::new(&sockets.ipv4),
+            },
+            ipv6: Ipv6State {
+                socket: SocketState::new(&sockets.ipv6),
+            },
+        });
+        let ipv4_sock = sockets.ipv4.ok();
+        let ipv6_sock = sockets.ipv6.ok();
 
         // Configure sockets to join multicast groups.
         for intf in my_ifaddrs {
@@ -1397,8 +1520,6 @@ impl Zeroconf {
 
         // Enable everything, including loopback interfaces.
         let if_selections = vec![];
-
-        let status = DaemonStatus::Running;
 
         Self {
             port,
@@ -5533,7 +5654,16 @@ mod tests {
         let waker = std::sync::Arc::new(
             mio::Waker::new(poller.registry(), mio::Token(super::WAKER_EVENT_KEY)).unwrap(),
         );
-        (super::Zeroconf::new(waker, poller, port, sender), receiver)
+        (
+            super::Zeroconf::new(
+                waker,
+                poller,
+                super::MulticastSockets::new(port),
+                port,
+                sender,
+            ),
+            receiver,
+        )
     }
 
     fn recv_status(receiver: &flume::Receiver<super::DaemonStatus>) -> super::DaemonStatus {
@@ -5561,10 +5691,16 @@ mod tests {
         // The first response means the thread has already run a loop iteration
         // and returned to `poll` before the second command is submitted.
         let first = status_until_accepted(&daemon);
-        assert_eq!(recv_status(&first), super::DaemonStatus::Running);
+        assert!(matches!(
+            recv_status(&first),
+            super::DaemonStatus::Running(_)
+        ));
 
         let second = status_until_accepted(&daemon);
-        assert_eq!(recv_status(&second), super::DaemonStatus::Running);
+        assert!(matches!(
+            recv_status(&second),
+            super::DaemonStatus::Running(_)
+        ));
 
         let shutdown = daemon.shutdown().unwrap();
         assert_eq!(recv_status(&shutdown), super::DaemonStatus::Shutdown);
@@ -5574,7 +5710,10 @@ mod tests {
     fn test_command_submitted_immediately_after_construction() {
         let daemon = ServiceDaemon::new().unwrap();
         let status = daemon.status().expect("enqueue during startup");
-        assert_eq!(recv_status(&status), super::DaemonStatus::Running);
+        assert!(matches!(
+            recv_status(&status),
+            super::DaemonStatus::Running(_)
+        ));
         let shutdown = daemon.shutdown().unwrap();
         assert_eq!(recv_status(&shutdown), super::DaemonStatus::Shutdown);
     }
@@ -5598,7 +5737,9 @@ mod tests {
         for handle in handles {
             let statuses = handle.join().expect("status thread");
             assert_eq!(statuses.len(), 20);
-            assert!(statuses.iter().all(|s| *s == super::DaemonStatus::Running));
+            assert!(statuses
+                .iter()
+                .all(|s| matches!(s, super::DaemonStatus::Running(_))));
         }
 
         let shutdown = daemon.shutdown().unwrap();
@@ -5680,7 +5821,10 @@ mod tests {
         drop(daemon);
 
         let status = status_until_accepted(&remaining);
-        assert_eq!(recv_status(&status), super::DaemonStatus::Running);
+        assert!(matches!(
+            recv_status(&status),
+            super::DaemonStatus::Running(_)
+        ));
 
         let shutdown = remaining.shutdown().unwrap();
         assert_eq!(recv_status(&shutdown), super::DaemonStatus::Shutdown);

@@ -1269,7 +1269,7 @@ fn test_shutdown() {
     // Check the status.
     let receiver = mdns.status().unwrap();
     let status = receiver.recv().unwrap();
-    assert!(matches!(status, DaemonStatus::Running));
+    assert!(matches!(status, DaemonStatus::Running(_)));
 
     // Shutdown the daemon immediately.
     let receiver = mdns.shutdown().unwrap();
@@ -2693,4 +2693,66 @@ fn test_goodbye_uses_conflict_resolved_name() {
     server1.shutdown().unwrap();
     server2.shutdown().unwrap();
     client.shutdown().unwrap();
+}
+
+/// Binds `port` on IPv6 only, without `SO_REUSEADDR`, so that the daemon cannot
+/// bind its IPv6 socket there. Port 0 picks a free port.
+///
+/// Returns `None` if the host has no IPv6.
+#[cfg(not(windows))]
+fn hold_ipv6_port(port: u16) -> Option<socket2::Socket> {
+    use socket2::{Domain, Socket, Type};
+
+    let sock = Socket::new(Domain::IPV6, Type::DGRAM, None).ok()?;
+    sock.set_only_v6(true).ok()?;
+    let addr = std::net::SocketAddr::from((Ipv6Addr::UNSPECIFIED, port));
+    sock.bind(&addr.into()).ok()?;
+    Some(sock)
+}
+
+#[test]
+#[cfg(not(windows))] // Windows lets `SO_REUSEADDR` take over a held port.
+fn test_running_state_reports_failed_socket() {
+    // Hold a port on IPv6 only, so the daemon binds IPv4 but not IPv6. Without
+    // IPv6 on the host, its IPv6 socket fails anyway.
+    let ipv6_holder = hold_ipv6_port(0);
+    let port = match &ipv6_holder {
+        Some(sock) => sock.local_addr().unwrap().as_socket().unwrap().port(),
+        None => std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port(),
+    };
+
+    let daemon = ServiceDaemon::new_with_port(port).expect("IPv4 alone is enough to run");
+    let status = daemon.status().unwrap().recv().unwrap();
+    let DaemonStatus::Running(state) = status else {
+        panic!("unexpected status: {:?}", status);
+    };
+
+    assert!(state.ipv4().is_bound());
+    assert_eq!(state.ipv4().bind_error(), None);
+    assert!(!state.ipv6().is_bound());
+    assert!(
+        state.ipv6().bind_error().is_some(),
+        "a failed socket must come with its error"
+    );
+
+    daemon.shutdown().unwrap();
+}
+
+#[test]
+#[cfg(not(windows))] // Windows lets `SO_REUSEADDR` take over a held port.
+fn test_new_fails_without_any_socket() {
+    // Hold the port on both IP versions, without `SO_REUSEADDR`.
+    let ipv4_holder = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+    let port = ipv4_holder.local_addr().unwrap().port();
+    let _ipv6_holder = hold_ipv6_port(port);
+
+    let result = ServiceDaemon::new_with_port(port);
+    assert!(
+        result.is_err(),
+        "a daemon without any multicast socket must not start"
+    );
 }
