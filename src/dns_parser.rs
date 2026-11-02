@@ -2696,7 +2696,8 @@ impl DnsIncoming {
     /// domain name encoding.
     fn read_name(&mut self) -> Result<String> {
         let mut name = String::new();
-        self.offset = self.read_labels(self.offset, &mut name)?;
+        let mut wire_len = 0;
+        self.offset = self.read_labels(self.offset, &mut name, &mut wire_len)?;
         Ok(name)
     }
 
@@ -2727,8 +2728,16 @@ impl DnsIncoming {
     ///            ^len               ^ pointer: 0xC00C ^ 0xC000 = 12, jump back to offset 12
     /// ```
     ///
+    /// `wire_len` counts the bytes of the name on the wire, which is what
+    /// `MAX_NAME_BYTES` limits. `name` itself can be longer because of escapes.
+    ///
     /// Takes `&self` so that following a pointer cannot move the read cursor.
-    fn read_labels(&self, mut offset: usize, name: &mut String) -> Result<usize> {
+    fn read_labels(
+        &self,
+        mut offset: usize,
+        name: &mut String,
+        wire_len: &mut usize,
+    ) -> Result<usize> {
         let data = &self.data[..];
 
         // From RFC1035:
@@ -2784,19 +2793,27 @@ impl DnsIncoming {
                     //  bytes:  | 05 | "_http" | C0 | 0C |
                     //          +----+---------+----+----+
                     //            ^len           ^pointer targets offset 12.
-                    if name.len() + label.len() + 1 > MAX_NAME_BYTES {
+                    *wire_len += label.len() + 1;
+                    if *wire_len > MAX_NAME_BYTES {
                         return Err(Error::Msg(format!(
                             "read_labels: name exceeds {MAX_NAME_BYTES} bytes: {name}"
                         )));
                     }
 
-                    *name += label;
+                    // Escape a dot or backslash inside a label (RFC 6763 section 4.3), the same
+                    // form `write_name` and `ServiceInfo::new` use, so names compare equal.
+                    for ch in label.chars() {
+                        if ch == '.' || ch == '\\' {
+                            name.push('\\');
+                        }
+                        name.push(ch);
+                    }
                     *name += ".";
                     offset = ending;
                 }
                 0xC0 => {
                     // Message compression: a pointer marks the end of a domain name.
-                    self.follow_pointer(offset, name)?;
+                    self.follow_pointer(offset, name, wire_len)?;
                     return Ok(offset + U16_SIZE);
                 }
                 _ => {
@@ -2816,7 +2833,7 @@ impl DnsIncoming {
     ///
     /// See https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.4 for
     /// message compression.
-    fn follow_pointer(&self, at: usize, name: &mut String) -> Result<()> {
+    fn follow_pointer(&self, at: usize, name: &mut String, wire_len: &mut usize) -> Result<()> {
         let data = &self.data[..];
         let mut pointer_at = at;
 
@@ -2848,7 +2865,7 @@ impl DnsIncoming {
             pointer_at = target;
         };
 
-        self.read_labels(target, name)?;
+        self.read_labels(target, name, wire_len)?;
         Ok(())
     }
 }
@@ -2876,7 +2893,7 @@ mod tests {
     use super::{
         u16_from_be_slice, DnsAddress, DnsHostInfo, DnsIncoming, DnsOutPacket, DnsOutgoing,
         DnsPointer, DnsTxt, RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
-        FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MSG_HEADER_LEN,
+        FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
     };
     use crate::InterfaceId;
     use std::collections::HashMap;
@@ -3140,9 +3157,11 @@ mod tests {
     }
 
     /// A name learned from the network can hold a label that ends with a
-    /// backslash, which escapes the following label separator. Unescaping such
-    /// a name on the way out merges two 63-byte labels into a 127-byte one.
-    /// This used to panic the daemon thread. See issue #483.
+    /// backslash. Unescaped, that backslash escaped the following label
+    /// separator, and re-emitting the name merged two 63-byte labels into a
+    /// 127-byte one, which used to panic the daemon thread (issue #483).
+    /// Reading now escapes the backslash, so the labels stay separate and the
+    /// question goes back out exactly as it came in.
     #[test]
     fn test_incoming_name_with_merged_labels_does_not_panic() {
         // A query with one question: "aa..a\" + "bb..b", 63 bytes each.
@@ -3156,7 +3175,7 @@ mod tests {
         data.extend([0, 12, 0, 1]); // PTR, IN
 
         let incoming = DnsIncoming::new(
-            data,
+            data.clone(),
             InterfaceId {
                 name: "test".to_string(),
                 index: 1,
@@ -3165,16 +3184,82 @@ mod tests {
         .unwrap();
         let name = incoming.questions()[0].entry.name.clone();
 
-        // The two labels merged: the trailing backslash escaped the separator.
-        assert!(name.starts_with("aaa"));
-        assert!(name.contains("\\.bbb"));
+        // The trailing backslash is escaped, so it no longer eats the separator.
+        assert_eq!(name, format!("{}\\\\.{}.", "a".repeat(62), "b".repeat(63)));
 
-        // Re-emitting it must drop the question rather than panic.
+        // Re-emitting it gives back the same two labels.
         let mut out = DnsOutgoing::new(0);
         out.add_question(&name, RRType::PTR);
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
-        assert_eq!(packets[0].as_bytes(), &[0; MSG_HEADER_LEN]);
+        assert_eq!(packets[0].as_bytes(), &data[..]);
+    }
+
+    /// A dot inside a label belongs to that label (RFC 6763 section 4.3).
+    /// Reading it must escape it as `\.`, the form `ServiceInfo::new` stores,
+    /// or a query for the instance "L.A.R.A Hub" never matches the registered
+    /// service and gets no answer.
+    #[test]
+    fn test_incoming_label_with_dot_is_escaped() {
+        // A query with one question: SRV for "L.A.R.A Hub" + "_lara" + "_tcp" + "local".
+        let mut data: Vec<u8> = vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        for label in ["L.A.R.A Hub", "_lara", "_tcp", "local"] {
+            data.push(label.len() as u8);
+            data.extend_from_slice(label.as_bytes());
+        }
+        data.push(0);
+        data.extend([0, 33, 0, 1]); // SRV, IN
+
+        let incoming = DnsIncoming::new(
+            data,
+            InterfaceId {
+                name: "test".to_string(),
+                index: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            incoming.questions()[0].entry.name,
+            r"L\.A\.R\.A Hub._lara._tcp.local."
+        );
+    }
+
+    /// The 255-byte limit is on the wire size of a name (RFC 1035 section 2.3.4).
+    /// Escaping makes the text longer than that, and must not reject a legal name.
+    #[test]
+    fn test_incoming_name_limit_ignores_escapes() {
+        // 3 labels of 63 dots, then "local": 199 bytes on the wire, 387 once escaped.
+        let dots = ".".repeat(63);
+        let mut data: Vec<u8> = vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        for label in [dots.as_str(), dots.as_str(), dots.as_str(), "local"] {
+            data.push(label.len() as u8);
+            data.extend_from_slice(label.as_bytes());
+        }
+        data.push(0);
+        data.extend([0, 12, 0, 1]); // PTR, IN
+
+        let incoming = DnsIncoming::new(data, test_interface_id()).unwrap();
+        let escaped = r"\.".repeat(63);
+        assert_eq!(
+            incoming.questions()[0].entry.name,
+            format!("{escaped}.{escaped}.{escaped}.local.")
+        );
+    }
+
+    /// A name above 255 bytes on the wire is still rejected.
+    #[test]
+    fn test_incoming_name_over_limit_is_rejected() {
+        // 4 labels of 63 bytes: 257 bytes on the wire.
+        let long = "a".repeat(63);
+        let mut data: Vec<u8> = vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        for _ in 0..4 {
+            data.push(long.len() as u8);
+            data.extend_from_slice(long.as_bytes());
+        }
+        data.push(0);
+        data.extend([0, 12, 0, 1]); // PTR, IN
+
+        assert!(DnsIncoming::new(data, test_interface_id()).is_err());
     }
 
     /// A pointer that points into the name currently being read is a loop:
