@@ -541,7 +541,7 @@ impl DnsRecord {
 
         trace!(
             "{} qtype {} is due to refresh",
-            &self.entry.name,
+            self.entry.name,
             self.entry.ty
         );
 
@@ -755,8 +755,15 @@ pub trait DnsRecordExt: fmt::Debug {
 
     /// Returns true if another record has matched content,
     /// and if its TTL is at least half of this record's.
+    ///
+    /// A TTL above this record's own cannot be the remaining time of what we sent,
+    /// so that answer is treated as invalid and does not suppress. A querier that
+    /// cached the record from an earlier registration with a larger TTL gets one
+    /// extra answer, which is harmless.
     fn suppressed_by_answer(&self, other: &dyn DnsRecordExt) -> bool {
-        self.matches(other) && (other.get_record().ttl > self.get_record().ttl / 2)
+        let ttl = self.get_record().ttl;
+        let other_ttl = other.get_record().ttl;
+        self.matches(other) && other_ttl > ttl / 2 && other_ttl <= ttl
     }
 
     /// Required by RFC 6762 Section 7.1: Known-Answer Suppression.
@@ -1193,7 +1200,7 @@ impl DnsRecordExt for DnsHostInfo {
     }
 
     fn write(&self, packet: &mut DnsOutPacket) -> WriteResult {
-        debug!("Writing HInfo: cpu {} os {}", &self.cpu, &self.os);
+        debug!("Writing HInfo: cpu {} os {}", self.cpu, self.os);
         packet.write_bytes(self.cpu.as_bytes());
         packet.write_bytes(self.os.as_bytes());
         Ok(())
@@ -1919,7 +1926,7 @@ impl DnsOutgoing {
 
     //    o  All address records (type "A" and "AAAA") named in the SRV rdata.
     pub fn add_additional_answer(&mut self, answer: impl DnsRecordExt + 'static) {
-        trace!("add_additional_answer: {:?}", &answer);
+        trace!("add_additional_answer: {:?}", answer);
         self.additionals.push(answer.boxed());
     }
 
@@ -1969,7 +1976,7 @@ impl DnsOutgoing {
     /// Adds `answer` to the outgoing msg unconditionally. Its full TTL is
     /// written on the wire.
     pub fn add_answer_record(&mut self, answer: impl DnsRecordExt + Send + 'static) {
-        trace!("add_answer push: {:?}", &answer);
+        trace!("add_answer push: {:?}", answer);
         self.answers.push(answer.boxed());
     }
 
@@ -2337,7 +2344,7 @@ impl DnsIncoming {
     }
 
     fn read_questions(&mut self) -> Result<()> {
-        trace!("read_questions: {}", &self.num_questions);
+        trace!("read_questions: {}", self.num_questions);
         for i in 0..self.num_questions {
             let name = self.read_name()?;
 
@@ -2420,7 +2427,7 @@ impl DnsIncoming {
             if slice.len() < RR_HEADER_REMAIN {
                 return Err(Error::Msg(format!(
                     "read_others: RR '{}' is too short after name: {} bytes",
-                    &name,
+                    name,
                     slice.len()
                 )));
             }
@@ -2455,22 +2462,22 @@ impl DnsIncoming {
             match self.read_rdata(ty, class, ttl, rdata_len, &name) {
                 Ok(Some(record)) => {
                     if self.offset == next_offset {
-                        trace!("read_rr_records: {:?}", &record);
+                        trace!("read_rr_records: {:?}", record);
                         rr_records.push(record);
                     } else {
                         debug!(
                             "skipping record '{}' (type {}): RDATA ended at {}, expected {}",
-                            &name, ty, self.offset, next_offset
+                            name, ty, self.offset, next_offset
                         );
                     }
                 }
                 Ok(None) => {
-                    trace!("Unsupported DNS record type: {} name: {}", ty, &name);
+                    trace!("Unsupported DNS record type: {} name: {}", ty, name);
                 }
                 Err(e) => {
                     debug!(
                         "skipping record '{}' (type {}) with invalid RDATA: {}",
-                        &name, ty, e,
+                        name, ty, e,
                     );
                 }
             }
@@ -3686,5 +3693,46 @@ mod tests {
             types,
             [RRType::SVCB, RRType::HTTPS, RRType::AAAA, RRType::A]
         );
+    }
+
+    /// Whether a PTR with TTL 4500 is still sent in response to a query that
+    /// lists the same PTR as a known answer with `known_ttl`.
+    fn is_answered_with_known_ttl(known_ttl: u32) -> bool {
+        let ptr = |ttl: u32| {
+            DnsPointer::new(
+                "_svc._tcp.local.",
+                RRType::PTR,
+                CLASS_IN,
+                ttl,
+                "inst._svc._tcp.local.".to_string(),
+            )
+        };
+
+        let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        query.add_question("_svc._tcp.local.", RRType::PTR);
+        query.add_answer_record(ptr(known_ttl));
+        let packets = query.to_packets(MAX_PKT_DEFAULT, IPV6);
+        let incoming =
+            DnsIncoming::new(packets[0].as_bytes().to_vec(), test_interface_id()).unwrap();
+
+        DnsOutgoing::new(FLAGS_QR_RESPONSE).add_answer(&incoming, ptr(4500))
+    }
+
+    /// A known answer cannot have more time left than the TTL we send. Android 13
+    /// lists about 390000 s for a 4500 s PTR. If that suppressed the answer, the
+    /// querier would stop getting the SRV and A records sent along with it, and
+    /// drop the service when they expire.
+    #[test]
+    fn test_known_answer_with_impossible_ttl_does_not_suppress() {
+        assert!(is_answered_with_known_ttl(4501));
+        assert!(is_answered_with_known_ttl(390_000));
+    }
+
+    /// RFC 6762 section 7.1: suppress when the known TTL is more than half of ours.
+    #[test]
+    fn test_known_answer_suppresses_above_half_ttl() {
+        assert!(is_answered_with_known_ttl(2250));
+        assert!(!is_answered_with_known_ttl(2251));
+        assert!(!is_answered_with_known_ttl(4500));
     }
 }

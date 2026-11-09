@@ -164,11 +164,29 @@ use log;
 #[cfg(not(feature = "logging"))]
 #[macro_use]
 mod log {
-    macro_rules! trace    ( ($($tt:tt)*) => {{}} );
-    macro_rules! debug    ( ($($tt:tt)*) => {{}} );
-    macro_rules! info     ( ($($tt:tt)*) => {{}} );
-    macro_rules! warn     ( ($($tt:tt)*) => {{}} );
-    macro_rules! error    ( ($($tt:tt)*) => {{}} );
+    // `format_args!` names every argument so values used only in log messages
+    // stay live when the `logging` feature is off. `if false` drops the work.
+    macro_rules! trace {
+        ($($tt:tt)*) => {
+            if false {
+                let _ = ::std::format_args!($($tt)*);
+            }
+        };
+    }
+    macro_rules! debug {
+        ($($tt:tt)*) => {
+            if false {
+                let _ = ::std::format_args!($($tt)*);
+            }
+        };
+    }
+    macro_rules! error {
+        ($($tt:tt)*) => {
+            if false {
+                let _ = ::std::format_args!($($tt)*);
+            }
+        };
+    }
 }
 
 mod dns_cache;

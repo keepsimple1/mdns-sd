@@ -888,7 +888,7 @@ fn apply_cache_flush(
         }
 
         if should_flush {
-            trace!("FLUSH one record: {:?}", &r.record);
+            trace!("FLUSH one record: {:?}", r.record);
             let new_expire = now + Duration::from_millis(1000);
             r.record.set_expire(new_expire);
 

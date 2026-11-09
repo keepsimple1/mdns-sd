@@ -1,3 +1,30 @@
+# Version 0.21.7 (2026-11-01)
+
+This is a bugfix release.
+
+## Bug fixes / improvements
+
+- Fix a race where a renamed service could skip probing. (#506)
+- Fix query classification when the daemon runs on a custom port. Queries from the
+  daemon's own port were treated as legacy unicast queries because the check was
+  hard-coded to port 5353. (#529)
+- Wake the daemon with `mio::Waker` instead of a loopback UDP signal socket. Sending a
+  command no longer depends on ephemeral ports or the local UDP stack, and can no
+  longer report an error after the command was already queued. (#527)
+- Resolve Clippy warnings, including unused variables when the `logging` feature is
+  off. (#533)
+- Modernize CI workflow. (#530)
+
+## All changes
+
+* `3beba87 2026-10-31` Modernize CI workflow (#530) (oriel haim)
+* `0749b87 2026-10-29` test: skip operationally down interfaces in my_ip_interfaces() (#535) (keepsimple1)
+* `a590a7a 2026-10-26` fix: resolve Clippy warnings (#533) (oriel haim)
+* `5e55075 2026-10-24` fix: reset next_send when a host rename restarts an SRV probe (#506) (keepsimple1)
+* `1b84730 2026-10-23` CI: move macOS tests to macos-15, run test binaries as root (#531) (keepsimple1)
+* `a90c138 2026-10-23` Fix custom-port mDNS query classification (#529) (oriel haim)
+* `36f92a4 2026-10-20` Wake the daemon poller with mio::Waker. (#527) (oriel haim)
+
 # Version 0.21.6 (2026-10-18)
 
 This is a bugfix release.
