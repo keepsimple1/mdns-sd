@@ -2731,12 +2731,28 @@ fn test_running_state_reports_failed_socket() {
         panic!("unexpected status: {:?}", status);
     };
 
-    assert!(state.ipv4().is_bound());
-    assert_eq!(state.ipv4().bind_error(), None);
-    assert!(!state.ipv6().is_bound());
+    assert!(state.ipv4_socket().is_bound());
+    assert_eq!(state.ipv4_socket().bind_error(), None);
+    assert!(!state.ipv6_socket().is_bound());
     assert!(
-        state.ipv6().bind_error().is_some(),
+        state.ipv6_socket().bind_error().is_some(),
         "a failed socket must come with its error"
+    );
+
+    // Without the IPv6 socket, no IPv6 join is tried. Loopback is always there
+    // to join on IPv4.
+    let intfs = state.selected_intfs();
+    assert!(
+        intfs.iter().all(|intf| intf.ipv6().is_none()),
+        "no IPv6 membership without the IPv6 socket: {:?}",
+        intfs
+    );
+    assert!(
+        intfs
+            .iter()
+            .any(|intf| intf.ipv4().is_some_and(|m| m.is_joined())),
+        "at least loopback joins on IPv4: {:?}",
+        intfs
     );
 
     daemon.shutdown().unwrap();
