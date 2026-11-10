@@ -5254,9 +5254,9 @@ fn announce_service_on_intf(
 /// - `foo.local.` becomes `foo (2).local.`
 /// - `foo (2).local.` becomes `foo (3).local.`
 /// - `foo (9)` becomes `foo (10)`
-/// Splits `fullname` at the first unescaped dot, so the first label keeps its
-/// `\.` escapes intact per RFC 6763 section 4.3. A backslash escapes the
-/// following character, so `\\.` still terminates the label.
+/// Splits `fullname` at the first unescaped dot per RFC 6763 section 4.3, so
+/// the first label keeps its `\.` escapes intact. A backslash escapes the next
+/// character, so `\\.` still terminates the label.
 fn split_first_label(fullname: &str) -> (&str, &str) {
     let mut escaped = false;
     for (idx, ch) in fullname.char_indices() {
