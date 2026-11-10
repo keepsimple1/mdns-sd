@@ -5254,11 +5254,30 @@ fn announce_service_on_intf(
 /// - `foo.local.` becomes `foo (2).local.`
 /// - `foo (2).local.` becomes `foo (3).local.`
 /// - `foo (9)` becomes `foo (10)`
+/// Splits `fullname` at the first unescaped dot, so the first label keeps its
+/// `\.` escapes intact per RFC 6763 section 4.3. A backslash escapes the
+/// following character, so `\\.` still terminates the label.
+fn split_first_label(fullname: &str) -> (&str, &str) {
+    let mut escaped = false;
+    for (idx, ch) in fullname.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '.' => return (&fullname[..idx], &fullname[idx..]),
+            _ => {}
+        }
+    }
+    (fullname, "")
+}
+
 fn name_change(original: &str) -> String {
-    let mut parts: Vec<_> = original.split('.').collect();
-    let Some(first_part) = parts.get_mut(0) else {
+    let (first_part, rest) = split_first_label(original);
+    if first_part.is_empty() {
         return format!("{original} (2)");
-    };
+    }
 
     let mut new_name = format!("{first_part} (2)");
 
@@ -5279,8 +5298,7 @@ fn name_change(original: &str) -> String {
         }
     }
 
-    *first_part = &new_name;
-    parts.join(".")
+    format!("{new_name}{rest}")
 }
 
 /// Returns a new name based on the `original` to avoid conflicts.
@@ -5291,10 +5309,10 @@ fn name_change(original: &str) -> String {
 /// - `foo-2.local.` becomes `foo-3.local.`
 /// - `foo` becomes `foo-2`
 fn hostname_change(original: &str) -> String {
-    let mut parts: Vec<_> = original.split('.').collect();
-    let Some(first_part) = parts.get_mut(0) else {
+    let (first_part, rest) = split_first_label(original);
+    if first_part.is_empty() {
         return format!("{original}-2");
-    };
+    }
 
     let mut new_name = format!("{first_part}-2");
 
@@ -5307,8 +5325,7 @@ fn hostname_change(original: &str) -> String {
         }
     }
 
-    *first_part = &new_name;
-    parts.join(".")
+    format!("{new_name}{rest}")
 }
 
 /// Check probes in a registry and returns: a probing packet to send out, and a list of probe names
@@ -6969,6 +6986,12 @@ mod tests {
         assert_eq!(name_change("foo (abc)"), "foo (abc) (2)"); // Invalid number
         assert_eq!(name_change("foo (2"), "foo (2 (2)"); // Missing closing parenthesis
         assert_eq!(name_change("foo (2) extra"), "foo (2) extra (2)"); // Extra text after number
+
+        // Escaped dots stay inside the first label (RFC 6763 section 4.3)
+        assert_eq!(name_change(r"L\.A\.R\.A Hub._lara._tcp.local."), r"L\.A\.R\.A Hub (2)._lara._tcp.local.");
+        assert_eq!(name_change(r"a\.b (2).local."), r"a\.b (3).local.");
+        // An escaped backslash does not escape the following dot
+        assert_eq!(name_change(r"a\\.b.local."), r"a\\ (2).b.local.");
     }
 
     #[test]
@@ -6978,6 +7001,10 @@ mod tests {
         assert_eq!(hostname_change("foo-2.local."), "foo-3.local.");
         assert_eq!(hostname_change("foo-9"), "foo-10");
         assert_eq!(hostname_change("test-42.domain."), "test-43.domain.");
+
+        // Escaped dots stay inside the first label (RFC 6763 section 4.3)
+        assert_eq!(hostname_change(r"my\.host.local."), r"my\.host-2.local.");
+        assert_eq!(hostname_change(r"my\.host-2.local."), r"my\.host-3.local.");
     }
 
     #[test]
