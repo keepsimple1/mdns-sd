@@ -278,10 +278,8 @@ pub struct Membership {
 }
 
 impl Membership {
-    /// The addresses of this IP version on the interface, in ascending order.
-    ///
-    /// If joined, these are the addresses the daemon uses. Otherwise, these
-    /// are the addresses it tried to join with.
+    /// The addresses of this IP version on the interface, sorted by their
+    /// numeric value, not in any order of preference.
     pub fn addrs(&self) -> &[IpAddr] {
         &self.addrs
     }
