@@ -6988,7 +6988,10 @@ mod tests {
         assert_eq!(name_change("foo (2) extra"), "foo (2) extra (2)"); // Extra text after number
 
         // Escaped dots stay inside the first label (RFC 6763 section 4.3)
-        assert_eq!(name_change(r"L\.A\.R\.A Hub._lara._tcp.local."), r"L\.A\.R\.A Hub (2)._lara._tcp.local.");
+        assert_eq!(
+            name_change(r"L\.A\.R\.A Hub._lara._tcp.local."),
+            r"L\.A\.R\.A Hub (2)._lara._tcp.local."
+        );
         assert_eq!(name_change(r"a\.b (2).local."), r"a\.b (3).local.");
         // An escaped backslash does not escape the following dot
         assert_eq!(name_change(r"a\\.b.local."), r"a\\ (2).b.local.");
