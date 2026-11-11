@@ -5247,13 +5247,6 @@ fn announce_service_on_intf(
     Ok(false)
 }
 
-/// Returns a new name based on the `original` to avoid conflicts.
-/// If the name already contains a number in parentheses, increments that number.
-///
-/// Examples:
-/// - `foo.local.` becomes `foo (2).local.`
-/// - `foo (2).local.` becomes `foo (3).local.`
-/// - `foo (9)` becomes `foo (10)`
 /// Splits `fullname` at the first unescaped dot per RFC 6763 section 4.3, so
 /// the first label keeps its `\.` escapes intact. A backslash escapes the next
 /// character, so `\\.` still terminates the label.
@@ -5273,6 +5266,13 @@ fn split_first_label(fullname: &str) -> (&str, &str) {
     (fullname, "")
 }
 
+/// Returns a new name based on the `original` to avoid conflicts.
+/// If the name already contains a number in parentheses, increments that number.
+///
+/// Examples:
+/// - `foo.local.` becomes `foo (2).local.`
+/// - `foo (2).local.` becomes `foo (3).local.`
+/// - `foo (9)` becomes `foo (10)`
 fn name_change(original: &str) -> String {
     let (first_part, rest) = split_first_label(original);
     if first_part.is_empty() {
