@@ -2516,7 +2516,7 @@ fn test_rfc6763_utf8_network_integration() {
                 println!("Resolved service: {}", resolved_fullname);
 
                 // Compare by checking if the resolved fullname contains our instance base
-                // and UTF-8 characters (network returns decoded names without escaping)
+                // and UTF-8 characters
                 if resolved_fullname.contains(&instance_base)
                     && resolved_fullname.contains("Café")
                     && resolved_fullname.contains('🌐')
@@ -2529,8 +2529,9 @@ fn test_rfc6763_utf8_network_integration() {
                     assert_eq!(info.get_port(), port);
                     assert!(!info.get_addresses().is_empty());
 
-                    // Verify UTF-8 characters are preserved
-                    assert!(resolved_fullname.contains("Café.Service"));
+                    // A name read from the network keeps its escapes, so it is exactly
+                    // the name that was registered, UTF-8 characters included.
+                    assert_eq!(resolved_fullname, fullname);
                     assert!(resolved_fullname.contains('🌐'));
                     break;
                 }
