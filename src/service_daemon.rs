@@ -290,7 +290,12 @@ impl Membership {
     }
 
     /// The error from the last attempt to join the multicast group, if it
-    /// failed. The daemon retries at the next interface check.
+    /// failed.
+    ///
+    /// The daemon retries at its next IP check (see
+    /// [`set_ip_check_interval`](ServiceDaemon::set_ip_check_interval)). With IP
+    /// checks disabled, it only retries when the interface selection changes,
+    /// e.g. through [`enable_interface`](ServiceDaemon::enable_interface).
     pub fn join_error(&self) -> Option<&str> {
         self.join_error.as_deref()
     }
@@ -1433,8 +1438,8 @@ type JoinFailures = HashMap<(u32, bool), JoinFailure>;
 /// (`AddrInUse` on most platforms, `WSAEINVAL` on Windows), so that is skipped.
 ///
 /// Returns `false`, recording nothing, if the address is already recorded or the
-/// join fails. A failed address is then retried by the next IP check, and kept in
-/// `join_failures` until it is recorded or gone.
+/// join fails. A failed address is then retried by the next IP check or selection
+/// change, and kept in `join_failures` until it is recorded or gone.
 fn add_intf_addr(
     my_intfs: &mut HashMap<u32, MyIntf>,
     join_failures: &mut JoinFailures,
