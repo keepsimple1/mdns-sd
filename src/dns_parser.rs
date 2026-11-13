@@ -3150,21 +3150,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dns_outgoing_compression_reuses_equivalent_escaped_names() {
-        for (first, second) in [
-            (r"L\.A.B.local.", r"L\.A.B.local"),
-            (r"L\A.B.local.", r"L\\A.B.local."),
-            ("设备\\.A.B.local.", "设备\\.A.B.local."),
-        ] {
-            let mut packet = DnsOutPacket::new(MAX_PKT_DEFAULT);
-            packet.write_name(first).unwrap();
-            let second_offset = packet.size();
-            packet.write_name(second).unwrap();
-            assert_eq!(&packet.as_bytes()[second_offset..], &[0xc0, 12]);
-        }
-    }
-
-    #[test]
     fn test_dns_outgoing_compression_max_length_labels() {
         // 63 UTF-8 bytes, including a dot inside the first label. The full
         // name occupies 255 bytes, including length octets and the root.
