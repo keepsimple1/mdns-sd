@@ -806,6 +806,11 @@ impl DnsAddress {
         }
     }
 
+    /// Returns the address without its interface scope.
+    pub(crate) const fn ip(&self) -> IpAddr {
+        self.address
+    }
+
     pub fn address(&self) -> ScopedIp {
         match self.address {
             IpAddr::V4(v4) => ScopedIp::V4(ScopedIpV4 {
