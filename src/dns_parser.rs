@@ -1387,8 +1387,8 @@ pub struct DnsOutPacket {
     /// All bytes in `data` is the actual packet on the wire.
     data: Vec<u8>,
 
-    /// k: name, v: offset
-    names: HashMap<String, u16>,
+    /// k: length-prefixed labels (without the root terminator), v: offset
+    names: HashMap<Vec<u8>, u16>,
 
     /// Max byte size of `data`. i.e. the max packet size.
     max_size: usize,
@@ -1601,21 +1601,30 @@ impl DnsOutPacket {
             return Err(WriteError::NameTooLong);
         }
 
+        // Length prefixes preserve label boundaries, even when a label
+        // contains a literal dot or backslash.
+        let mut name_bytes = Vec::new();
+        for label in &labels {
+            name_bytes.push(label.len() as u8);
+            name_bytes.extend_from_slice(label.as_bytes());
+        }
+
         // Write each label
-        for (i, label) in labels.iter().enumerate() {
-            // Build the remaining name for compression (with dots as separators)
-            let remaining: String = labels[i..].join(".");
+        let mut suffix_offset = 0;
+        for label in &labels {
+            let remaining = &name_bytes[suffix_offset..];
 
             // Check if we can use compression for the remaining part
             const POINTER_MASK: u16 = 0xC000;
-            if let Some(&offset) = self.names.get(&remaining) {
+            if let Some(&offset) = self.names.get(remaining) {
                 let pointer = offset | POINTER_MASK;
                 self.write_short(pointer);
                 return Ok(());
             }
 
             // Store this position for potential future compression
-            self.names.insert(remaining, self.size() as u16);
+            self.names.insert(remaining.to_vec(), self.size() as u16);
+            suffix_offset += label.len() + 1;
 
             // Write the label
             self.write_utf8(label)?;
@@ -2970,8 +2979,8 @@ mod tests {
             ]
         );
         let mut expected_names = HashMap::new();
-        expected_names.insert("123.test".to_string(), 12);
-        expected_names.insert("test".to_string(), 16);
+        expected_names.insert(b"\x03123\x04test".to_vec(), 12);
+        expected_names.insert(b"\x04test".to_vec(), 16);
         assert_eq!(&packets[0].names, &expected_names);
     }
 
@@ -3006,9 +3015,9 @@ mod tests {
             ]
         );
         let mut expected_names = HashMap::new();
-        expected_names.insert("123.test".to_string(), 12);
-        expected_names.insert("test".to_string(), 16);
-        expected_names.insert("124.test".to_string(), 26);
+        expected_names.insert(b"\x03123\x04test".to_vec(), 12);
+        expected_names.insert(b"\x04test".to_vec(), 16);
+        expected_names.insert(b"\x03124\x04test".to_vec(), 26);
         assert_eq!(&packets[0].names, &expected_names);
     }
 
@@ -3035,8 +3044,8 @@ mod tests {
             ]
         );
         let mut expected_names = HashMap::new();
-        expected_names.insert("test.local".to_string(), 12);
-        expected_names.insert("local".to_string(), 17);
+        expected_names.insert(b"\x04test\x05local".to_vec(), 12);
+        expected_names.insert(b"\x05local".to_vec(), 17);
         assert_eq!(&packets[0].names, &expected_names);
     }
 
@@ -3090,10 +3099,130 @@ mod tests {
             ]
         );
         let mut expected_names = HashMap::new();
-        expected_names.insert("test".to_string(), 12);
-        expected_names.insert("test-service.local".to_string(), 28);
-        expected_names.insert("local".to_string(), 41);
+        expected_names.insert(b"\x04test".to_vec(), 12);
+        expected_names.insert(b"\x0ctest-service\x05local".to_vec(), 28);
+        expected_names.insert(b"\x05local".to_vec(), 41);
         assert_eq!(&packets[0].names, &expected_names);
+    }
+
+    /// Check the wire representation, independently of read_name's escaping.
+    #[test]
+    fn test_dns_outgoing_compression_preserves_label_boundaries() {
+        let cases: &[(&str, &str, &[u8], &[u8])] = &[
+            (
+                r"L\.A.B.local.",
+                "L.A.B.local.",
+                b"\x03L.A\x01B\x05local\0",
+                b"\x01L\x01A\xc0\x10",
+            ),
+            (
+                "L.A.B.local.",
+                r"L\.A.B.local.",
+                b"\x01L\x01A\x01B\x05local\0",
+                b"\x03L.A\xc0\x10",
+            ),
+            (
+                r"L\.A.B.local.",
+                "x.L.A.B.local.",
+                b"\x03L.A\x01B\x05local\0",
+                b"\x01x\x01L\x01A\xc0\x10",
+            ),
+            (
+                "L.A.B.local.",
+                r"x.L\.A.B.local.",
+                b"\x01L\x01A\x01B\x05local\0",
+                b"\x01x\x03L.A\xc0\x10",
+            ),
+            (
+                r"L\\.A.B.local.",
+                r"L\\\.A.B.local.",
+                b"\x02L\\\x01A\x01B\x05local\0",
+                b"\x04L\\.A\xc0\x11",
+            ),
+            (
+                r"L\\\.A.B.local.",
+                r"L\\.A.B.local.",
+                b"\x04L\\.A\x01B\x05local\0",
+                b"\x02L\\\x01A\xc0\x11",
+            ),
+        ];
+
+        for &(first, second, first_wire, second_wire) in cases {
+            let mut out = DnsOutgoing::new(0);
+            out.add_question(first, RRType::PTR);
+            out.add_question(second, RRType::PTR);
+            let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
+            assert_eq!(packets.len(), 1);
+            let mut expected = first_wire.to_vec();
+            expected.extend_from_slice(&[0, 12, 0, 1]); // PTR, IN
+            expected.extend_from_slice(second_wire);
+            expected.extend_from_slice(&[0, 12, 0, 1]);
+            assert_eq!(&packets[0].as_bytes()[4..6], &[0, 2]);
+            assert_eq!(
+                &packets[0].as_bytes()[super::MSG_HEADER_LEN..],
+                expected,
+                "{first} then {second}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dns_outgoing_compression_max_length_labels() {
+        // 63 UTF-8 bytes, including a dot inside the first label. The full
+        // name occupies 255 bytes, including length octets and the root.
+        let first_label = format!("{}.ab", "界".repeat(20));
+        let second_label = "b".repeat(63);
+        let third_label = "c".repeat(63);
+        let fourth_label = "d".repeat(61);
+        let first = format!(
+            "{}.{}.{}.{}.",
+            first_label.replace('.', r"\."),
+            second_label,
+            third_label,
+            fourth_label
+        );
+        let second = format!("{first_label}.{second_label}.{third_label}.{fourth_label}.");
+        let mut packet = DnsOutPacket::new(MAX_PKT_DEFAULT);
+        packet.write_name(&first).unwrap();
+        let second_offset = packet.size();
+        packet.write_name(&second).unwrap();
+
+        let mut expected = vec![60];
+        expected.extend_from_slice("界".repeat(20).as_bytes());
+        expected.extend_from_slice(&[2, b'a', b'b', 0xc0, 76]); // share b... at 12 + 64
+        assert_eq!(second_offset, super::MSG_HEADER_LEN + 255);
+        assert_eq!(&packet.as_bytes()[second_offset..], expected);
+        // Repeated long names still compress to their own first occurrence.
+        let repeated_offset = packet.size();
+        packet.write_name(&first).unwrap();
+        assert_eq!(&packet.as_bytes()[repeated_offset..], &[0xc0, 12]);
+    }
+
+    #[test]
+    fn test_dns_outgoing_compression_packet_boundary() {
+        let mut out = DnsOutgoing::new(0);
+        out.add_question(r"L\.A.B.local.", RRType::PTR);
+        out.add_question("L.A.B.local.", RRType::PTR);
+        out.add_question("L.A.B.local.", RRType::PTR);
+
+        // Both distinct names fit exactly at 39 bytes; the repeated second
+        // name takes another six bytes using a pointer to offset 29.
+        let packets = out.to_packets(45, IPV6);
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].size(), 45);
+        assert_eq!(&packets[0].as_bytes()[39..], &[0xc0, 29, 0, 12, 0, 1]);
+
+        // At one byte less, the third question starts a new packet. Its
+        // compression table must not refer to offsets in the previous one.
+        let packets = out.to_packets(44, IPV6);
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[0].size(), 39);
+        assert_eq!(&packets[0].as_bytes()[4..6], &[0, 2]);
+        assert_eq!(&packets[1].as_bytes()[4..6], &[0, 1]);
+        assert_eq!(
+            &packets[1].as_bytes()[super::MSG_HEADER_LEN..],
+            b"\x01L\x01A\x01B\x05local\0\0\x0c\0\x01"
+        );
     }
 
     /// A question whose name has a label longer than 63 bytes cannot be
@@ -3119,8 +3248,8 @@ mod tests {
 
         // The rolled back name must not leave a stale compression offset behind.
         let mut expected_names = HashMap::new();
-        expected_names.insert("123.test".to_string(), 12);
-        expected_names.insert("test".to_string(), 16);
+        expected_names.insert(b"\x03123\x04test".to_vec(), 12);
+        expected_names.insert(b"\x04test".to_vec(), 16);
         assert_eq!(&packets[0].names, &expected_names);
     }
 
