@@ -4504,8 +4504,10 @@ fn add_answer_of_service(
     intf_addrs: Vec<IpAddr>,
     dns_registry: &DnsRegistry,
 ) {
-    // The probes are keyed by the (possibly renamed) instance name.
+    // Use the names after any rename, as announced. The probes are keyed by
+    // them too.
     let fullname = dns_registry.resolve_name(service.get_fullname());
+    let hostname = dns_registry.resolve_name(service.get_hostname());
 
     if (qtype == RRType::SRV || qtype == RRType::ANY)
         && !dns_registry.is_type_probing(fullname, RRType::SRV)
@@ -4519,7 +4521,7 @@ fn add_answer_of_service(
                 service.get_priority(),
                 service.get_weight(),
                 service.get_port(),
-                service.get_hostname().to_string(),
+                hostname.to_string(),
             ),
         );
     }
@@ -4541,10 +4543,10 @@ fn add_answer_of_service(
     if qtype == RRType::SRV {
         for address in intf_addrs
             .into_iter()
-            .filter(|addr| !dns_registry.is_address_probing(service.get_hostname(), addr))
+            .filter(|addr| !dns_registry.is_address_probing(hostname, addr))
         {
             out.add_additional_answer(DnsAddress::new(
-                service.get_hostname(),
+                hostname,
                 ip_address_rr_type(&address),
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 service.get_host_ttl(),
@@ -7313,6 +7315,63 @@ mod tests {
             DnsTxt::new(&fullname, CLASS_IN | CLASS_CACHE_FLUSH, 120, Vec::new()).boxed(),
         );
         assert!(answer(&registry).is_empty());
+    }
+
+    #[test]
+    fn test_srv_answer_uses_renamed_hostname() {
+        let addr_a = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        let addr_b = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
+        let (intf, services, mut registry) = renamed_host_fixture(&[addr_a, addr_b]);
+        let service = services.values().next().unwrap();
+        let fullname = service.get_fullname().to_string();
+
+        // Returns the SRV hosts and the additional address records.
+        let answer = |registry: &DnsRegistry| {
+            let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+            query.add_question(&fullname, RRType::SRV);
+            let packets = query.to_data_on_wire(MAX_PKT_DEFAULT, true);
+            let msg = DnsIncoming::new(packets[0].clone(), (&intf).into()).unwrap();
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+            add_answer_of_service(
+                &mut out,
+                &msg,
+                &fullname,
+                service,
+                RRType::SRV,
+                vec![addr_a, addr_b],
+                registry,
+            );
+            let hosts: Vec<_> = out
+                ._answers()
+                .iter()
+                .filter_map(|r| r.any().downcast_ref::<DnsSrv>())
+                .map(|srv| srv.host().to_string())
+                .collect();
+            let mut addrs: Vec<_> = out
+                .additionals()
+                .iter()
+                .filter_map(|r| r.any().downcast_ref::<DnsAddress>())
+                .map(|a| (a.get_name().to_string(), a.ip()))
+                .collect();
+            addrs.sort();
+            (hosts, addrs)
+        };
+
+        let new_host = "rename545-2.local.".to_string();
+        assert_eq!(
+            answer(&registry),
+            (
+                vec![new_host.clone()],
+                vec![(new_host.clone(), addr_a), (new_host.clone(), addr_b)]
+            )
+        );
+
+        // An address of the renamed host is still being probed.
+        probe_address(&mut registry, &intf, "rename545-2.local.", addr_a);
+        assert_eq!(
+            answer(&registry),
+            (vec![new_host.clone()], vec![(new_host, addr_b)])
+        );
     }
 
     #[test]
