@@ -3444,12 +3444,16 @@ impl Zeroconf {
             //     dns_registry.probing.remove(name);
             // }
 
-            let waiting_services = probe.waiting_services.clone();
+            if new_records.is_empty() {
+                continue;
+            }
+
+            let mut waiting_services = probe.waiting_services.clone();
 
             // The address records of this host that already finished probing
             // also move to the new hostname, so that the new probe has all of
             // the host's addresses.
-            if is_address && !new_records.is_empty() {
+            if is_address {
                 if let Some(active_records) = dns_registry.active.get_mut(name) {
                     active_records.retain(|record| {
                         if matches!(record.get_type(), RRType::A | RRType::AAAA) {
@@ -3462,6 +3466,29 @@ impl Zeroconf {
                         }
                         true
                     });
+                }
+
+                // A new hostname affects every service on the host, not only
+                // the ones waiting on this probe. Note: must run before
+                // `name_changes` is updated below, while `name` still resolves.
+                for service in self.my_services.values() {
+                    let original = service.get_hostname();
+                    if original.eq_ignore_ascii_case(name)
+                        || dns_registry
+                            .resolve_name(original)
+                            .eq_ignore_ascii_case(name)
+                    {
+                        waiting_services.insert(service.get_fullname().to_string());
+                    }
+                }
+            }
+
+            // The rename invalidates what these services announced on this
+            // interface. They go back to probing, and are announced again under
+            // the new names when the new probes finish.
+            for service_name in waiting_services.iter() {
+                if let Some(info) = self.my_services.get_mut(&service_name.to_lowercase()) {
+                    info.set_status(if_index, ServiceStatus::Probing);
                 }
             }
 
@@ -7255,7 +7282,18 @@ mod tests {
         assert!(registry.is_address_probing("rename545-2.local.", &addr_1));
         assert!(registry.is_address_probing("rename545-2.local.", &addr_2));
 
-        // As in the issue, the service stays announced during the rename.
+        // The service waits for the new probe.
+        assert_eq!(
+            daemon.my_services[&fullname].get_status(index),
+            ServiceStatus::Probing
+        );
+        assert!(registry.probing["rename545-2.local."]
+            .waiting_services
+            .iter()
+            .any(|s| s.to_lowercase() == fullname));
+
+        // Force the state of the issue, where the service stayed announced
+        // during the rename, to check the next steps on their own.
         daemon
             .my_services
             .get_mut(&fullname)
@@ -7298,6 +7336,119 @@ mod tests {
         // A peer still causes another rename.
         daemon.conflict_handler(&response("rename545-2.local.", peer), index);
         assert_eq!(current_hostname(&daemon), "rename545-3.local.");
+    }
+
+    /// Finishes all probes on `index` and wakes up the services waiting on them.
+    fn finish_probes(daemon: &mut super::Zeroconf, index: u32) {
+        for probe in daemon
+            .dns_registry_map
+            .get_mut(&index)
+            .unwrap()
+            .probing
+            .values_mut()
+        {
+            probe.start_time = Instant::now() - Duration::from_millis(1000);
+            probe.next_send = probe.start_time;
+        }
+        daemon.probing_handler();
+    }
+
+    /// The probe of a new address on an announced host hits a conflict. The
+    /// host is renamed, every service on it goes back to probing, and they are
+    /// announced again under the new hostname.
+    #[test]
+    fn test_hostname_conflict_reannounces_services() {
+        let (mut daemon, index) = negative_answer_test_daemon();
+        let interface = InterfaceId {
+            name: "loopback-test".to_string(),
+            index,
+        };
+        let addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let new_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3));
+        let peer = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 9));
+        let status = |daemon: &super::Zeroconf, fullname: &str| {
+            daemon.my_services[fullname].get_status(index)
+        };
+
+        // Two services on the same host.
+        let mut fullnames = Vec::new();
+        for instance in ["first", "second"] {
+            let service = ServiceInfo::new(
+                "_reannounce._tcp.local.",
+                instance,
+                "reannounce.local.",
+                addr,
+                8080,
+                None,
+            )
+            .unwrap();
+            fullnames.push(service.get_fullname().to_lowercase());
+            daemon.register_service(service);
+        }
+        finish_probes(&mut daemon, index);
+        for fullname in &fullnames {
+            assert_eq!(status(&daemon, fullname), ServiceStatus::Announced);
+        }
+
+        // A new address of the host starts its own probe, which no service
+        // waits on.
+        let mut probe = Probe::new(Instant::now());
+        probe.insert_record(
+            DnsAddress::new(
+                "reannounce.local.",
+                RRType::A,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                120,
+                new_addr,
+                interface.clone(),
+            )
+            .boxed(),
+        );
+        daemon
+            .dns_registry_map
+            .get_mut(&index)
+            .unwrap()
+            .probing
+            .insert("reannounce.local.".to_string(), probe);
+
+        // A peer claims the hostname.
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+        out.add_answer_record(DnsAddress::new(
+            "reannounce.local.",
+            RRType::A,
+            CLASS_IN | CLASS_CACHE_FLUSH,
+            120,
+            peer,
+            interface.clone(),
+        ));
+        let packets = out.to_data_on_wire(MAX_PKT_DEFAULT, true);
+        let incoming = DnsIncoming::new(packets[0].clone(), interface.clone()).unwrap();
+        daemon.conflict_handler(&incoming, index);
+
+        let registry = &daemon.dns_registry_map[&index];
+        assert_eq!(
+            registry.resolve_name("reannounce.local."),
+            "reannounce-2.local."
+        );
+        // The address that was already announced is probed again too.
+        assert!(registry.is_address_probing("reannounce-2.local.", &addr));
+        for fullname in &fullnames {
+            assert_eq!(status(&daemon, fullname), ServiceStatus::Probing);
+        }
+
+        // When the new probes finish, both services are announced again, with
+        // the new hostname in their SRV records.
+        finish_probes(&mut daemon, index);
+        let registry = &daemon.dns_registry_map[&index];
+        for fullname in &fullnames {
+            assert_eq!(status(&daemon, fullname), ServiceStatus::Announced);
+            let hosts: Vec<_> = registry.active[fullname.as_str()]
+                .iter()
+                .filter_map(|r| r.any().downcast_ref::<DnsSrv>())
+                .map(|srv| srv.host().to_string())
+                .collect();
+            assert_eq!(hosts, vec!["reannounce-2.local.".to_string()]);
+        }
     }
 
     #[test]
