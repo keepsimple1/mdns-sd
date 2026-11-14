@@ -1253,6 +1253,16 @@ impl DnsRegistry {
         })
     }
 
+    /// Returns true if a record of type `ty` under `name` is still being probed.
+    ///
+    /// Note: this ignores rdata. It is meant for SRV and TXT, where a name has
+    /// one record of the type.
+    pub(crate) fn is_type_probing(&self, name: &str, ty: RRType) -> bool {
+        self.probing
+            .get(name)
+            .is_some_and(|probe| probe.records.iter().any(|record| record.get_type() == ty))
+    }
+
     pub(crate) fn is_probing_done<T>(
         &mut self,
         answer: &T,
