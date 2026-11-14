@@ -52,7 +52,7 @@ use socket2::Domain;
 use socket_pktinfo::PktInfoUdpSocket;
 use std::{
     cmp::{self, Reverse},
-    collections::{BinaryHeap, HashMap, HashSet},
+    collections::{BTreeMap, BinaryHeap, HashMap, HashSet},
     fmt, io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     str,
@@ -156,11 +156,150 @@ pub enum UnregisterStatus {
 #[derive(Debug, PartialEq, Clone, Eq)]
 #[non_exhaustive]
 pub enum DaemonStatus {
-    /// The daemon is running as normal.
-    Running,
+    /// The daemon is running, with at least one of its IPv4 and IPv6 sockets bound.
+    Running(RunningState),
 
     /// The daemon has been shutdown.
     Shutdown,
+}
+
+/// A snapshot of the local setup of a running daemon: its multicast sockets
+/// and the interfaces it uses.
+///
+/// It only covers the daemon's own setup, as of when the daemon handled the
+/// [`status`](ServiceDaemon::status) request. It does not tell whether packets
+/// get delivered, or whether any service can be found or resolved.
+#[derive(Debug, PartialEq, Clone, Eq)]
+#[non_exhaustive]
+pub struct RunningState {
+    ipv4_socket: SocketState,
+    ipv6_socket: SocketState,
+    enabled_intfs: Vec<EnabledIntf>,
+}
+
+impl RunningState {
+    /// The state of the IPv4 multicast socket.
+    pub fn ipv4_socket(&self) -> &SocketState {
+        &self.ipv4_socket
+    }
+
+    /// The state of the IPv6 multicast socket.
+    pub fn ipv6_socket(&self) -> &SocketState {
+        &self.ipv6_socket
+    }
+
+    /// The enabled interfaces the daemon uses, ordered by interface index.
+    ///
+    /// An interface is listed once the daemon has tried to join the multicast
+    /// group on it for at least one IP version, whether or not that worked.
+    /// Interfaces disabled with [`disable_interface`](ServiceDaemon::disable_interface)
+    /// are not listed, nor are addresses of an IP version whose socket is not
+    /// bound.
+    ///
+    /// Interfaces are checked periodically (see
+    /// [`set_ip_check_interval`](ServiceDaemon::set_ip_check_interval)), so a
+    /// newly added address may only show up after the next check.
+    pub fn enabled_intfs(&self) -> &[EnabledIntf] {
+        &self.enabled_intfs
+    }
+}
+
+/// The state of the multicast socket of one IP version.
+///
+/// Sockets are only set up when the daemon starts, so this does not change
+/// while it runs.
+#[derive(Debug, PartialEq, Clone, Eq)]
+#[non_exhaustive]
+pub struct SocketState {
+    bind_error: Option<String>,
+}
+
+impl SocketState {
+    fn new(sock: &Result<MyUdpSocket>) -> Self {
+        Self {
+            bind_error: sock.as_ref().err().map(|e| e.to_string()),
+        }
+    }
+
+    /// Whether the multicast socket was bound successfully.
+    pub fn is_bound(&self) -> bool {
+        self.bind_error.is_none()
+    }
+
+    /// The error from setting up the multicast socket, if it failed.
+    pub fn bind_error(&self) -> Option<&str> {
+        self.bind_error.as_deref()
+    }
+}
+
+/// A network interface enabled in the daemon.
+#[derive(Debug, PartialEq, Clone, Eq)]
+#[non_exhaustive]
+pub struct EnabledIntf {
+    name: String,
+    index: u32,
+    ipv4: Option<Membership>,
+    ipv6: Option<Membership>,
+}
+
+impl EnabledIntf {
+    /// The name of the interface.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The index of the interface assigned by the OS.
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+
+    /// The IPv4 multicast membership on this interface, or `None` if the
+    /// daemon has no IPv4 address on it.
+    pub fn ipv4(&self) -> Option<&Membership> {
+        self.ipv4.as_ref()
+    }
+
+    /// The IPv6 multicast membership on this interface, or `None` if the
+    /// daemon has no IPv6 address on it.
+    pub fn ipv6(&self) -> Option<&Membership> {
+        self.ipv6.as_ref()
+    }
+}
+
+/// The multicast group membership of one IP version on an interface.
+///
+/// The membership is per interface and IP version: all addresses of that
+/// version on the interface share it.
+#[derive(Debug, PartialEq, Clone, Eq)]
+#[non_exhaustive]
+pub struct Membership {
+    addrs: Vec<IpAddr>,
+    join_error: Option<String>,
+}
+
+impl Membership {
+    /// The addresses of this IP version on the interface, sorted by their
+    /// numeric value, not in any order of preference.
+    pub fn addrs(&self) -> &[IpAddr] {
+        &self.addrs
+    }
+
+    /// Whether the interface has joined the mDNS multicast group.
+    pub fn is_joined(&self) -> bool {
+        self.join_error.is_none()
+    }
+
+    /// The error from the last attempt to join the multicast group, if it
+    /// failed.
+    ///
+    /// The daemon retries at its next IP check (see
+    /// [`set_ip_check_interval`](ServiceDaemon::set_ip_check_interval)). With IP
+    /// checks disabled, it only retries when
+    /// [`enable_interface`](ServiceDaemon::enable_interface) or
+    /// [`disable_interface`](ServiceDaemon::disable_interface) is called.
+    pub fn join_error(&self) -> Option<&str> {
+        self.join_error.as_deref()
+    }
 }
 
 /// Different counters included in the metrics.
@@ -340,10 +479,11 @@ impl ServiceDaemon {
     /// Returns [`Error::Msg`] if the daemon cannot be initialized. This wraps an
     /// underlying OS-level failure.
     ///
-    /// Note that this constructor does not open the mDNS multicast sockets — those
-    /// are opened lazily by the daemon thread once it starts, so platform issues
-    /// such as "multicast not permitted" are surfaced later via [`DaemonEvent`] from
-    /// [`monitor`](Self::monitor) rather than here.
+    /// This includes failing to set up both the IPv4 and the IPv6 multicast
+    /// sockets, e.g. when the port is held by another process without
+    /// `SO_REUSEADDR`. If only one of them fails, e.g. on a host without IPv6,
+    /// the daemon still runs, and [`status`](Self::status) tells which one
+    /// is bound.
     pub fn new() -> Result<Self> {
         Self::new_with_port(MDNS_PORT)
     }
@@ -374,11 +514,7 @@ impl ServiceDaemon {
     /// # Errors
     ///
     /// See [`new`](Self::new) for the set of OS-level failures that may surface
-    /// here. Note that `port` is *not* validated against the kernel until the
-    /// daemon thread tries to bind the mDNS sockets, so an unusable `port`
-    /// (e.g., already in use, requires elevated privileges) will not be
-    /// reported by this constructor — listen for such failures via
-    /// [`monitor`](Self::monitor).
+    /// here, including failing to bind both multicast sockets to `port`.
     pub fn new_with_port(port: u16) -> Result<Self> {
         let poller = Poll::new().map_err(|e| e_fmt!("failed to create mio Poll: {e}"))?;
         // Created before the thread starts so a registration failure is
@@ -391,11 +527,24 @@ impl ServiceDaemon {
 
         let (sender, receiver) = bounded(100);
 
+        // Created and registered here rather than in the daemon thread, so that
+        // a daemon without any multicast socket is reported to the caller.
+        let mut sockets = MulticastSockets::new(port);
+        if let (Err(e4), Err(e6)) = (&sockets.ipv4, &sockets.ipv6) {
+            return Err(e_fmt!(
+                "no mDNS socket on port {port}: IPv4: {e4}; IPv6: {e6}"
+            ));
+        }
+        sockets.register(poller.registry())?;
+
         let cmd_sender = sender.clone();
         let thread_waker = waker.clone();
         thread::Builder::new()
             .name("mDNS_daemon".to_string())
-            .spawn(move || Self::daemon_thread(thread_waker, poller, receiver, port, cmd_sender))
+            .spawn(move || {
+                let zc = Zeroconf::new(thread_waker, poller, sockets, port, cmd_sender);
+                Self::daemon_thread(zc, receiver)
+            })
             .map_err(|e| e_fmt!("thread builder failed to spawn: {}", e))?;
 
         Ok(Self { sender, waker })
@@ -593,6 +742,11 @@ impl ServiceDaemon {
     }
 
     /// Returns the status of the daemon.
+    ///
+    /// The status is a snapshot, as of when the daemon handled the request.
+    /// While running, it tells which of the IPv4 and IPv6 multicast sockets
+    /// are bound, and which interfaces have joined the multicast group, see
+    /// [`RunningState`].
     ///
     /// # Errors
     ///
@@ -833,15 +987,7 @@ impl ServiceDaemon {
         self.send_cmd(Command::Verify(instance_fullname, timeout))
     }
 
-    fn daemon_thread(
-        waker: Arc<Waker>,
-        poller: Poll,
-        receiver: Receiver<Command>,
-        port: u16,
-        cmd_sender: Sender<Command>,
-    ) {
-        let mut zc = Zeroconf::new(waker, poller, port, cmd_sender);
-
+    fn daemon_thread(mut zc: Zeroconf, receiver: Receiver<Command>) {
         if let Some(cmd) = zc.run(receiver) {
             match cmd {
                 Command::Exit(resp_s) => {
@@ -1194,7 +1340,15 @@ struct Zeroconf {
     /// set its timeout to the earliest timer in this list.
     timers: BinaryHeap<Reverse<Instant>>,
 
-    status: DaemonStatus,
+    /// Outcome of setting up the IPv4 multicast socket.
+    ipv4_socket_state: SocketState,
+
+    /// Outcome of setting up the IPv6 multicast socket.
+    ipv6_socket_state: SocketState,
+
+    /// Interface addresses not recorded in `my_intfs` because joining the
+    /// multicast group failed. Retried at the next IP check.
+    join_failures: JoinFailures,
 
     /// Service instances that are pending for resolving SRV and TXT.
     pending_resolves: HashSet<String>,
@@ -1261,6 +1415,21 @@ fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<
     Ok(())
 }
 
+/// A failed attempt to join the multicast group on an interface, for one IP version.
+struct JoinFailure {
+    /// The name of the interface.
+    name: String,
+
+    /// The addresses of that IP version not recorded because of the failure.
+    addrs: HashSet<IfAddr>,
+
+    /// The error from the last attempt.
+    error: String,
+}
+
+/// Failed joins, keyed by interface index and whether the IP version is IPv4.
+type JoinFailures = HashMap<(u32, bool), JoinFailure>;
+
 /// Records the address of `intf` in `my_intfs`, joining the multicast group first
 /// if its interface does not hold the membership yet.
 ///
@@ -1270,9 +1439,11 @@ fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<
 /// (`AddrInUse` on most platforms, `WSAEINVAL` on Windows), so that is skipped.
 ///
 /// Returns `false`, recording nothing, if the address is already recorded or the
-/// join fails. A failed address is then retried by the next IP check.
+/// join fails. A failed address is then retried by the next IP check or selection
+/// change, and kept in `join_failures` until it is recorded or gone.
 fn add_intf_addr(
     my_intfs: &mut HashMap<u32, MyIntf>,
+    join_failures: &mut JoinFailures,
     sock: &PktInfoUdpSocket,
     intf: &Interface,
 ) -> bool {
@@ -1292,12 +1463,27 @@ fn add_intf_addr(
         }
     });
 
+    let failure_key = (if_index, intf.ip().is_ipv4());
+
     if !has_membership {
         if let Err(e) = join_multicast_group(sock, intf) {
             debug!("failed to join multicast on {}: {e}. Skipped.", intf.name);
+            let failure = join_failures
+                .entry(failure_key)
+                .or_insert_with(|| JoinFailure {
+                    name: intf.name.clone(),
+                    addrs: HashSet::new(),
+                    error: String::new(),
+                });
+            failure.addrs.insert(intf.addr.clone());
+            failure.error = e.to_string();
             return false;
         }
     }
+
+    // The interface holds the membership of this IP version now. Its other
+    // addresses that failed before are recorded at the next IP check.
+    join_failures.remove(&failure_key);
 
     my_intfs
         .entry(if_index)
@@ -1339,8 +1525,58 @@ fn new_multicast_socket(addr: SocketAddr) -> Result<MyUdpSocket> {
     MyUdpSocket::new(sock).map_err(|e| e_fmt!("create MyUdpSocket for {}: {}", addr, e))
 }
 
+/// The IPv4 and IPv6 multicast sockets of a daemon, or why each failed.
+struct MulticastSockets {
+    ipv4: Result<MyUdpSocket>,
+    ipv6: Result<MyUdpSocket>,
+}
+
+impl MulticastSockets {
+    /// Creates both sockets on `port`. Either one may fail, e.g. on a host
+    /// without IPv6.
+    ///
+    /// Use the same socket for receiving and sending multicast packets.
+    /// Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
+    fn new(port: u16) -> Self {
+        let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port);
+        let ipv4 = new_multicast_socket(addr.into());
+        if let Err(e) = &ipv4 {
+            debug!("failed to set up IPv4 socket: {e}");
+        }
+
+        let addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), port, 0, 0);
+        let ipv6 = new_multicast_socket(addr.into());
+        if let Err(e) = &ipv6 {
+            debug!("failed to set up IPv6 socket: {e}");
+        }
+
+        Self { ipv4, ipv6 }
+    }
+
+    /// Registers the sockets that were set up with `registry`, for reading.
+    fn register(&mut self, registry: &Registry) -> Result<()> {
+        if let Ok(sock) = self.ipv4.as_mut() {
+            registry
+                .register(sock, Token(IPV4_SOCK_EVENT_KEY), Interest::READABLE)
+                .map_err(|e| e_fmt!("failed to register IPv4 socket with the poller: {e}"))?;
+        }
+        if let Ok(sock) = self.ipv6.as_mut() {
+            registry
+                .register(sock, Token(IPV6_SOCK_EVENT_KEY), Interest::READABLE)
+                .map_err(|e| e_fmt!("failed to register IPv6 socket with the poller: {e}"))?;
+        }
+        Ok(())
+    }
+}
+
 impl Zeroconf {
-    fn new(waker: Arc<Waker>, poller: Poll, port: u16, cmd_sender: Sender<Command>) -> Self {
+    fn new(
+        waker: Arc<Waker>,
+        poller: Poll,
+        sockets: MulticastSockets,
+        port: u16,
+        cmd_sender: Sender<Command>,
+    ) -> Self {
         // Get interfaces.
         let my_ifaddrs = my_ip_interfaces(true);
 
@@ -1350,21 +1586,12 @@ impl Zeroconf {
         let mut my_intfs = HashMap::new();
         let mut dns_registry_map = HashMap::new();
 
-        // Use the same socket for receiving and sending multicast packets.
-        // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
-        let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port);
-        let ipv4_sock = new_multicast_socket(addr.into());
-        if let Err(e) = &ipv4_sock {
-            debug!("failed to set up IPv4 socket: {e}");
-        }
-        let ipv4_sock = ipv4_sock.ok();
+        let mut join_failures = HashMap::new();
 
-        let addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), port, 0, 0);
-        let ipv6_sock = new_multicast_socket(addr.into());
-        if let Err(e) = &ipv6_sock {
-            debug!("failed to set up IPv6 socket: {e}");
-        }
-        let ipv6_sock = ipv6_sock.ok();
+        let ipv4_socket_state = SocketState::new(&sockets.ipv4);
+        let ipv6_socket_state = SocketState::new(&sockets.ipv6);
+        let ipv4_sock = sockets.ipv4.ok();
+        let ipv6_sock = sockets.ipv6.ok();
 
         // Configure sockets to join multicast groups.
         for intf in my_ifaddrs {
@@ -1382,7 +1609,7 @@ impl Zeroconf {
                 continue;
             };
 
-            if add_intf_addr(&mut my_intfs, &sock.pktinfo, &intf) {
+            if add_intf_addr(&mut my_intfs, &mut join_failures, &sock.pktinfo, &intf) {
                 dns_registry_map
                     .entry(intf.index.unwrap_or(0))
                     .or_insert_with(DnsRegistry::new);
@@ -1397,8 +1624,6 @@ impl Zeroconf {
 
         // Enable everything, including loopback interfaces.
         let if_selections = vec![];
-
-        let status = DaemonStatus::Running;
 
         Self {
             port,
@@ -1421,7 +1646,9 @@ impl Zeroconf {
             max_packet_sizes: Vec::new(),
             if_selections,
             timers,
-            status,
+            ipv4_socket_state,
+            ipv6_socket_state,
+            join_failures,
             pending_resolves: HashSet::new(),
             resolved: HashSet::new(),
             multicast_loop_v4: true,
@@ -1621,28 +1848,7 @@ impl Zeroconf {
     /// 4. announce its registered services.
     /// 5. process retransmissions if any.
     fn run(&mut self, receiver: Receiver<Command>) -> Option<Command> {
-        // The `Waker` is already registered with this poller.
-        if let Some(sock) = self.ipv4_sock.as_mut() {
-            if let Err(e) = self.poller.registry().register(
-                sock,
-                mio::Token(IPV4_SOCK_EVENT_KEY),
-                mio::Interest::READABLE,
-            ) {
-                debug!("failed to register ipv4 socket: {}", e);
-                return None;
-            }
-        }
-
-        if let Some(sock) = self.ipv6_sock.as_mut() {
-            if let Err(e) = self.poller.registry().register(
-                sock,
-                mio::Token(IPV6_SOCK_EVENT_KEY),
-                mio::Interest::READABLE,
-            ) {
-                debug!("failed to register ipv6 socket: {}", e);
-                return None;
-            }
-        }
+        // The `Waker` and the sockets are already registered with this poller.
 
         // Setup timer for IP checks.
         self.schedule_ip_check(Instant::now());
@@ -1697,7 +1903,6 @@ impl Zeroconf {
                 if matches!(command, Command::Exit(_)) {
                     debug!("Exit command received, performing cleanup");
                     self.cleanup();
-                    self.status = DaemonStatus::Shutdown;
                     return Some(command);
                 }
                 self.exec_command(command, false);
@@ -2014,6 +2219,63 @@ impl Zeroconf {
         self.notify_monitors(DaemonEvent::IpDel(ip));
     }
 
+    /// A snapshot of the sockets and the enabled interfaces, for `GetStatus`.
+    fn running_state(&self) -> RunningState {
+        fn sorted_ips<'a>(addrs: impl Iterator<Item = &'a IfAddr>) -> Vec<IpAddr> {
+            let mut ips: Vec<IpAddr> = addrs.map(|a| a.ip()).collect();
+            ips.sort();
+            ips
+        }
+
+        let mut intfs: BTreeMap<u32, EnabledIntf> = BTreeMap::new();
+
+        for (if_index, my_intf) in self.my_intfs.iter() {
+            let membership = |is_v4: bool| {
+                let addrs = sorted_ips(my_intf.addrs.iter().filter(|a| a.ip().is_ipv4() == is_v4));
+                (!addrs.is_empty()).then_some(Membership {
+                    addrs,
+                    join_error: None,
+                })
+            };
+            intfs.insert(
+                *if_index,
+                EnabledIntf {
+                    name: my_intf.name.clone(),
+                    index: *if_index,
+                    ipv4: membership(true),
+                    ipv6: membership(false),
+                },
+            );
+        }
+
+        for ((if_index, is_v4), failure) in self.join_failures.iter() {
+            let intf = intfs.entry(*if_index).or_insert_with(|| EnabledIntf {
+                name: failure.name.clone(),
+                index: *if_index,
+                ipv4: None,
+                ipv6: None,
+            });
+            let slot = if *is_v4 {
+                &mut intf.ipv4
+            } else {
+                &mut intf.ipv6
+            };
+            // A successful join removes the failure, so the slot is empty.
+            if slot.is_none() {
+                *slot = Some(Membership {
+                    addrs: sorted_ips(failure.addrs.iter()),
+                    join_error: Some(failure.error.clone()),
+                });
+            }
+        }
+
+        RunningState {
+            ipv4_socket: self.ipv4_socket_state.clone(),
+            ipv6_socket: self.ipv6_socket_state.clone(),
+            enabled_intfs: intfs.into_values().collect(),
+        }
+    }
+
     /// Check for IP changes and update [my_intfs] as needed.
     fn check_ip_changes(&mut self) {
         // Get the current interfaces.
@@ -2031,6 +2293,15 @@ impl Zeroconf {
                 acc.entry(if_index).or_default().push(&intf.addr);
                 acc
             });
+
+        // Forget failed joins of addresses that are gone.
+        self.join_failures.retain(|(if_index, _), failure| {
+            let current_addrs = ifaddrs_map.get(if_index);
+            failure
+                .addrs
+                .retain(|addr| current_addrs.is_some_and(|addrs| addrs.contains(&addr)));
+            !failure.addrs.is_empty()
+        });
 
         let mut deleted_intfs = Vec::new();
         let mut deleted_ips = Vec::new();
@@ -2153,6 +2424,15 @@ impl Zeroconf {
             intf.ip()
         );
 
+        // A disabled or invalid address is no longer retried.
+        let failure_key = (if_index, intf.ip().is_ipv4());
+        if let Some(failure) = self.join_failures.get_mut(&failure_key) {
+            failure.addrs.remove(&intf.addr);
+            if failure.addrs.is_empty() {
+                self.join_failures.remove(&failure_key);
+            }
+        }
+
         // Another interface with the same address still serves it, and shares its
         // IPv4 membership, e.g. the `bridge1NN` and `vmenetN` pairs of VMs on macOS.
         let shared = self.intfs_with_ip(&intf.ip()).any(|i| i != if_index);
@@ -2264,7 +2544,12 @@ impl Zeroconf {
             return;
         };
 
-        if !add_intf_addr(&mut self.my_intfs, &sock.pktinfo, intf) {
+        if !add_intf_addr(
+            &mut self.my_intfs,
+            &mut self.join_failures,
+            &sock.pktinfo,
+            intf,
+        ) {
             return;
         }
 
@@ -3910,10 +4195,12 @@ impl Zeroconf {
 
             Command::GetMetrics(resp_s) => self.exec_command_get_metrics(resp_s),
 
-            Command::GetStatus(resp_s) => match resp_s.send(self.status.clone()) {
-                Ok(()) => trace!("Sent status to the client"),
-                Err(e) => debug!("Failed to send status: {}", e),
-            },
+            Command::GetStatus(resp_s) => {
+                match resp_s.send(DaemonStatus::Running(self.running_state())) {
+                    Ok(()) => trace!("Sent status to the client"),
+                    Err(e) => debug!("Failed to send status: {}", e),
+                }
+            }
 
             Command::Monitor(resp_s) => {
                 self.monitors.push(resp_s);
@@ -5533,7 +5820,16 @@ mod tests {
         let waker = std::sync::Arc::new(
             mio::Waker::new(poller.registry(), mio::Token(super::WAKER_EVENT_KEY)).unwrap(),
         );
-        (super::Zeroconf::new(waker, poller, port, sender), receiver)
+        (
+            super::Zeroconf::new(
+                waker,
+                poller,
+                super::MulticastSockets::new(port),
+                port,
+                sender,
+            ),
+            receiver,
+        )
     }
 
     fn recv_status(receiver: &flume::Receiver<super::DaemonStatus>) -> super::DaemonStatus {
@@ -5561,10 +5857,16 @@ mod tests {
         // The first response means the thread has already run a loop iteration
         // and returned to `poll` before the second command is submitted.
         let first = status_until_accepted(&daemon);
-        assert_eq!(recv_status(&first), super::DaemonStatus::Running);
+        assert!(matches!(
+            recv_status(&first),
+            super::DaemonStatus::Running(_)
+        ));
 
         let second = status_until_accepted(&daemon);
-        assert_eq!(recv_status(&second), super::DaemonStatus::Running);
+        assert!(matches!(
+            recv_status(&second),
+            super::DaemonStatus::Running(_)
+        ));
 
         let shutdown = daemon.shutdown().unwrap();
         assert_eq!(recv_status(&shutdown), super::DaemonStatus::Shutdown);
@@ -5574,7 +5876,10 @@ mod tests {
     fn test_command_submitted_immediately_after_construction() {
         let daemon = ServiceDaemon::new().unwrap();
         let status = daemon.status().expect("enqueue during startup");
-        assert_eq!(recv_status(&status), super::DaemonStatus::Running);
+        assert!(matches!(
+            recv_status(&status),
+            super::DaemonStatus::Running(_)
+        ));
         let shutdown = daemon.shutdown().unwrap();
         assert_eq!(recv_status(&shutdown), super::DaemonStatus::Shutdown);
     }
@@ -5598,7 +5903,9 @@ mod tests {
         for handle in handles {
             let statuses = handle.join().expect("status thread");
             assert_eq!(statuses.len(), 20);
-            assert!(statuses.iter().all(|s| *s == super::DaemonStatus::Running));
+            assert!(statuses
+                .iter()
+                .all(|s| matches!(s, super::DaemonStatus::Running(_))));
         }
 
         let shutdown = daemon.shutdown().unwrap();
@@ -5680,7 +5987,10 @@ mod tests {
         drop(daemon);
 
         let status = status_until_accepted(&remaining);
-        assert_eq!(recv_status(&status), super::DaemonStatus::Running);
+        assert!(matches!(
+            recv_status(&status),
+            super::DaemonStatus::Running(_)
+        ));
 
         let shutdown = remaining.shutdown().unwrap();
         assert_eq!(recv_status(&shutdown), super::DaemonStatus::Shutdown);
@@ -5817,6 +6127,101 @@ mod tests {
             "a failed join must not be reported as IpAdd: {:?}",
             events
         );
+    }
+
+    /// Finds the interface `index` in a fresh status snapshot of `daemon`.
+    fn enabled_intf(daemon: &super::Zeroconf, index: u32) -> Option<super::EnabledIntf> {
+        daemon
+            .running_state()
+            .enabled_intfs()
+            .iter()
+            .find(|intf| intf.index() == index)
+            .cloned()
+    }
+
+    #[test]
+    fn test_running_state_reports_join_per_ip_version() {
+        let mut daemon = new_test_zeroconf();
+        let index = 65_534;
+        let v4 = test_interface(
+            "mdns-sd-fake",
+            index,
+            test_ifaddr_v4(Ipv4Addr::new(192, 0, 2, 1)),
+        );
+
+        // Nothing recorded, but the failed join is listed with its error.
+        daemon.add_interface(&v4, std::slice::from_ref(&v4));
+        let intf = enabled_intf(&daemon, index).expect("a failed join must be listed");
+        assert_eq!(intf.name(), "mdns-sd-fake");
+        let membership = intf.ipv4().expect("IPv4 was tried");
+        assert!(!membership.is_joined());
+        assert!(membership.join_error().is_some());
+        assert_eq!(
+            membership.addrs(),
+            &[IpAddr::from(Ipv4Addr::new(192, 0, 2, 1))]
+        );
+        assert!(intf.ipv6().is_none(), "no IPv6 address, not a failure");
+
+        // IPv6 joined, IPv4 still failed: reported independently.
+        add_fake_intf(
+            &mut daemon,
+            index,
+            &[test_ifaddr_v6("2001:db8::1".parse().unwrap())],
+        );
+        let intf = enabled_intf(&daemon, index).unwrap();
+        let v6 = intf.ipv6().expect("IPv6 is recorded");
+        assert!(v6.is_joined());
+        assert_eq!(v6.join_error(), None);
+        assert_eq!(v6.addrs(), &["2001:db8::1".parse::<IpAddr>().unwrap()]);
+        assert!(!intf.ipv4().unwrap().is_joined());
+
+        // A disabled address is no longer tried, so no longer listed.
+        daemon.del_interface_addr(&v4);
+        let intf = enabled_intf(&daemon, index).unwrap();
+        assert!(intf.ipv4().is_none());
+        assert!(intf.ipv6().unwrap().is_joined());
+    }
+
+    #[test]
+    fn test_ip_check_forgets_failed_join_of_gone_address() {
+        let mut daemon = new_test_zeroconf();
+        let index = 65_534;
+        let v4 = test_interface(
+            "mdns-sd-fake",
+            index,
+            test_ifaddr_v4(Ipv4Addr::new(192, 0, 2, 1)),
+        );
+        daemon.add_interface(&v4, std::slice::from_ref(&v4));
+        assert!(enabled_intf(&daemon, index).is_some());
+
+        // The host has no such interface, so the IP check drops the failure.
+        daemon.check_ip_changes();
+        assert!(enabled_intf(&daemon, index).is_none());
+        assert!(!daemon.join_failures.contains_key(&(index, true)));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn test_successful_join_clears_failure() {
+        let mut daemon = new_test_zeroconf();
+        let alias = loopback_alias();
+        let index = alias.index.unwrap();
+
+        // As if an earlier attempt had failed.
+        daemon.join_failures.insert(
+            (index, true),
+            super::JoinFailure {
+                name: alias.name.clone(),
+                addrs: HashSet::from([alias.addr.clone()]),
+                error: "earlier failure".to_string(),
+            },
+        );
+
+        // 127.0.0.1 is already joined on loopback, so this join succeeds.
+        daemon.add_interface(&alias, std::slice::from_ref(&alias));
+        assert!(daemon.join_failures.is_empty());
+        let intf = enabled_intf(&daemon, index).unwrap();
+        assert!(intf.ipv4().unwrap().is_joined());
     }
 
     #[test]
