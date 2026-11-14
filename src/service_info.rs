@@ -3,7 +3,9 @@
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace};
 use crate::{
-    dns_parser::{DnsIncoming, DnsOutgoing, DnsRecordBox, DnsRecordExt, DnsSrv, RRType, ScopedIp},
+    dns_parser::{
+        DnsAddress, DnsIncoming, DnsOutgoing, DnsRecordBox, DnsRecordExt, DnsSrv, RRType, ScopedIp,
+    },
     Error, IfKind, InterfaceId, Result,
 };
 use if_addrs::{IfAddr, Interface};
@@ -1236,6 +1238,29 @@ impl DnsRegistry {
             Some(new_name) => new_name,
             None => name,
         }
+    }
+
+    /// Returns true if an address record for `addr` under `name` is still
+    /// being probed, i.e. we cannot claim it yet.
+    pub(crate) fn is_address_probing(&self, name: &str, addr: &IpAddr) -> bool {
+        self.probing.get(name).is_some_and(|probe| {
+            probe.records.iter().any(|record| {
+                record
+                    .any()
+                    .downcast_ref::<DnsAddress>()
+                    .is_some_and(|a| a.ip() == *addr)
+            })
+        })
+    }
+
+    /// Returns true if a record of type `ty` under `name` is still being probed.
+    ///
+    /// Note: this ignores rdata. It is meant for SRV and TXT, where a name has
+    /// one record of the type.
+    pub(crate) fn is_type_probing(&self, name: &str, ty: RRType) -> bool {
+        self.probing
+            .get(name)
+            .is_some_and(|probe| probe.records.iter().any(|record| record.get_type() == ty))
     }
 
     pub(crate) fn is_probing_done<T>(

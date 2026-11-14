@@ -3632,13 +3632,15 @@ impl Zeroconf {
             let mut new_records = Vec::new();
 
             let name = answer.get_name();
-            let Some(probe) = dns_registry.probing.get_mut(name) else {
+            if !dns_registry.probing.contains_key(name) {
                 continue;
-            };
+            }
 
-            // check against possible multicast forwarding
-            if answer.get_type() == RRType::A || answer.get_type() == RRType::AAAA {
+            let is_address = matches!(answer.get_type(), RRType::A | RRType::AAAA);
+
+            if is_address {
                 if let Some(answer_addr) = answer.any().downcast_ref::<DnsAddress>() {
+                    // check against possible multicast forwarding
                     if answer_addr.interface_id.index != if_index {
                         debug!(
                             "conflict handler: answer addr {:?} not in the subnet of intf {}",
@@ -3646,8 +3648,32 @@ impl Zeroconf {
                         );
                         continue;
                     }
-                }
 
+                    // RFC 6762 section 9: only a record with different rdata
+                    // from another host is a conflict. One of our own addresses
+                    // for this host is not, e.g. our own answer looped back to
+                    // us, or an address we already announced (issue #545).
+                    if is_own_address(
+                        &self.my_services,
+                        my_intf,
+                        dns_registry,
+                        name,
+                        &answer_addr.ip(),
+                    ) {
+                        debug!(
+                            "conflict handler: answer addr {} for '{name}' is our own",
+                            answer_addr.ip()
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            let Some(probe) = dns_registry.probing.get_mut(name) else {
+                continue;
+            };
+
+            if is_address {
                 // double check if any other address record matches rrdata,
                 // as there could be multiple addresses for the same name.
                 let any_match = probe.records.iter().any(|r| {
@@ -3661,10 +3687,20 @@ impl Zeroconf {
             }
 
             probe.records.retain(|record| {
-                if record.get_type() == answer.get_type()
-                    && record.get_class() == answer.get_class()
-                    && !record.rrdata_match(answer.as_ref())
-                {
+                // A conflict on a hostname renames the host, so all of its
+                // address records (A and AAAA) move to the new name together.
+                // Otherwise the records of one host would be split between
+                // two names.
+                let is_conflict = if is_address {
+                    matches!(record.get_type(), RRType::A | RRType::AAAA)
+                        && record.get_class() == answer.get_class()
+                } else {
+                    record.get_type() == answer.get_type()
+                        && record.get_class() == answer.get_class()
+                        && !record.rrdata_match(answer.as_ref())
+                };
+
+                if is_conflict {
                     debug!(
                         "found conflict name: '{name}' record: {}: {} PEER: {}",
                         record.get_type(),
@@ -3675,10 +3711,10 @@ impl Zeroconf {
                     // create a new name for this record
                     // then remove the old record in probing.
                     let mut new_record = record.clone();
-                    let new_name = match record.get_type() {
-                        RRType::A => hostname_change(name),
-                        RRType::AAAA => hostname_change(name),
-                        _ => name_change(name),
+                    let new_name = if is_address {
+                        hostname_change(name)
+                    } else {
+                        name_change(name)
                     };
                     new_record.get_record_mut().set_new_name(new_name);
                     new_records.push(new_record);
@@ -3693,10 +3729,56 @@ impl Zeroconf {
             //     dns_registry.probing.remove(name);
             // }
 
+            if new_records.is_empty() {
+                continue;
+            }
+
+            let mut waiting_services = probe.waiting_services.clone();
+
+            // The address records of this host that already finished probing
+            // also move to the new hostname, so that the new probe has all of
+            // the host's addresses.
+            if is_address {
+                if let Some(active_records) = dns_registry.active.get_mut(name) {
+                    active_records.retain(|record| {
+                        if matches!(record.get_type(), RRType::A | RRType::AAAA) {
+                            let mut new_record = record.clone();
+                            new_record
+                                .get_record_mut()
+                                .set_new_name(hostname_change(name));
+                            new_records.push(new_record);
+                            return false;
+                        }
+                        true
+                    });
+                }
+
+                // A new hostname affects every service on the host, not only
+                // the ones waiting on this probe. Note: must run before
+                // `name_changes` is updated below, while `name` still resolves.
+                for service in self.my_services.values() {
+                    let original = service.get_hostname();
+                    if original.eq_ignore_ascii_case(name)
+                        || dns_registry
+                            .resolve_name(original)
+                            .eq_ignore_ascii_case(name)
+                    {
+                        waiting_services.insert(service.get_fullname().to_string());
+                    }
+                }
+            }
+
+            // The rename invalidates what these services announced on this
+            // interface. They go back to probing, and are announced again under
+            // the new names when the new probes finish.
+            for service_name in waiting_services.iter() {
+                if let Some(info) = self.my_services.get_mut(&service_name.to_lowercase()) {
+                    info.set_status(if_index, ServiceStatus::Probing);
+                }
+            }
+
             // Probing again with the new names.
             let create_time = Instant::now() + Duration::from_millis(fastrand::u64(0..250));
-
-            let waiting_services = probe.waiting_services.clone();
 
             for record in new_records {
                 if dns_registry.update_hostname(name, record.get_name(), create_time) {
@@ -3935,6 +4017,7 @@ impl Zeroconf {
                     service,
                     qtype,
                     intf_addrs,
+                    dns_registry,
                 );
             }
         }
@@ -4697,6 +4780,8 @@ impl Zeroconf {
 }
 
 /// Adds one or more answers of a service for incoming msg and RR entry name.
+///
+/// RFC 6762 section 8.1: leaves out the records that are still being probed.
 fn add_answer_of_service(
     out: &mut DnsOutgoing,
     msg: &DnsIncoming,
@@ -4704,8 +4789,16 @@ fn add_answer_of_service(
     service: &ServiceInfo,
     qtype: RRType,
     intf_addrs: Vec<IpAddr>,
+    dns_registry: &DnsRegistry,
 ) {
-    if qtype == RRType::SRV || qtype == RRType::ANY {
+    // Use the names after any rename, as announced. The probes are keyed by
+    // them too.
+    let fullname = dns_registry.resolve_name(service.get_fullname());
+    let hostname = dns_registry.resolve_name(service.get_hostname());
+
+    if (qtype == RRType::SRV || qtype == RRType::ANY)
+        && !dns_registry.is_type_probing(fullname, RRType::SRV)
+    {
         out.add_answer(
             msg,
             DnsSrv::new(
@@ -4715,12 +4808,14 @@ fn add_answer_of_service(
                 service.get_priority(),
                 service.get_weight(),
                 service.get_port(),
-                service.get_hostname().to_string(),
+                hostname.to_string(),
             ),
         );
     }
 
-    if qtype == RRType::TXT || qtype == RRType::ANY {
+    if (qtype == RRType::TXT || qtype == RRType::ANY)
+        && !dns_registry.is_type_probing(fullname, RRType::TXT)
+    {
         out.add_answer(
             msg,
             DnsTxt::new(
@@ -4733,9 +4828,12 @@ fn add_answer_of_service(
     }
 
     if qtype == RRType::SRV {
-        for address in intf_addrs {
+        for address in intf_addrs
+            .into_iter()
+            .filter(|addr| !dns_registry.is_address_probing(hostname, addr))
+        {
             out.add_additional_answer(DnsAddress::new(
-                service.get_hostname(),
+                hostname,
                 ip_address_rr_type(&address),
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 service.get_host_ttl(),
@@ -4744,6 +4842,32 @@ fn add_answer_of_service(
             ));
         }
     }
+}
+
+/// Returns true if `addr` is one of our own addresses for `hostname` on `intf`,
+/// i.e. one of our services publishes it on `intf` for that hostname (original
+/// or renamed).
+///
+/// Note: an address of the interface itself is not enough. Another responder
+/// on the same host can publish the same hostname with a different address.
+fn is_own_address(
+    services: &HashMap<String, ServiceInfo>,
+    intf: &MyIntf,
+    dns_registry: &DnsRegistry,
+    hostname: &str,
+    addr: &IpAddr,
+) -> bool {
+    services.values().any(|service| {
+        let original = service.get_hostname();
+        let current = dns_registry.resolve_name(original);
+        let same_host =
+            original.eq_ignore_ascii_case(hostname) || current.eq_ignore_ascii_case(hostname);
+        same_host
+            && match addr {
+                IpAddr::V4(_) => service.get_addrs_on_my_intf_v4(intf).contains(addr),
+                IpAddr::V6(_) => service.get_addrs_on_my_intf_v6(intf).contains(addr),
+            }
+    })
 }
 
 /// Answers a query for a hostname we own: A/AAAA (address records), SVCB/HTTPS
@@ -4774,8 +4898,16 @@ fn answer_hostname_question(
         let service_hostname = dns_registry.resolve_name(service.get_hostname());
 
         if service_hostname.to_lowercase() == question.entry_name().to_lowercase() {
-            let ipv4 = service.get_addrs_on_my_intf_v4(intf);
-            let ipv6 = service.get_addrs_on_my_intf_v6(intf);
+            // RFC 6762 section 8.1: don't answer with an address record that
+            // is still being probed, e.g. after the hostname was renamed due
+            // to a conflict. Otherwise we answer our own probe and see the
+            // answer as a conflict (issue #545).
+            let not_probing =
+                |addr: &IpAddr| !dns_registry.is_address_probing(service_hostname, addr);
+            let mut ipv4 = service.get_addrs_on_my_intf_v4(intf);
+            ipv4.retain(not_probing);
+            let mut ipv6 = service.get_addrs_on_my_intf_v6(intf);
+            ipv6.retain(not_probing);
             if ipv4.is_empty() && ipv6.is_empty() {
                 continue;
             }
@@ -5745,25 +5877,27 @@ fn resolve_addr_to_index(if_kind: IfKind, interfaces: &[Interface]) -> IfKind {
 #[cfg(test)]
 mod tests {
     use super::{
-        _new_socket_bind, check_domain_suffix, check_service_name_length, hostname_change,
-        my_ip_interfaces, name_change, resolve_max_packet_size, send_dns_outgoing_impl,
-        valid_instance_name, valid_ip_on_intf, DaemonEvent, HostnameResolutionEvent, IfKind,
-        MaxPacketSizeSelection, MyIntf, SendConfig, ServiceDaemon, ServiceEvent, ServiceInfo,
-        GROUP_ADDR_V4, INITIAL_QUERY_DELAY_MAX_MILLIS, INITIAL_QUERY_DELAY_MIN_MILLIS,
-        MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MDNS_PORT, MIN_MAX_PACKET_SIZE, RESOLVE_MAX_TRY,
-        SHARED_RESPONSE_DELAY_MAX_MILLIS, SHARED_RESPONSE_DELAY_MIN_MILLIS,
+        _new_socket_bind, answer_hostname_question, check_domain_suffix, check_service_name_length,
+        hostname_change, ip_address_rr_type, is_own_address, my_ip_interfaces, name_change,
+        resolve_max_packet_size, send_dns_outgoing_impl, valid_instance_name, valid_ip_on_intf,
+        DaemonEvent, HostnameResolutionEvent, IfKind, MaxPacketSizeSelection, MyIntf, SendConfig,
+        ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4, INITIAL_QUERY_DELAY_MAX_MILLIS,
+        INITIAL_QUERY_DELAY_MIN_MILLIS, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MDNS_PORT,
+        MIN_MAX_PACKET_SIZE, RESOLVE_MAX_TRY, SHARED_RESPONSE_DELAY_MAX_MILLIS,
+        SHARED_RESPONSE_DELAY_MIN_MILLIS,
     };
     use crate::{
         dns_parser::{
-            DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer, DnsSrv, InterfaceId,
-            RRType, ScopedIp, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
-            LEGACY_UNICAST_MAX_TTL,
+            DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
+            DnsRecordExt, DnsSrv, DnsTxt, InterfaceId, RRType, ScopedIp, CLASS_CACHE_FLUSH,
+            CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, LEGACY_UNICAST_MAX_TTL,
         },
         service_daemon::{add_answer_of_service, check_hostname},
+        service_info::{DnsRegistry, Probe, ServiceStatus},
     };
     use if_addrs::{IfAddr, Ifv4Addr, Ifv6Addr, Interface};
     use std::{
-        collections::HashSet,
+        collections::{HashMap, HashSet},
         net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket},
         thread,
         time::{Duration, Instant, SystemTime},
@@ -7385,6 +7519,550 @@ mod tests {
         assert_eq!(hostname_change("test-42.domain."), "test-43.domain.");
     }
 
+    /// An interface with the IPv4 address 192.168.1.10, and an announced service
+    /// with `service_addrs` whose hostname was renamed from `rename545.local.`
+    /// to `rename545-2.local.`.
+    fn renamed_host_fixture(
+        service_addrs: &[IpAddr],
+    ) -> (MyIntf, HashMap<String, ServiceInfo>, DnsRegistry) {
+        let intf = MyIntf {
+            name: "dummy0".to_string(),
+            index: 1,
+            addrs: HashSet::from([test_ifaddr_v4(Ipv4Addr::new(192, 168, 1, 10))]),
+            max_packet_size_v4: MAX_PKT_DEFAULT,
+            max_packet_size_v6: MAX_PKT_DEFAULT,
+        };
+        let mut service = ServiceInfo::new(
+            "_rename-test._tcp.local.",
+            "instance",
+            "rename545.local.",
+            service_addrs,
+            8080,
+            None,
+        )
+        .unwrap();
+        service.set_status(intf.index, ServiceStatus::Announced);
+        let services = HashMap::from([(service.get_fullname().to_lowercase(), service)]);
+        let mut registry = DnsRegistry::new();
+        registry.name_changes.insert(
+            "rename545.local.".to_string(),
+            "rename545-2.local.".to_string(),
+        );
+        (intf, services, registry)
+    }
+
+    fn probe_address(registry: &mut DnsRegistry, intf: &MyIntf, name: &str, addr: IpAddr) {
+        registry
+            .probing
+            .entry(name.to_string())
+            .or_insert_with(|| Probe::new(Instant::now()))
+            .insert_record(
+                DnsAddress::new(
+                    name,
+                    ip_address_rr_type(&addr),
+                    CLASS_IN | CLASS_CACHE_FLUSH,
+                    120,
+                    addr,
+                    intf.into(),
+                )
+                .boxed(),
+            );
+    }
+
+    /// Returns the type and address of each answer to a `qtype` question for `name`.
+    fn answer_hostname(
+        intf: &MyIntf,
+        services: &HashMap<String, ServiceInfo>,
+        registry: &DnsRegistry,
+        name: &str,
+        qtype: RRType,
+    ) -> Vec<(RRType, Option<IpAddr>)> {
+        let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        query.add_question(name, qtype);
+        let packets = query.to_data_on_wire(MAX_PKT_DEFAULT, true);
+        let msg = DnsIncoming::new(packets[0].clone(), intf.into()).unwrap();
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+        answer_hostname_question(
+            services,
+            intf,
+            &msg.questions()[0],
+            registry,
+            &mut out,
+            &msg,
+        );
+        out._answers()
+            .iter()
+            .map(|r| {
+                let addr = r.any().downcast_ref::<DnsAddress>().map(|a| a.ip());
+                (r.get_type(), addr)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_answer_hostname_question_skips_probing_addresses() {
+        let addr_a = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        let addr_b = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
+        let (intf, services, mut registry) = renamed_host_fixture(&[addr_a, addr_b]);
+        let new_name = "rename545-2.local.";
+
+        let mut answers = answer_hostname(&intf, &services, &registry, new_name, RRType::ANY);
+        answers.sort();
+        assert_eq!(
+            answers,
+            vec![(RRType::A, Some(addr_a)), (RRType::A, Some(addr_b))]
+        );
+
+        // An address still being probed under the new name is not ours yet.
+        probe_address(&mut registry, &intf, new_name, addr_a);
+        let answers = answer_hostname(&intf, &services, &registry, new_name, RRType::ANY);
+        assert_eq!(answers, vec![(RRType::A, Some(addr_b))]);
+
+        // While all addresses are probed, answer nothing, not even a negative
+        // answer for the absent address family.
+        probe_address(&mut registry, &intf, new_name, addr_b);
+        for qtype in [RRType::A, RRType::AAAA, RRType::ANY] {
+            let answers = answer_hostname(&intf, &services, &registry, new_name, qtype);
+            assert!(answers.is_empty(), "{:?}: {:?}", qtype, answers);
+        }
+    }
+
+    #[test]
+    fn test_is_own_address() {
+        let intf_addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        let service_addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
+        let other_addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 12));
+        let (intf, services, registry) = renamed_host_fixture(&[service_addr]);
+        let own = |hostname: &str, addr: IpAddr| {
+            is_own_address(&services, &intf, &registry, hostname, &addr)
+        };
+
+        // An address the service publishes, under the renamed and the
+        // original hostname.
+        assert!(own("rename545-2.local.", service_addr));
+        assert!(own("RENAME545.local.", service_addr));
+        // Not ours, not even an address of the interface itself: another
+        // responder on this host can claim the hostname with it.
+        assert!(!own("rename545-2.local.", intf_addr));
+        assert!(!own("rename545-2.local.", other_addr));
+        assert!(!own("other.local.", service_addr));
+    }
+
+    /// Adds `record` to the probe for its name in `registry`.
+    fn probe_record(registry: &mut DnsRegistry, record: DnsRecordBox) {
+        registry
+            .probing
+            .entry(record.get_name().to_string())
+            .or_insert_with(|| Probe::new(Instant::now()))
+            .insert_record(record);
+    }
+
+    /// Returns the type and address of each record in `records`.
+    fn record_summary(records: &[DnsRecordBox]) -> Vec<(RRType, Option<IpAddr>)> {
+        records
+            .iter()
+            .map(|r| {
+                let addr = r.any().downcast_ref::<DnsAddress>().map(|a| a.ip());
+                (r.get_type(), addr)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_add_answer_of_service_skips_probing_records() {
+        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
+        let (intf, services, mut registry) = renamed_host_fixture(&[addr]);
+        let service = services.values().next().unwrap();
+        let fullname = service.get_fullname().to_string();
+
+        let answer = |registry: &DnsRegistry| {
+            let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+            query.add_question(&fullname, RRType::ANY);
+            let packets = query.to_data_on_wire(MAX_PKT_DEFAULT, true);
+            let msg = DnsIncoming::new(packets[0].clone(), (&intf).into()).unwrap();
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+            add_answer_of_service(
+                &mut out,
+                &msg,
+                &fullname,
+                service,
+                RRType::ANY,
+                vec![addr],
+                registry,
+            );
+            record_summary(out._answers())
+        };
+
+        assert_eq!(
+            answer(&registry),
+            vec![(RRType::SRV, None), (RRType::TXT, None)]
+        );
+
+        // The SRV record is still being probed, e.g. with the new hostname.
+        probe_record(
+            &mut registry,
+            DnsSrv::new(
+                &fullname,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                120,
+                0,
+                0,
+                8080,
+                "rename545-2.local.".to_string(),
+            )
+            .boxed(),
+        );
+        assert_eq!(answer(&registry), vec![(RRType::TXT, None)]);
+
+        // And the TXT record too.
+        probe_record(
+            &mut registry,
+            DnsTxt::new(&fullname, CLASS_IN | CLASS_CACHE_FLUSH, 120, Vec::new()).boxed(),
+        );
+        assert!(answer(&registry).is_empty());
+    }
+
+    #[test]
+    fn test_srv_answer_uses_renamed_hostname() {
+        let addr_a = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        let addr_b = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
+        let (intf, services, mut registry) = renamed_host_fixture(&[addr_a, addr_b]);
+        let service = services.values().next().unwrap();
+        let fullname = service.get_fullname().to_string();
+
+        // Returns the SRV hosts and the additional address records.
+        let answer = |registry: &DnsRegistry| {
+            let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+            query.add_question(&fullname, RRType::SRV);
+            let packets = query.to_data_on_wire(MAX_PKT_DEFAULT, true);
+            let msg = DnsIncoming::new(packets[0].clone(), (&intf).into()).unwrap();
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+            add_answer_of_service(
+                &mut out,
+                &msg,
+                &fullname,
+                service,
+                RRType::SRV,
+                vec![addr_a, addr_b],
+                registry,
+            );
+            let hosts: Vec<_> = out
+                ._answers()
+                .iter()
+                .filter_map(|r| r.any().downcast_ref::<DnsSrv>())
+                .map(|srv| srv.host().to_string())
+                .collect();
+            let mut addrs: Vec<_> = out
+                .additionals()
+                .iter()
+                .filter_map(|r| r.any().downcast_ref::<DnsAddress>())
+                .map(|a| (a.get_name().to_string(), a.ip()))
+                .collect();
+            addrs.sort();
+            (hosts, addrs)
+        };
+
+        let new_host = "rename545-2.local.".to_string();
+        assert_eq!(
+            answer(&registry),
+            (
+                vec![new_host.clone()],
+                vec![(new_host.clone(), addr_a), (new_host.clone(), addr_b)]
+            )
+        );
+
+        // An address of the renamed host is still being probed.
+        probe_address(&mut registry, &intf, "rename545-2.local.", addr_a);
+        assert_eq!(
+            answer(&registry),
+            (vec![new_host.clone()], vec![(new_host, addr_b)])
+        );
+    }
+
+    #[test]
+    fn test_ptr_answer_skips_probing_records() {
+        let addr_a = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        let addr_b = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
+        let (intf, services, mut registry) = renamed_host_fixture(&[addr_a, addr_b]);
+        let service = services.values().next().unwrap();
+        let fullname = service.get_fullname().to_string();
+
+        // Returns the answers and the additional address records.
+        let answer = |registry: &DnsRegistry| {
+            let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+            query.add_question(service.get_type(), RRType::PTR);
+            let packets = query.to_data_on_wire(MAX_PKT_DEFAULT, true);
+            let msg = DnsIncoming::new(packets[0].clone(), (&intf).into()).unwrap();
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+            out.add_answer_with_additionals(&msg, service, &intf, registry, true);
+            let mut addrs: Vec<_> = out
+                .additionals()
+                .iter()
+                .filter_map(|r| r.any().downcast_ref::<DnsAddress>())
+                .map(|a| (a.get_name().to_string(), a.ip()))
+                .collect();
+            addrs.sort();
+            (record_summary(out._answers()), addrs)
+        };
+
+        let new_host = "rename545-2.local.".to_string();
+        assert_eq!(
+            answer(&registry),
+            (
+                vec![(RRType::PTR, None)],
+                vec![(new_host.clone(), addr_a), (new_host.clone(), addr_b)]
+            )
+        );
+
+        // An address of the host is still being probed.
+        probe_address(&mut registry, &intf, "rename545-2.local.", addr_a);
+        assert_eq!(
+            answer(&registry),
+            (vec![(RRType::PTR, None)], vec![(new_host, addr_b)])
+        );
+
+        // The SRV record of the instance is still being probed: don't point
+        // to the instance at all.
+        probe_record(
+            &mut registry,
+            DnsSrv::new(
+                &fullname,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                120,
+                0,
+                0,
+                8080,
+                "rename545-2.local.".to_string(),
+            )
+            .boxed(),
+        );
+        assert_eq!(answer(&registry), (vec![], vec![]));
+    }
+
+    /// Issue #545: after a hostname rename, our own answer to our own probe
+    /// must not rename the hostname again.
+    #[test]
+    fn test_own_answer_is_not_a_hostname_conflict() {
+        let (mut daemon, index) = negative_answer_test_daemon();
+        let interface = InterfaceId {
+            name: "loopback-test".to_string(),
+            index,
+        };
+        let addr_1 = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let addr_2 = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let peer = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 9));
+        let service = ServiceInfo::new(
+            "_rename-test._tcp.local.",
+            "instance",
+            "rename545.local.",
+            &[addr_1, addr_2][..],
+            8080,
+            None,
+        )
+        .unwrap();
+        let fullname = service.get_fullname().to_lowercase();
+        daemon.register_service(service);
+
+        let response = |name: &str, addr: IpAddr| -> DnsIncoming {
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+            out.add_answer_record(DnsAddress::new(
+                name,
+                RRType::A,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                120,
+                addr,
+                interface.clone(),
+            ));
+            let packets = out.to_data_on_wire(MAX_PKT_DEFAULT, true);
+            DnsIncoming::new(packets[0].clone(), interface.clone()).unwrap()
+        };
+        let current_hostname = |daemon: &super::Zeroconf| {
+            daemon.dns_registry_map[&index]
+                .resolve_name("rename545.local.")
+                .to_string()
+        };
+
+        // A peer claims our hostname while we probe it: rename the host, and
+        // move all of its address records to the new name.
+        daemon.conflict_handler(&response("rename545.local.", peer), index);
+        assert_eq!(current_hostname(&daemon), "rename545-2.local.");
+        let registry = &daemon.dns_registry_map[&index];
+        assert!(registry
+            .probing
+            .get("rename545.local.")
+            .map_or(true, |probe| probe.records.is_empty()));
+        assert!(registry.is_address_probing("rename545-2.local.", &addr_1));
+        assert!(registry.is_address_probing("rename545-2.local.", &addr_2));
+
+        // The service waits for the new probe.
+        assert_eq!(
+            daemon.my_services[&fullname].get_status(index),
+            ServiceStatus::Probing
+        );
+        assert!(registry.probing["rename545-2.local."]
+            .waiting_services
+            .iter()
+            .any(|s| s.to_lowercase() == fullname));
+
+        // Force the state of the issue, where the service stayed announced
+        // during the rename, to check the next steps on their own.
+        daemon
+            .my_services
+            .get_mut(&fullname)
+            .unwrap()
+            .set_status(index, ServiceStatus::Announced);
+
+        // Our own probe of the new name comes back to us. Don't answer it
+        // with the addresses that are still being probed.
+        if let Some(reply) = query_negative_answer_test_daemon(
+            &mut daemon,
+            index,
+            "rename545-2.local.",
+            &[RRType::ANY],
+        ) {
+            assert!(
+                reply.answers().iter().all(|r| r.get_type() != RRType::A),
+                "{:?}",
+                reply.answers()
+            );
+        }
+
+        // Our own answer has an address that the probe of the new name lacks.
+        // It is still our address, so it is not a conflict.
+        daemon
+            .dns_registry_map
+            .get_mut(&index)
+            .unwrap()
+            .probing
+            .get_mut("rename545-2.local.")
+            .unwrap()
+            .records
+            .retain(|r| {
+                r.any()
+                    .downcast_ref::<DnsAddress>()
+                    .map_or(true, |a| a.ip() != addr_2)
+            });
+        daemon.conflict_handler(&response("rename545-2.local.", addr_2), index);
+        assert_eq!(current_hostname(&daemon), "rename545-2.local.");
+
+        // A peer still causes another rename.
+        daemon.conflict_handler(&response("rename545-2.local.", peer), index);
+        assert_eq!(current_hostname(&daemon), "rename545-3.local.");
+    }
+
+    /// Finishes all probes on `index` and wakes up the services waiting on them.
+    fn finish_probes(daemon: &mut super::Zeroconf, index: u32) {
+        for probe in daemon
+            .dns_registry_map
+            .get_mut(&index)
+            .unwrap()
+            .probing
+            .values_mut()
+        {
+            probe.start_time = Instant::now() - Duration::from_millis(1000);
+            probe.next_send = probe.start_time;
+        }
+        daemon.probing_handler();
+    }
+
+    /// The probe of a new address on an announced host hits a conflict. The
+    /// host is renamed, every service on it goes back to probing, and they are
+    /// announced again under the new hostname.
+    #[test]
+    fn test_hostname_conflict_reannounces_services() {
+        let (mut daemon, index) = negative_answer_test_daemon();
+        let interface = InterfaceId {
+            name: "loopback-test".to_string(),
+            index,
+        };
+        let addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let new_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3));
+        let peer = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 9));
+        let status = |daemon: &super::Zeroconf, fullname: &str| {
+            daemon.my_services[fullname].get_status(index)
+        };
+
+        // Two services on the same host.
+        let mut fullnames = Vec::new();
+        for instance in ["first", "second"] {
+            let service = ServiceInfo::new(
+                "_reannounce._tcp.local.",
+                instance,
+                "reannounce.local.",
+                addr,
+                8080,
+                None,
+            )
+            .unwrap();
+            fullnames.push(service.get_fullname().to_lowercase());
+            daemon.register_service(service);
+        }
+        finish_probes(&mut daemon, index);
+        for fullname in &fullnames {
+            assert_eq!(status(&daemon, fullname), ServiceStatus::Announced);
+        }
+
+        // A new address of the host starts its own probe, which no service
+        // waits on.
+        let mut probe = Probe::new(Instant::now());
+        probe.insert_record(
+            DnsAddress::new(
+                "reannounce.local.",
+                RRType::A,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                120,
+                new_addr,
+                interface.clone(),
+            )
+            .boxed(),
+        );
+        daemon
+            .dns_registry_map
+            .get_mut(&index)
+            .unwrap()
+            .probing
+            .insert("reannounce.local.".to_string(), probe);
+
+        // A peer claims the hostname.
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+        out.add_answer_record(DnsAddress::new(
+            "reannounce.local.",
+            RRType::A,
+            CLASS_IN | CLASS_CACHE_FLUSH,
+            120,
+            peer,
+            interface.clone(),
+        ));
+        let packets = out.to_data_on_wire(MAX_PKT_DEFAULT, true);
+        let incoming = DnsIncoming::new(packets[0].clone(), interface.clone()).unwrap();
+        daemon.conflict_handler(&incoming, index);
+
+        let registry = &daemon.dns_registry_map[&index];
+        assert_eq!(
+            registry.resolve_name("reannounce.local."),
+            "reannounce-2.local."
+        );
+        // The address that was already announced is probed again too.
+        assert!(registry.is_address_probing("reannounce-2.local.", &addr));
+        for fullname in &fullnames {
+            assert_eq!(status(&daemon, fullname), ServiceStatus::Probing);
+        }
+
+        // When the new probes finish, both services are announced again, with
+        // the new hostname in their SRV records.
+        finish_probes(&mut daemon, index);
+        let registry = &daemon.dns_registry_map[&index];
+        for fullname in &fullnames {
+            assert_eq!(status(&daemon, fullname), ServiceStatus::Announced);
+            let hosts: Vec<_> = registry.active[fullname.as_str()]
+                .iter()
+                .filter_map(|r| r.any().downcast_ref::<DnsSrv>())
+                .map(|srv| srv.host().to_string())
+                .collect();
+            assert_eq!(hosts, vec!["reannounce-2.local.".to_string()]);
+        }
+    }
+
     #[test]
     fn test_add_answer_txt_ttl() {
         // construct a simple service info
@@ -7423,6 +8101,7 @@ mod tests {
             &my_service,
             RRType::TXT,
             if_addrs,
+            &DnsRegistry::new(),
         );
 
         // Check if the answer was added correctly
