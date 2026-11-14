@@ -174,7 +174,7 @@ pub enum DaemonStatus {
 pub struct RunningState {
     ipv4_socket: SocketState,
     ipv6_socket: SocketState,
-    selected_intfs: Vec<SelectedIntf>,
+    enabled_intfs: Vec<EnabledIntf>,
 }
 
 impl RunningState {
@@ -188,7 +188,7 @@ impl RunningState {
         &self.ipv6_socket
     }
 
-    /// The interfaces the daemon has selected, ordered by interface index.
+    /// The enabled interfaces the daemon uses, ordered by interface index.
     ///
     /// An interface is listed once the daemon has tried to join the multicast
     /// group on it for at least one IP version, whether or not that worked.
@@ -199,8 +199,8 @@ impl RunningState {
     /// Interfaces are checked periodically (see
     /// [`set_ip_check_interval`](ServiceDaemon::set_ip_check_interval)), so a
     /// newly added address may only show up after the next check.
-    pub fn selected_intfs(&self) -> &[SelectedIntf] {
-        &self.selected_intfs
+    pub fn enabled_intfs(&self) -> &[EnabledIntf] {
+        &self.enabled_intfs
     }
 }
 
@@ -232,17 +232,17 @@ impl SocketState {
     }
 }
 
-/// A network interface selected by the daemon.
+/// A network interface enabled in the daemon.
 #[derive(Debug, PartialEq, Clone, Eq)]
 #[non_exhaustive]
-pub struct SelectedIntf {
+pub struct EnabledIntf {
     name: String,
     index: u32,
     ipv4: Option<Membership>,
     ipv6: Option<Membership>,
 }
 
-impl SelectedIntf {
+impl EnabledIntf {
     /// The name of the interface.
     pub fn name(&self) -> &str {
         &self.name
@@ -294,8 +294,9 @@ impl Membership {
     ///
     /// The daemon retries at its next IP check (see
     /// [`set_ip_check_interval`](ServiceDaemon::set_ip_check_interval)). With IP
-    /// checks disabled, it only retries when the interface selection changes,
-    /// e.g. through [`enable_interface`](ServiceDaemon::enable_interface).
+    /// checks disabled, it only retries when
+    /// [`enable_interface`](ServiceDaemon::enable_interface) or
+    /// [`disable_interface`](ServiceDaemon::disable_interface) is called.
     pub fn join_error(&self) -> Option<&str> {
         self.join_error.as_deref()
     }
@@ -2218,7 +2219,7 @@ impl Zeroconf {
         self.notify_monitors(DaemonEvent::IpDel(ip));
     }
 
-    /// A snapshot of the sockets and the selected interfaces, for `GetStatus`.
+    /// A snapshot of the sockets and the enabled interfaces, for `GetStatus`.
     fn running_state(&self) -> RunningState {
         fn sorted_ips<'a>(addrs: impl Iterator<Item = &'a IfAddr>) -> Vec<IpAddr> {
             let mut ips: Vec<IpAddr> = addrs.map(|a| a.ip()).collect();
@@ -2226,7 +2227,7 @@ impl Zeroconf {
             ips
         }
 
-        let mut intfs: BTreeMap<u32, SelectedIntf> = BTreeMap::new();
+        let mut intfs: BTreeMap<u32, EnabledIntf> = BTreeMap::new();
 
         for (if_index, my_intf) in self.my_intfs.iter() {
             let membership = |is_v4: bool| {
@@ -2238,7 +2239,7 @@ impl Zeroconf {
             };
             intfs.insert(
                 *if_index,
-                SelectedIntf {
+                EnabledIntf {
                     name: my_intf.name.clone(),
                     index: *if_index,
                     ipv4: membership(true),
@@ -2248,7 +2249,7 @@ impl Zeroconf {
         }
 
         for ((if_index, is_v4), failure) in self.join_failures.iter() {
-            let intf = intfs.entry(*if_index).or_insert_with(|| SelectedIntf {
+            let intf = intfs.entry(*if_index).or_insert_with(|| EnabledIntf {
                 name: failure.name.clone(),
                 index: *if_index,
                 ipv4: None,
@@ -2271,7 +2272,7 @@ impl Zeroconf {
         RunningState {
             ipv4_socket: self.ipv4_socket_state.clone(),
             ipv6_socket: self.ipv6_socket_state.clone(),
-            selected_intfs: intfs.into_values().collect(),
+            enabled_intfs: intfs.into_values().collect(),
         }
     }
 
@@ -6129,10 +6130,10 @@ mod tests {
     }
 
     /// Finds the interface `index` in a fresh status snapshot of `daemon`.
-    fn selected_intf(daemon: &super::Zeroconf, index: u32) -> Option<super::SelectedIntf> {
+    fn enabled_intf(daemon: &super::Zeroconf, index: u32) -> Option<super::EnabledIntf> {
         daemon
             .running_state()
-            .selected_intfs()
+            .enabled_intfs()
             .iter()
             .find(|intf| intf.index() == index)
             .cloned()
@@ -6150,7 +6151,7 @@ mod tests {
 
         // Nothing recorded, but the failed join is listed with its error.
         daemon.add_interface(&v4, std::slice::from_ref(&v4));
-        let intf = selected_intf(&daemon, index).expect("a failed join must be listed");
+        let intf = enabled_intf(&daemon, index).expect("a failed join must be listed");
         assert_eq!(intf.name(), "mdns-sd-fake");
         let membership = intf.ipv4().expect("IPv4 was tried");
         assert!(!membership.is_joined());
@@ -6167,7 +6168,7 @@ mod tests {
             index,
             &[test_ifaddr_v6("2001:db8::1".parse().unwrap())],
         );
-        let intf = selected_intf(&daemon, index).unwrap();
+        let intf = enabled_intf(&daemon, index).unwrap();
         let v6 = intf.ipv6().expect("IPv6 is recorded");
         assert!(v6.is_joined());
         assert_eq!(v6.join_error(), None);
@@ -6176,7 +6177,7 @@ mod tests {
 
         // A disabled address is no longer tried, so no longer listed.
         daemon.del_interface_addr(&v4);
-        let intf = selected_intf(&daemon, index).unwrap();
+        let intf = enabled_intf(&daemon, index).unwrap();
         assert!(intf.ipv4().is_none());
         assert!(intf.ipv6().unwrap().is_joined());
     }
@@ -6191,11 +6192,11 @@ mod tests {
             test_ifaddr_v4(Ipv4Addr::new(192, 0, 2, 1)),
         );
         daemon.add_interface(&v4, std::slice::from_ref(&v4));
-        assert!(selected_intf(&daemon, index).is_some());
+        assert!(enabled_intf(&daemon, index).is_some());
 
         // The host has no such interface, so the IP check drops the failure.
         daemon.check_ip_changes();
-        assert!(selected_intf(&daemon, index).is_none());
+        assert!(enabled_intf(&daemon, index).is_none());
         assert!(!daemon.join_failures.contains_key(&(index, true)));
     }
 
@@ -6219,7 +6220,7 @@ mod tests {
         // 127.0.0.1 is already joined on loopback, so this join succeeds.
         daemon.add_interface(&alias, std::slice::from_ref(&alias));
         assert!(daemon.join_failures.is_empty());
-        let intf = selected_intf(&daemon, index).unwrap();
+        let intf = enabled_intf(&daemon, index).unwrap();
         assert!(intf.ipv4().unwrap().is_joined());
     }
 

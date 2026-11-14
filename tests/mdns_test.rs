@@ -2742,7 +2742,7 @@ fn test_running_state_reports_failed_socket() {
 
     // Without the IPv6 socket, no IPv6 join is tried. Loopback is always there
     // to join on IPv4.
-    let intfs = state.selected_intfs();
+    let intfs = state.enabled_intfs();
     assert!(
         intfs.iter().all(|intf| intf.ipv6().is_none()),
         "no IPv6 membership without the IPv6 socket: {:?}",

@@ -202,8 +202,8 @@ pub mod fuzz_api;
 pub use dns_parser::{InterfaceId, RRType, ScopedIp, ScopedIpV4, ScopedIpV6, MAX_PKT_DEFAULT};
 pub use error::{Error, Result};
 pub use service_daemon::{
-    DaemonEvent, DaemonStatus, DnsNameChange, HostnameResolutionEvent, IfKind, IfPredicate,
-    Membership, Metrics, RunningState, SelectedIntf, ServiceDaemon, ServiceEvent, SocketState,
+    DaemonEvent, DaemonStatus, DnsNameChange, EnabledIntf, HostnameResolutionEvent, IfKind,
+    IfPredicate, Membership, Metrics, RunningState, ServiceDaemon, ServiceEvent, SocketState,
     UnregisterStatus, IP_CHECK_INTERVAL_IN_SECS_DEFAULT, MDNS_PORT, SERVICE_NAME_LEN_MAX_DEFAULT,
     VERIFY_TIMEOUT_DEFAULT,
 };
