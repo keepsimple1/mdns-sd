@@ -1236,6 +1236,25 @@ fn join_multicast_v4(my_sock: &PktInfoUdpSocket, ip: &Ipv4Addr) -> io::Result<()
     }
 }
 
+/// Leaves the IPv4 mDNS group on the interface that has `ip`, if the host still has `ip`.
+///
+/// Once the address is gone, macOS drops the socket's first membership of the group
+/// instead, cutting off another interface. Skipping the leave is safe: a removed
+/// interface takes its membership with it, and one that only changed its address
+/// keeps it, which the next join treats as already held (see [`join_multicast_v4`]).
+fn leave_multicast_v4(my_sock: &PktInfoUdpSocket, ip: &Ipv4Addr) {
+    let present =
+        if_addrs::get_if_addrs().is_ok_and(|addrs| addrs.iter().any(|i| i.ip() == IpAddr::V4(*ip)));
+    if !present {
+        debug!("skip leaving multicast for {ip}: address no longer on this host");
+        return;
+    }
+    match my_sock.leave_multicast_v4(&GROUP_ADDR_V4, ip) {
+        Ok(()) => debug!("leave multicast for {ip}"),
+        Err(e) => debug!("leave multicast group for addr {ip}: {e}"),
+    }
+}
+
 /// Join the multicast group for the given interface.
 fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<()> {
     let intf_ip = &intf.ip();
@@ -2089,11 +2108,8 @@ impl Zeroconf {
                 if self.intfs_with_ip(&IpAddr::V4(ipv4)).next().is_some() {
                     // Leaving by address would drop the membership the other interface uses.
                     debug!("keep multicast for {ipv4}: still used by another interface");
-                } else if let Some(sock) = self.ipv4_sock.as_mut() {
-                    debug!("leave multicast for {ipv4}");
-                    if let Err(e) = sock.pktinfo.leave_multicast_v4(&GROUP_ADDR_V4, &ipv4) {
-                        debug!("leave multicast group for addr {ipv4}: {e}");
-                    }
+                } else if let Some(sock) = self.ipv4_sock.as_ref() {
+                    leave_multicast_v4(&sock.pktinfo, &ipv4);
                 }
             }
 
@@ -2172,12 +2188,8 @@ impl Zeroconf {
                     if shared {
                         debug!("keep multicast for {ipv4}: still used by another interface");
                     } else if my_intf.next_ifaddr_v4().is_none() {
-                        if let Some(sock) = self.ipv4_sock.as_mut() {
-                            if let Err(e) = sock.pktinfo.leave_multicast_v4(&GROUP_ADDR_V4, &ipv4) {
-                                debug!("leave multicast group for addr {ipv4}: {e}");
-                            } else {
-                                debug!("leave multicast for {ipv4}");
-                            }
+                        if let Some(sock) = self.ipv4_sock.as_ref() {
+                            leave_multicast_v4(&sock.pktinfo, &ipv4);
                         }
                     }
                 }
@@ -5732,6 +5744,45 @@ mod tests {
             daemon.my_intfs.contains_key(&65_535),
             "an interface sharing an already-joined IPv4 address must be recorded"
         );
+    }
+
+    /// An interface whose IPv4 address is gone from the host by the time the IP check
+    /// runs, like Wi-Fi after leaving a network. On macOS, leaving the group by that
+    /// address dropped another interface's membership.
+    #[test]
+    #[cfg(not(windows))]
+    fn test_leaving_a_vanished_address_keeps_other_memberships() {
+        let mut daemon = new_test_zeroconf();
+        let joined: Vec<Ipv4Addr> = daemon
+            .my_intfs
+            .values()
+            .flat_map(|intf| intf.addrs.iter())
+            .filter_map(|addr| match addr.ip() {
+                IpAddr::V4(ip) => Some(ip),
+                IpAddr::V6(_) => None,
+            })
+            .collect();
+        assert!(
+            joined.iter().all(|ip| holds_ipv4_membership(&daemon, ip)),
+            "precondition: the daemon joined the group on every IPv4 interface"
+        );
+
+        // TEST-NET-2: on no interface of the host, so the IP check removes it.
+        add_fake_intf(
+            &mut daemon,
+            65_534,
+            &[test_ifaddr_v4(Ipv4Addr::new(198, 51, 100, 7))],
+        );
+        daemon.check_ip_changes();
+
+        assert!(!daemon.my_intfs.contains_key(&65_534));
+        for ip in &joined {
+            assert!(
+                holds_ipv4_membership(&daemon, ip),
+                "leaving a vanished address dropped the membership on {}",
+                ip
+            );
+        }
     }
 
     /// Records `addrs` for a made-up interface, as if it had joined the mDNS group
