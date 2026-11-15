@@ -3365,9 +3365,7 @@ impl Zeroconf {
                     }
 
                     // RFC 6762 section 9: only a record with different rdata
-                    // from another host is a conflict. One of our own addresses
-                    // for this host is not, e.g. our own answer looped back to
-                    // us, or an address we already announced (issue #545).
+                    // from another host is a conflict.
                     if is_own_address(
                         &self.my_services,
                         my_intf,
@@ -3401,12 +3399,12 @@ impl Zeroconf {
                 }
             }
 
+            // Note: for address records, a conflict is detected at this point.
+
             probe.records.retain(|record| {
-                // A conflict on a hostname renames the host, so all of its
-                // address records (A and AAAA) move to the new name together.
-                // Otherwise the records of one host would be split between
-                // two names.
                 let is_conflict = if is_address {
+                    // A conflict on a hostname renames the host, so all of its
+                    // address records (A and AAAA) move to the new name together.
                     matches!(record.get_type(), RRType::A | RRType::AAAA)
                         && record.get_class() == answer.get_class()
                 } else {
@@ -4561,8 +4559,8 @@ fn add_answer_of_service(
 /// i.e. one of our services publishes it on `intf` for that hostname (original
 /// or renamed).
 ///
-/// Note: an address of the interface itself is not enough. Another responder
-/// on the same host can publish the same hostname with a different address.
+/// Note: an address being on `intf` is not enough to call it ours. It might be an
+/// address that our services don't publish, that is a real conflict.
 fn is_own_address(
     services: &HashMap<String, ServiceInfo>,
     intf: &MyIntf,
@@ -4612,9 +4610,7 @@ fn answer_hostname_question(
 
         if service_hostname.to_lowercase() == question.entry_name().to_lowercase() {
             // RFC 6762 section 8.1: don't answer with an address record that
-            // is still being probed, e.g. after the hostname was renamed due
-            // to a conflict. Otherwise we answer our own probe and see the
-            // answer as a conflict (issue #545).
+            // is still being probed.
             let not_probing =
                 |addr: &IpAddr| !dns_registry.is_address_probing(service_hostname, addr);
             let mut ipv4 = service.get_addrs_on_my_intf_v4(intf);
