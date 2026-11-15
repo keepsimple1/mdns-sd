@@ -806,6 +806,11 @@ impl DnsAddress {
         }
     }
 
+    /// Returns the address without its interface scope.
+    pub(crate) const fn ip(&self) -> IpAddr {
+        self.address
+    }
+
     pub fn address(&self) -> ScopedIp {
         match self.address {
             IpAddr::V4(v4) => ScopedIp::V4(ScopedIpV4 {
@@ -2019,6 +2024,15 @@ impl DnsOutgoing {
         let service_fullname = dns_registry.resolve_name(service.get_fullname());
         let hostname = dns_registry.resolve_name(service.get_hostname());
 
+        // RFC 6762 section 8.1: don't point to an instance name whose SRV or
+        // TXT record is still being probed, e.g. after a rename.
+        if dns_registry.is_type_probing(service_fullname, RRType::SRV)
+            || dns_registry.is_type_probing(service_fullname, RRType::TXT)
+        {
+            trace!("instance {service_fullname} is still being probed");
+            return;
+        }
+
         let ptr_added = self.add_answer(
             msg,
             DnsPointer::new(
@@ -2065,7 +2079,11 @@ impl DnsOutgoing {
             service.generate_txt(),
         ));
 
-        for address in intf_addrs {
+        // Same for an address of the host that is still being probed.
+        for address in intf_addrs
+            .into_iter()
+            .filter(|addr| !dns_registry.is_address_probing(hostname, addr))
+        {
             self.add_additional_answer(DnsAddress::new(
                 hostname,
                 ip_address_rr_type(&address),
