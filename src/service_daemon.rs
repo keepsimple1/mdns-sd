@@ -4614,16 +4614,16 @@ fn answer_hostname_question(
             let not_probing =
                 |addr: &IpAddr| !dns_registry.is_address_probing(service_hostname, addr);
             let mut ipv4 = service.get_addrs_on_my_intf_v4(intf);
-            ipv4.retain(not_probing);
             let mut ipv6 = service.get_addrs_on_my_intf_v6(intf);
+            has_ipv4 |= !ipv4.is_empty();
+            has_ipv6 |= !ipv6.is_empty();
+            ipv4.retain(not_probing);
             ipv6.retain(not_probing);
             if ipv4.is_empty() && ipv6.is_empty() {
                 continue;
             }
             hostname = Some(service_hostname);
             host_ttl = host_ttl.min(service.get_host_ttl());
-            has_ipv4 |= !ipv4.is_empty();
-            has_ipv6 |= !ipv6.is_empty();
             // Pick addresses based on the question type, not the
             // socket family. RFC 6762 doesn't require A queries
             // to come over IPv4 transport — Android's getaddrinfo
@@ -7216,6 +7216,82 @@ mod tests {
             let answers = answer_hostname(&intf, &services, &registry, new_name, qtype);
             assert!(answers.is_empty(), "{:?}: {:?}", qtype, answers);
         }
+    }
+
+    #[test]
+    fn test_answer_hostname_question_no_nsec_for_probing_family() {
+        let v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
+        let v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x11));
+        let (mut intf, services, mut registry) = renamed_host_fixture(&[v4, v6]);
+        intf.addrs.insert(test_ifaddr_v6(Ipv6Addr::new(
+            0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x10,
+        )));
+        let name = "rename545-2.local.";
+        let ask = |registry: &DnsRegistry, qtype| {
+            answer_hostname(&intf, &services, registry, name, qtype)
+        };
+
+        // IPv4 is active and IPv6 is still being probed. IPv6 exists, so an
+        // AAAA query gets no answer yet, and no NSEC denying it either.
+        probe_address(&mut registry, &intf, name, v6);
+        assert!(ask(&registry, RRType::AAAA).is_empty());
+        assert_eq!(ask(&registry, RRType::A), vec![(RRType::A, Some(v4))]);
+        assert_eq!(ask(&registry, RRType::ANY), vec![(RRType::A, Some(v4))]);
+
+        // The NSEC for another type still lists AAAA as present.
+        let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        query.add_question(name, RRType::SVCB);
+        let packets = query.to_data_on_wire(MAX_PKT_DEFAULT, true);
+        let msg = DnsIncoming::new(packets[0].clone(), (&intf).into()).unwrap();
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+        answer_hostname_question(
+            &services,
+            &intf,
+            &msg.questions()[0],
+            &registry,
+            &mut out,
+            &msg,
+        );
+        let nsec = out._answers()[0]
+            .any()
+            .downcast_ref::<super::DnsNSec>()
+            .unwrap();
+        assert_eq!(nsec._types(), vec![RRType::A as u16, RRType::AAAA as u16]);
+
+        // The other way round: IPv6 is active and IPv4 is still being probed.
+        registry.probing.clear();
+        probe_address(&mut registry, &intf, name, v4);
+        assert!(ask(&registry, RRType::A).is_empty());
+        assert_eq!(ask(&registry, RRType::AAAA), vec![(RRType::AAAA, Some(v6))]);
+
+        // Two services on the host: one with only the IPv6 address, still
+        // being probed, and one with only the active IPv4 address. IPv6 still
+        // exists for the host, so it is not denied.
+        let mut v6_service = ServiceInfo::new(
+            "_rename-test._tcp.local.",
+            "instance-v6",
+            "rename545.local.",
+            &[v6][..],
+            8080,
+            None,
+        )
+        .unwrap();
+        v6_service.set_status(intf.index, ServiceStatus::Announced);
+        let (_, mut two_services, mut registry) = renamed_host_fixture(&[v4]);
+        two_services.insert(v6_service.get_fullname().to_lowercase(), v6_service);
+        probe_address(&mut registry, &intf, name, v6);
+        assert!(answer_hostname(&intf, &two_services, &registry, name, RRType::AAAA).is_empty());
+        assert_eq!(
+            answer_hostname(&intf, &two_services, &registry, name, RRType::A),
+            vec![(RRType::A, Some(v4))]
+        );
+
+        // A family the host doesn't have at all is still denied.
+        let (intf, services, registry) = renamed_host_fixture(&[v4]);
+        assert_eq!(
+            answer_hostname(&intf, &services, &registry, name, RRType::AAAA),
+            vec![(RRType::NSEC, None)]
+        );
     }
 
     #[test]
