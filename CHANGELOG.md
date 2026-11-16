@@ -2,8 +2,7 @@
 
 ## Breaking changes
 
-- `DaemonStatus::Running` is now `DaemonStatus::Running(RunningState)`. Code that
-  matches or compares it needs `DaemonStatus::Running(_)`. (#524)
+- `DaemonStatus::Running` is now `DaemonStatus::Running(RunningState)`. (#524)
 - `ServiceDaemon::new()` and `new_with_port()` now return an error if neither the IPv4
   nor the IPv6 multicast socket can be bound, or if registering the sockets with the
   poller fails. Before, the daemon started anyway and `status()` reported `Running`.
