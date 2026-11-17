@@ -1,3 +1,53 @@
+# Version 0.22.0 (2026-11-15)
+
+## Breaking changes
+
+- `DaemonStatus::Running` is now `DaemonStatus::Running(RunningState)`. (#524)
+- `ServiceDaemon::new()` and `new_with_port()` now return an error if neither the IPv4
+  nor the IPv6 multicast socket can be bound, or if registering the sockets with the
+  poller fails. Before, the daemon started anyway and `status()` reported `Running`.
+  If only one socket fails (e.g. a host without IPv6), the daemon still runs. (#524)
+- A service fullname read from the network now keeps its escapes, so it equals the
+  registered fullname. For example, an instance named `L.A.R.A Hub` is now reported as
+  `L\.A\.R\.A Hub._lara._tcp.local.` instead of `L.A.R.A Hub._lara._tcp.local.`. (#540)
+  Use the new `instance_name_unescaped()` to get the readable instance name. (#552)
+
+## New features
+
+- `RunningState` reports the daemon's local setup as of the `status()` request: the
+  bind state (and error) of the IPv4 and IPv6 sockets, and for each enabled interface
+  its addresses and whether its multicast joins worked, with the error from the last
+  failed attempt. Failed joins are retried at the next IP check. (#524)
+- Add `instance_name_unescaped()`, which returns the instance name in a fullname with
+  its escapes removed. For example, `L\.A\.R\.A Hub._lara._tcp.local.` gives
+  `L.A.R.A Hub`. (#552)
+
+## Bug fixes / improvements
+
+- Stop an endless hostname rename loop caused by our own answers looping back while a
+  hostname probe is in progress (#545). The daemon no longer answers with records that
+  are still being probed, does not treat its own addresses as a conflict, moves all of
+  a host's address records on a rename, and moves the affected services back to
+  `Probing` so they are announced again under the new name. (#548)
+- Answer questions for instance names with dots in a label. Labels read from packets
+  now escape `.` and `\`, so they match the registered names. (#540)
+- Preserve label boundaries in DNS name compression, so that names like `L\.A.B.local.`
+  and `L.A.B.local.` are no longer compressed into each other. (#542)
+- Don't let a known answer with a TTL above our own suppress our answer. Some queriers
+  (e.g. Android 13) list a much larger TTL, which suppressed every answer and made them
+  drop the service every 2 minutes. (#539)
+
+## All changes
+
+* `1f7068e 2026-11-16` feat: add instance_name_unescaped() to get a readable instance name (#552) (keepsimple1)
+* `bebe19f 2026-11-14` fix: stop the hostname rename loop caused by our own answers (#548) (keepsimple1)
+* `1d9aa6f 2026-11-14` fix: preserve label boundaries in DNS name compression (#542) (Sealdot)
+* `4774fb9 2026-11-13` feat: report detailed state in DaemonStatus::Running (#524) (keepsimple1)
+* `8eb02e5 2026-11-10` fix: escape dots and backslashes in labels read from packets (#540) (meliodaff)
+* `fc0c597 2026-11-03` fix: don't let a known answer with a TTL above ours suppress (#539) (meliodaff)
+
+Thanks and welcome our new contributors @Sealdot and @meliodaff !
+
 # Version 0.21.7 (2026-11-01)
 
 This is a bugfix release.
