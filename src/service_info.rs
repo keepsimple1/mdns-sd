@@ -3,7 +3,9 @@
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace};
 use crate::{
-    dns_parser::{DnsIncoming, DnsOutgoing, DnsRecordBox, DnsRecordExt, DnsSrv, RRType, ScopedIp},
+    dns_parser::{
+        DnsAddress, DnsIncoming, DnsOutgoing, DnsRecordBox, DnsRecordExt, DnsSrv, RRType, ScopedIp,
+    },
     Error, IfKind, InterfaceId, Result,
 };
 use if_addrs::{IfAddr, Interface};
@@ -97,6 +99,56 @@ fn escape_instance_name(name: &str) -> String {
     }
 
     result
+}
+
+/// Returns the instance name from a service instance `fullname`, with its escapes removed.
+///
+/// A fullname is `<instance>.<service type>.<domain>`, where a dot or backslash inside the
+/// instance name is escaped as `\.` or `\\` (RFC 6763 section 4.3). This function
+/// returns the first label of `fullname` unescaped, i.e. the name that was given to
+/// [`ServiceInfo::new`]. Use it with the fullname in [`ServiceEvent::ServiceFound`],
+/// [`ServiceEvent::ServiceRemoved`] or [`ResolvedService`] to show a readable name.
+/// Pass the fullname itself, not this name, to the APIs that take a fullname.
+///
+/// This function does not check that `fullname` is a valid fullname. It returns the
+/// part before the first unescaped dot, unescaped. If there is no unescaped dot, it
+/// returns the whole string unescaped.
+///
+/// # Example
+///
+/// ```
+/// use mdns_sd::instance_name_unescaped;
+///
+/// let fullname = r"L\.A\.R\.A Hub._lara._tcp.local.";
+/// assert_eq!(instance_name_unescaped(fullname), "L.A.R.A Hub");
+///
+/// let fullname = "my-service._http._tcp.local.";
+/// assert_eq!(instance_name_unescaped(fullname), "my-service");
+/// ```
+///
+/// [`ServiceEvent::ServiceFound`]: crate::ServiceEvent::ServiceFound
+/// [`ServiceEvent::ServiceRemoved`]: crate::ServiceEvent::ServiceRemoved
+pub fn instance_name_unescaped(fullname: &str) -> String {
+    let mut name = String::with_capacity(fullname.len());
+    let mut chars = fullname.chars();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => match chars.clone().next() {
+                Some(next @ ('.' | '\\')) => {
+                    chars.next();
+                    name.push(next);
+                }
+                // Not an escape we write: keep the backslash, like `write_name` does.
+                _ => name.push(ch),
+            },
+            // The first unescaped dot ends the instance name.
+            '.' => break,
+            _ => name.push(ch),
+        }
+    }
+
+    name
 }
 
 /// Complete info about a Service Instance.
@@ -1238,6 +1290,29 @@ impl DnsRegistry {
         }
     }
 
+    /// Returns true if an address record for `addr` under `name` is still
+    /// being probed, i.e. we cannot claim it yet.
+    pub(crate) fn is_address_probing(&self, name: &str, addr: &IpAddr) -> bool {
+        self.probing.get(name).is_some_and(|probe| {
+            probe.records.iter().any(|record| {
+                record
+                    .any()
+                    .downcast_ref::<DnsAddress>()
+                    .is_some_and(|a| a.ip() == *addr)
+            })
+        })
+    }
+
+    /// Returns true if a record of type `ty` under `name` is still being probed.
+    ///
+    /// Note: this ignores rdata. It is meant for SRV and TXT, where a name has
+    /// one record of the type.
+    pub(crate) fn is_type_probing(&self, name: &str, ty: RRType) -> bool {
+        self.probing
+            .get(name)
+            .is_some_and(|probe| probe.records.iter().any(|record| record.get_type() == ty))
+    }
+
     pub(crate) fn is_probing_done<T>(
         &mut self,
         answer: &T,
@@ -1446,6 +1521,10 @@ pub struct ResolvedService {
     pub sub_ty_domain: Option<String>,
 
     /// Full name of the service. For example, "my-service._http._tcp.local."
+    ///
+    /// A dot or backslash in the instance name is escaped as `\.` or `\\`, for example
+    /// `L\.A\.R\.A Hub._lara._tcp.local.`. Use [`instance_name_unescaped`] to get a
+    /// readable instance name.
     pub fullname: String,
 
     /// Host name of the service. For example, "my-server1.local."
@@ -1476,6 +1555,11 @@ impl ResolvedService {
         &self.sub_ty_domain
     }
 
+    /// Returns the fullname of the service.
+    ///
+    /// A dot or backslash in the instance name is escaped as `\.` or `\\`, for example
+    /// `L\.A\.R\.A Hub._lara._tcp.local.`. Use [`instance_name_unescaped`] to get a
+    /// readable instance name.
     #[inline]
     pub fn get_fullname(&self) -> &str {
         &self.fullname
@@ -1528,8 +1612,8 @@ impl ResolvedService {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_txt, encode_txt, u8_slice_to_hex, DnsRegistry, Instant, Probe, ServiceInfo,
-        TxtProperty,
+        decode_txt, encode_txt, instance_name_unescaped, u8_slice_to_hex, DnsRegistry, Instant,
+        Probe, ServiceInfo, TxtProperty,
     };
     use crate::dns_parser::{
         DnsOutgoing, DnsPointer, DnsRecordExt, DnsSrv, RRType, CLASS_CACHE_FLUSH, CLASS_IN,
@@ -2098,6 +2182,73 @@ mod tests {
         let set_new: HashSet<ScopedIp> = HashSet::from([ScopedIp::V4(scoped_v4_two_intfs)]);
 
         assert_ne!(set_old, set_new);
+    }
+
+    #[test]
+    fn test_instance_name_unescaped() {
+        // Plain names.
+        assert_eq!(
+            instance_name_unescaped("my-service._http._tcp.local."),
+            "my-service"
+        );
+        assert_eq!(
+            instance_name_unescaped("my-service._http._tcp.local"),
+            "my-service"
+        );
+
+        // Escaped dots and backslashes are unescaped.
+        assert_eq!(
+            instance_name_unescaped(r"L\.A\.R\.A Hub._lara._tcp.local."),
+            "L.A.R.A Hub"
+        );
+        assert_eq!(
+            instance_name_unescaped(r"back\\slash._http._tcp.local."),
+            r"back\slash"
+        );
+        // An escaped backslash followed by a separator dot ends the label.
+        assert_eq!(
+            instance_name_unescaped(r"ends\\._http._tcp.local."),
+            r"ends\"
+        );
+        // A backslash that escapes nothing we write is kept.
+        assert_eq!(instance_name_unescaped(r"a\b._http._tcp.local."), r"a\b");
+
+        // UTF-8 is kept.
+        assert_eq!(
+            instance_name_unescaped("Café 🌐._http._tcp.local."),
+            "Café 🌐"
+        );
+
+        // Not a fullname: the part before the first unescaped dot, or the whole string.
+        assert_eq!(instance_name_unescaped(""), "");
+        assert_eq!(instance_name_unescaped("no-dot"), "no-dot");
+        assert_eq!(instance_name_unescaped("trailing."), "trailing");
+        assert_eq!(instance_name_unescaped(r"escaped\.only"), "escaped.only");
+        assert_eq!(instance_name_unescaped("._http._tcp.local."), "");
+    }
+
+    #[test]
+    fn test_instance_name_unescaped_round_trip() {
+        for name in [
+            "simple",
+            "L.A.R.A Hub",
+            r"a\b",
+            r"a\.b",
+            "ends.",
+            r"ends\",
+            "Café 🌐",
+        ] {
+            let info = ServiceInfo::new(
+                "_test._tcp.local.",
+                name,
+                "host.local.",
+                "192.168.0.1",
+                5353,
+                None,
+            )
+            .unwrap();
+            assert_eq!(instance_name_unescaped(info.get_fullname()), name, "{name}");
+        }
     }
 
     #[cfg(test)]
