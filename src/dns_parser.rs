@@ -439,6 +439,14 @@ pub struct DnsQuestion {
     pub(crate) entry: DnsEntry,
 }
 
+impl DnsQuestion {
+    /// Whether this question requests records in `class`, or any class.
+    /// The unicast-response bit is removed when the question is parsed.
+    pub(crate) fn matches_class(&self, class: u16) -> bool {
+        self.entry.class == class || self.entry.class == 255
+    }
+}
+
 impl DnsEntryExt for DnsQuestion {
     fn entry_name(&self) -> &str {
         &self.entry.name
@@ -2918,6 +2926,38 @@ mod tests {
     /// The `is_ipv4` argument of `to_packets`. IPv6 has the smaller of the two
     /// absolute ceilings, so it is the stricter one to encode for.
     const IPV6: bool = false;
+
+    #[test]
+    fn test_question_class() {
+        let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        query.add_question("peer.local.", RRType::A);
+        let packet = query.to_data_on_wire(MAX_PKT_DEFAULT, true).remove(0);
+
+        for (wire_class, should_match) in [
+            (CLASS_IN, true),
+            (255, true),                          // QCLASS ANY
+            (2, false),                           // unsupported class
+            (CLASS_IN | CLASS_CACHE_FLUSH, true), // QU bit does not change class
+            (2 | CLASS_CACHE_FLUSH, false),
+        ] {
+            let mut packet = packet.clone();
+            let len = packet.len();
+            packet[len - 2..].copy_from_slice(&wire_class.to_be_bytes());
+            let incoming = DnsIncoming::new(
+                packet,
+                InterfaceId {
+                    name: "test".to_string(),
+                    index: 1,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                incoming.questions()[0].matches_class(CLASS_IN),
+                should_match,
+                "wire class {wire_class:#06x}"
+            );
+        }
+    }
 
     /// Found by fuzzing the packet parser.
     ///

@@ -3852,6 +3852,12 @@ impl Zeroconf {
         };
 
         for question in msg.questions().iter() {
+            // RFC 6762 §6: the question class must match our IN records,
+            // unless the querier asks for any class. DnsEntry::new strips
+            // the top bit used to request a unicast response.
+            if !question.matches_class(CLASS_IN) {
+                continue;
+            }
             let qtype = question.entry_type();
             let q_name = question.entry_name();
 
@@ -6754,6 +6760,94 @@ mod tests {
             LEGACY_UNICAST_MAX_TTL
         );
 
+        daemon.shutdown().unwrap();
+    }
+
+    #[test]
+    fn test_responder_question_class() {
+        let Some(intf_ip) = my_ip_interfaces(false).into_iter().find_map(|intf| {
+            if let IpAddr::V4(ip) = intf.ip() {
+                Some(ip)
+            } else {
+                None
+            }
+        }) else {
+            println!("No IPv4 interface available; skipping test.");
+            return;
+        };
+
+        let daemon = ServiceDaemon::new().unwrap();
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+        let hostname = format!("question-class-{unique}.local.");
+        daemon
+            .register(
+                ServiceInfo::new(
+                    "_question-class._udp.local.",
+                    "instance",
+                    &hostname,
+                    &[IpAddr::V4(intf_ip)] as &[IpAddr],
+                    5353,
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        // An ephemeral source port gets a direct reply, making the result
+        // observable without joining the mDNS multicast group.
+        let querier = UdpSocket::bind((intf_ip, 0)).unwrap();
+        querier
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let if_id = InterfaceId {
+            name: "test".to_string(),
+            index: 0,
+        };
+        let make_query = |class: u16, id: u16| {
+            let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+            query.set_id(id);
+            query.set_multicast(false);
+            query.add_question(&hostname, RRType::A);
+            let mut packet = query.to_data_on_wire(MAX_PKT_DEFAULT, true).remove(0);
+            let len = packet.len();
+            packet[len - 2..].copy_from_slice(&class.to_be_bytes());
+            packet
+        };
+        let receives_answer = |packet: &[u8], id: u16, timeout: Duration| {
+            let deadline = Instant::now() + timeout;
+            while Instant::now() < deadline {
+                querier.send_to(packet, (GROUP_ADDR_V4, MDNS_PORT)).unwrap();
+                let mut buf = [0u8; 1500];
+                while let Ok((len, _)) = querier.recv_from(&mut buf) {
+                    if let Ok(msg) = DnsIncoming::new(buf[..len].to_vec(), if_id.clone()) {
+                        if msg.id() == id && msg.answers().iter().any(|a| a.get_name() == hostname)
+                        {
+                            return true;
+                        }
+                    }
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                }
+            }
+            false
+        };
+
+        assert!(
+            receives_answer(
+                &make_query(CLASS_IN, 0x5131),
+                0x5131,
+                Duration::from_secs(8)
+            ),
+            "class IN should get an answer once the service is announced"
+        );
+        let class_two_answered =
+            receives_answer(&make_query(2, 0x5132), 0x5132, Duration::from_millis(600));
+        println!("class 2 received an answer: {class_two_answered}");
+        assert!(!class_two_answered, "class 2 must not get an IN answer");
         daemon.shutdown().unwrap();
     }
 
