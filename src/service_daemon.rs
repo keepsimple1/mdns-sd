@@ -4977,12 +4977,18 @@ pub enum ServiceEvent {
     SearchStarted(String),
 
     /// Found a specific (service_type, fullname).
+    ///
+    /// A dot or backslash in the instance name is escaped in the fullname. Use
+    /// [`instance_name_unescaped`](crate::instance_name_unescaped) to get a readable
+    /// instance name.
     ServiceFound(String, String),
 
     /// Resolved a service instance in a ResolvedService struct.
     ServiceResolved(Box<ResolvedService>),
 
     /// A service instance (service_type, fullname) was removed.
+    ///
+    /// The fullname is escaped as in [`ServiceEvent::ServiceFound`].
     ServiceRemoved(String, String),
 
     /// Stopped searching for a service type.
