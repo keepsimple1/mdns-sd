@@ -1521,6 +1521,10 @@ pub struct ResolvedService {
     pub sub_ty_domain: Option<String>,
 
     /// Full name of the service. For example, "my-service._http._tcp.local."
+    ///
+    /// A dot or backslash in the instance name is escaped as `\.` or `\\`, for example
+    /// `L\.A\.R\.A Hub._lara._tcp.local.`. Use [`instance_name_unescaped`] to get a
+    /// readable instance name.
     pub fullname: String,
 
     /// Host name of the service. For example, "my-server1.local."
@@ -1551,6 +1555,11 @@ impl ResolvedService {
         &self.sub_ty_domain
     }
 
+    /// Returns the fullname of the service.
+    ///
+    /// A dot or backslash in the instance name is escaped as `\.` or `\\`, for example
+    /// `L\.A\.R\.A Hub._lara._tcp.local.`. Use [`instance_name_unescaped`] to get a
+    /// readable instance name.
     #[inline]
     pub fn get_fullname(&self) -> &str {
         &self.fullname
