@@ -208,7 +208,8 @@ pub use service_daemon::{
     VERIFY_TIMEOUT_DEFAULT,
 };
 pub use service_info::{
-    AsIpAddrs, IntoTxtProperties, ResolvedService, ServiceInfo, TxtProperties, TxtProperty,
+    instance_name_unescaped, AsIpAddrs, IntoTxtProperties, ResolvedService, ServiceInfo,
+    TxtProperties, TxtProperty,
 };
 
 /// A handler to receive messages from [ServiceDaemon]. Re-export from `flume` crate.

@@ -1,7 +1,8 @@
 use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
-    DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, InterfaceId, IntoTxtProperties,
-    RRType, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo, TxtProperty, UnregisterStatus,
+    instance_name_unescaped, DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind,
+    InterfaceId, IntoTxtProperties, RRType, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo,
+    TxtProperty, UnregisterStatus,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -2533,6 +2534,9 @@ fn test_rfc6763_utf8_network_integration() {
                     // the name that was registered, UTF-8 characters included.
                     assert_eq!(resolved_fullname, fullname);
                     assert!(resolved_fullname.contains('🌐'));
+
+                    // The instance name comes back without the escapes.
+                    assert_eq!(instance_name_unescaped(resolved_fullname), instance_name);
                     break;
                 }
             }
