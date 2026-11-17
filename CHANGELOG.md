@@ -10,6 +10,7 @@
 - A service fullname read from the network now keeps its escapes, so it equals the
   registered fullname. For example, an instance named `L.A.R.A Hub` is now reported as
   `L\.A\.R\.A Hub._lara._tcp.local.` instead of `L.A.R.A Hub._lara._tcp.local.`. (#540)
+  Use the new `instance_name_unescaped()` to get the readable instance name. (#552)
 
 ## New features
 
@@ -17,6 +18,9 @@
   bind state (and error) of the IPv4 and IPv6 sockets, and for each enabled interface
   its addresses and whether its multicast joins worked, with the error from the last
   failed attempt. Failed joins are retried at the next IP check. (#524)
+- Add `instance_name_unescaped()`, which returns the instance name in a fullname with
+  its escapes removed. For example, `L\.A\.R\.A Hub._lara._tcp.local.` gives
+  `L.A.R.A Hub`. (#552)
 
 ## Bug fixes / improvements
 
@@ -35,6 +39,7 @@
 
 ## All changes
 
+* `1f7068e 2026-11-16` feat: add instance_name_unescaped() to get a readable instance name (#552) (keepsimple1)
 * `bebe19f 2026-11-14` fix: stop the hostname rename loop caused by our own answers (#548) (keepsimple1)
 * `1d9aa6f 2026-11-14` fix: preserve label boundaries in DNS name compression (#542) (Sealdot)
 * `4774fb9 2026-11-13` feat: report detailed state in DaemonStatus::Running (#524) (keepsimple1)
