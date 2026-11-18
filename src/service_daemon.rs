@@ -3933,10 +3933,12 @@ impl Zeroconf {
 
         for question in msg.questions().iter() {
             // RFC 6762 §6: the question class must match our IN records,
-            // unless the querier asks for any class. DnsEntry::new strips
-            // the top bit used to request a unicast response.
-            if !question.matches_class(CLASS_IN) {
+            // unless the querier asks for any class.
+            if !question.is_class_in_or_any() {
                 continue;
+            }
+            if legacy_querier {
+                out.add_question_from(question);
             }
             let qtype = question.entry_type();
             let q_name = question.entry_name();
@@ -4101,9 +4103,6 @@ impl Zeroconf {
         };
 
         if unicast_dest.is_some() {
-            for q in msg.questions() {
-                out.add_question(q.entry_name(), q.entry_type());
-            }
             out.update_records_for_legacy_unicast();
             out.set_multicast(false);
         } else if msg.num_authorities() == 0 {
@@ -6955,7 +6954,9 @@ mod tests {
         let receives_answer = |packet: &[u8], id: u16, timeout: Duration| {
             let deadline = Instant::now() + timeout;
             while Instant::now() < deadline {
-                querier.send_to(packet, (GROUP_ADDR_V4, MDNS_PORT)).unwrap();
+                querier
+                    .send_to(packet, (GROUP_ADDR_V4, MDNS_PORT))
+                    .expect("send query");
                 let mut buf = [0u8; 1500];
                 while let Ok((len, _)) = querier.recv_from(&mut buf) {
                     if let Ok(msg) = DnsIncoming::new(buf[..len].to_vec(), if_id.clone()) {

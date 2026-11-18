@@ -287,6 +287,7 @@ impl fmt::Display for RRType {
 
 /// The class value for the Internet.
 pub const CLASS_IN: u16 = 1;
+pub const CLASS_ANY: u16 = 255;
 pub const CLASS_MASK: u16 = 0x7FFF;
 
 /// Cache-flush bit: the most significant bit of the rrclass field of the resource record.  
@@ -434,16 +435,16 @@ pub trait DnsEntryExt: fmt::Debug {
 }
 
 /// A DNS question entry
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DnsQuestion {
     pub(crate) entry: DnsEntry,
 }
 
 impl DnsQuestion {
-    /// Whether this question requests records in `class`, or any class.
+    /// Whether this question requests Internet-class records or any class.
     /// The unicast-response bit is removed when the question is parsed.
-    pub(crate) fn matches_class(&self, class: u16) -> bool {
-        self.entry.class == class || self.entry.class == 255
+    pub(crate) fn is_class_in_or_any(&self) -> bool {
+        self.entry.class == CLASS_IN || self.entry.class == CLASS_ANY
     }
 }
 
@@ -1460,7 +1461,15 @@ impl DnsOutPacket {
             e
         })?;
         self.write_short(question.entry.ty as u16);
-        self.write_short(question.entry.class);
+        // In a question, the top bit requests a unicast response (QU).
+        self.write_short(
+            question.entry.class
+                | if question.entry.cache_flush {
+                    CLASS_CACHE_FLUSH
+                } else {
+                    0
+                },
+        );
 
         if self.size() > self.max_size {
             self.rollback(start_size);
@@ -2108,6 +2117,11 @@ impl DnsOutgoing {
             entry: DnsEntry::new(name.to_string(), qtype, CLASS_IN),
         };
         self.questions.push(q);
+    }
+
+    /// Echo an incoming question with its original class and QU bit.
+    pub(crate) fn add_question_from(&mut self, question: &DnsQuestion) {
+        self.questions.push(question.clone());
     }
 
     /// Adjust records so the message is a valid legacy unicast response:
@@ -2934,8 +2948,8 @@ fn get_expiration_time(created: Instant, ttl: u32, percent: u32) -> Instant {
 mod tests {
     use super::{
         u16_from_be_slice, DnsAddress, DnsHostInfo, DnsIncoming, DnsOutPacket, DnsOutgoing,
-        DnsPointer, DnsTxt, RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
-        FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
+        DnsPointer, DnsTxt, RRType, CLASS_ANY, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY,
+        FLAGS_QR_RESPONSE, FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
     };
     use crate::InterfaceId;
     use std::collections::HashMap;
@@ -2953,7 +2967,7 @@ mod tests {
 
         for (wire_class, should_match) in [
             (CLASS_IN, true),
-            (255, true),                          // QCLASS ANY
+            (CLASS_ANY, true),                    // QCLASS ANY
             (2, false),                           // unsupported class
             (CLASS_IN | CLASS_CACHE_FLUSH, true), // QU bit does not change class
             (2 | CLASS_CACHE_FLUSH, false),
@@ -2970,10 +2984,16 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                incoming.questions()[0].matches_class(CLASS_IN),
+                incoming.questions()[0].is_class_in_or_any(),
                 should_match,
                 "wire class {wire_class:#06x}"
             );
+            if should_match {
+                let mut response = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+                response.add_question_from(&incoming.questions()[0]);
+                let echoed = response.to_data_on_wire(MAX_PKT_DEFAULT, true).remove(0);
+                assert_eq!(&echoed[echoed.len() - 2..], &wire_class.to_be_bytes());
+            }
         }
     }
 
