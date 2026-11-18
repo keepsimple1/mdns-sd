@@ -35,8 +35,8 @@ use crate::{
     dns_parser::{
         ip_address_rr_type, max_pkt_absolute, DnsAddress, DnsEntryExt, DnsIncoming, DnsNSec,
         DnsOutgoing, DnsPointer, DnsQuestion, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt,
-        InterfaceId, RRType, ScopedIp, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY,
-        FLAGS_QR_RESPONSE, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
+        EscapedLabels, InterfaceId, RRType, ScopedIp, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA,
+        FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
     },
     error::{e_fmt, Error, Result},
     service_info::{
@@ -5248,22 +5248,15 @@ fn announce_service_on_intf(
 }
 
 /// Splits `fullname` at the first unescaped dot per RFC 6763 section 4.3, so
-/// the first label keeps its `\.` escapes intact. A backslash escapes the next
-/// character, so `\\.` still terminates the label.
+/// the first label keeps its `\.` escapes intact.
+///
+/// Returns the escaped text of the first label and the remainder of the name
+/// starting at the separating dot. When `fullname` has no unescaped dot, the
+/// remainder is empty. The boundary rule is shared with
+/// `DnsOutPacket::parse_escaped_name` via [`EscapedLabels`].
 fn split_first_label(fullname: &str) -> (&str, &str) {
-    let mut escaped = false;
-    for (idx, ch) in fullname.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' => escaped = true,
-            '.' => return (&fullname[..idx], &fullname[idx..]),
-            _ => {}
-        }
-    }
-    (fullname, "")
+    let mut labels = EscapedLabels::new(fullname);
+    (labels.next().unwrap_or_default(), labels.rest())
 }
 
 /// Returns a new name based on the `original` to avoid conflicts.
@@ -5275,10 +5268,9 @@ fn split_first_label(fullname: &str) -> (&str, &str) {
 /// - `foo (9)` becomes `foo (10)`
 fn name_change(original: &str) -> String {
     let (first_part, rest) = split_first_label(original);
-    if first_part.is_empty() {
-        return format!("{original} (2)");
-    }
 
+    // An empty first label is a real label, so `._lara._tcp.local.` gets its
+    // suffix inside that label: ` (2)._lara._tcp.local.`
     let mut new_name = format!("{first_part} (2)");
 
     // check if there is already has `(<num>)` suffix.
@@ -5310,10 +5302,8 @@ fn name_change(original: &str) -> String {
 /// - `foo` becomes `foo-2`
 fn hostname_change(original: &str) -> String {
     let (first_part, rest) = split_first_label(original);
-    if first_part.is_empty() {
-        return format!("{original}-2");
-    }
 
+    // An empty first label is a real label, so `._x.local.` becomes `-2._x.local.`
     let mut new_name = format!("{first_part}-2");
 
     // check if there is already a `-<num>` suffix
@@ -6995,6 +6985,9 @@ mod tests {
         assert_eq!(name_change(r"a\.b (2).local."), r"a\.b (3).local.");
         // An escaped backslash does not escape the following dot
         assert_eq!(name_change(r"a\\.b.local."), r"a\\ (2).b.local.");
+        // An empty first label is a real label: the suffix goes into it.
+        assert_eq!(name_change("._lara._tcp.local."), " (2)._lara._tcp.local.");
+        assert_eq!(name_change("."), " (2).");
     }
 
     #[test]
@@ -7004,6 +6997,8 @@ mod tests {
         assert_eq!(hostname_change("foo-2.local."), "foo-3.local.");
         assert_eq!(hostname_change("foo-9"), "foo-10");
         assert_eq!(hostname_change("test-42.domain."), "test-43.domain.");
+        // An empty first label is a real label: the suffix goes into it.
+        assert_eq!(hostname_change("._x.local."), "-2._x.local.");
 
         // Escaped dots stay inside the first label (RFC 6763 section 4.3)
         assert_eq!(hostname_change(r"my\.host.local."), r"my\.host-2.local.");
