@@ -3937,9 +3937,6 @@ impl Zeroconf {
             if !question.is_class_in_or_any() {
                 continue;
             }
-            if legacy_querier {
-                out.add_question_from(question);
-            }
             let qtype = question.entry_type();
             let q_name = question.entry_name();
 
@@ -4103,6 +4100,9 @@ impl Zeroconf {
         };
 
         if unicast_dest.is_some() {
+            for question in msg.questions().iter().filter(|q| q.is_class_in_or_any()) {
+                out.add_question_from(question);
+            }
             out.update_records_for_legacy_unicast();
             out.set_multicast(false);
         } else if msg.num_authorities() == 0 {
