@@ -1540,50 +1540,10 @@ impl DnsOutPacket {
     /// - \\. becomes . (literal dot)
     /// - \\\\ becomes \\ (literal backslash)
     fn parse_escaped_name(name: &str) -> Vec<String> {
-        let mut labels = Vec::new();
-        let mut current_label = String::new();
-        let mut chars = name.chars().peekable();
-
-        while let Some(ch) = chars.next() {
-            match ch {
-                '\\' => {
-                    // Backslash escape sequence
-                    if let Some(&next_ch) = chars.peek() {
-                        match next_ch {
-                            '.' | '\\' => {
-                                // \\. or \\\\ - consume the backslash and add the escaped char
-                                chars.next();
-                                current_label.push(next_ch);
-                            }
-                            _ => {
-                                // Not a recognized escape - treat backslash literally
-                                current_label.push(ch);
-                            }
-                        }
-                    } else {
-                        // Trailing backslash - add it literally
-                        current_label.push(ch);
-                    }
-                }
-                '.' => {
-                    // Unescaped dot - label separator
-                    if !current_label.is_empty() {
-                        labels.push(current_label.clone());
-                        current_label.clear();
-                    }
-                }
-                _ => {
-                    current_label.push(ch);
-                }
-            }
-        }
-
-        // Add the last label if not empty
-        if !current_label.is_empty() {
-            labels.push(current_label);
-        }
-
-        labels
+        EscapedLabels::new(name)
+            .filter(|label| !label.is_empty())
+            .map(unescape_label)
+            .collect()
     }
 
     // Write name to packet
@@ -2949,12 +2909,98 @@ fn get_expiration_time(created: Instant, ttl: u32, percent: u32) -> Instant {
     created + Duration::from_millis(ttl as u64 * percent as u64 * 10)
 }
 
+/// Iterates the escaped labels of a DNS name per RFC 6763 section 4.3: an
+/// unescaped `.` separates labels, while a backslash escapes whatever
+/// character follows it (so `\.` and `\\` stay inside the label). Each item
+/// is the escaped text of one label, which may be empty.
+///
+/// This is the single place that decides where a label ends. It is shared by
+/// `DnsOutPacket::parse_escaped_name`, which unescapes each item and drops
+/// the empty ones, and by the rename code in `service_daemon`, which needs
+/// the escaped form.
+pub(crate) struct EscapedLabels<'a> {
+    name: &'a str,
+    next_start: usize,
+    slice_end: usize,
+}
+
+impl<'a> EscapedLabels<'a> {
+    pub(crate) fn new(name: &'a str) -> Self {
+        Self {
+            name,
+            next_start: 0,
+            slice_end: 0,
+        }
+    }
+
+    /// Returns the part of the name after the last label yielded, starting
+    /// at its separating unescaped dot. Before `next` ran this is the whole
+    /// name; after a label that ends the name it is empty.
+    pub(crate) fn rest(&self) -> &'a str {
+        &self.name[self.slice_end..]
+    }
+}
+
+impl<'a> Iterator for EscapedLabels<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        if self.next_start > self.name.len() {
+            return None;
+        }
+        let mut escaped = false;
+        for (i, ch) in self.name[self.next_start..].char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '.' => {
+                    let end = self.next_start + i;
+                    let label = &self.name[self.next_start..end];
+                    self.slice_end = end;
+                    self.next_start = end + 1;
+                    return Some(label);
+                }
+                _ => {}
+            }
+        }
+        let label = &self.name[self.next_start..];
+        self.slice_end = self.name.len();
+        self.next_start = self.name.len() + 1;
+        Some(label)
+    }
+}
+
+/// Unescapes one label slice per RFC 6763 section 4.3: `\.` becomes `.` and
+/// `\\` becomes `\`. A backslash before any other character stays a literal
+/// backslash, as does a trailing lone backslash.
+fn unescape_label(label: &str) -> String {
+    let mut out = String::with_capacity(label.len());
+    let mut chars = label.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(&next_ch) = chars.peek() {
+                if next_ch == '.' || next_ch == '\\' {
+                    chars.next();
+                    out.push(next_ch);
+                    continue;
+                }
+            }
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         u16_from_be_slice, DnsAddress, DnsHostInfo, DnsIncoming, DnsOutPacket, DnsOutgoing,
-        DnsPointer, DnsTxt, RRType, CLASS_ANY, CLASS_CACHE_FLUSH, CLASS_IN, CLASS_UNICAST_RESPONSE,
-        FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
+        DnsPointer, DnsTxt, EscapedLabels, RRType, CLASS_ANY, CLASS_CACHE_FLUSH, CLASS_IN,
+        CLASS_UNICAST_RESPONSE, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6,
+        MAX_PKT_DEFAULT,
     };
     use crate::InterfaceId;
     use std::collections::HashMap;
@@ -3000,6 +3046,69 @@ mod tests {
                 assert_eq!(&echoed[echoed.len() - 2..], &wire_class.to_be_bytes());
             }
         }
+    }
+
+    /// `EscapedLabels` finds where each escaped label ends, and
+    /// `parse_escaped_name` unescapes the same slices and drops the empty
+    /// ones — both use the same boundary rule per RFC 6763 section 4.3.
+    #[test]
+    fn test_escaped_labels() {
+        // `\.` stays inside the label.
+        assert_eq!(EscapedLabels::new(r"a\.b").collect::<Vec<_>>(), [r"a\.b"]);
+        assert_eq!(DnsOutPacket::parse_escaped_name(r"a\.b"), vec!["a.b"]);
+
+        // `\\.` ends the label: `\\` is a pair, the dot after it separates.
+        assert_eq!(
+            EscapedLabels::new(r"a\\.b").collect::<Vec<_>>(),
+            [r"a\\", "b"]
+        );
+        assert_eq!(DnsOutPacket::parse_escaped_name(r"a\\.b"), vec!["a\\", "b"]);
+
+        // An unrecognized escape keeps its backslash; the dot separates.
+        assert_eq!(
+            EscapedLabels::new(r"a\x.b").collect::<Vec<_>>(),
+            [r"a\x", "b"]
+        );
+        assert_eq!(
+            DnsOutPacket::parse_escaped_name(r"a\x.b"),
+            vec!["a\\x", "b"]
+        );
+
+        // `\\` then `\.` are both pairs: no separator.
+        assert_eq!(
+            EscapedLabels::new(r"a\\\.b").collect::<Vec<_>>(),
+            [r"a\\\.b"]
+        );
+        assert_eq!(DnsOutPacket::parse_escaped_name(r"a\\\.b"), vec!["a\\.b"]);
+
+        // A trailing lone backslash is a literal char inside the label.
+        assert_eq!(EscapedLabels::new(r"ab\").collect::<Vec<_>>(), [r"ab\"]);
+        assert_eq!(DnsOutPacket::parse_escaped_name(r"ab\"), vec!["ab\\"]);
+
+        // Empty labels are yielded as empty slices; `parse_escaped_name`
+        // drops them like before.
+        assert_eq!(EscapedLabels::new(".foo").collect::<Vec<_>>(), ["", "foo"]);
+        assert_eq!(DnsOutPacket::parse_escaped_name(".foo"), vec!["foo"]);
+        assert_eq!(EscapedLabels::new("..").collect::<Vec<_>>(), ["", "", ""]);
+        assert_eq!(DnsOutPacket::parse_escaped_name(".."), Vec::<String>::new());
+        assert_eq!(
+            EscapedLabels::new("foo.bar.").collect::<Vec<_>>(),
+            ["foo", "bar", ""]
+        );
+        assert_eq!(
+            DnsOutPacket::parse_escaped_name("foo.bar."),
+            vec!["foo", "bar"]
+        );
+
+        // `rest` is the remainder after the last label yielded.
+        let mut labels = EscapedLabels::new("first.second.third");
+        assert_eq!(labels.next(), Some("first"));
+        assert_eq!(labels.rest(), ".second.third");
+        assert_eq!(labels.next(), Some("second"));
+        assert_eq!(labels.rest(), ".third");
+        assert_eq!(labels.next(), Some("third"));
+        assert_eq!(labels.rest(), "");
+        assert_eq!(labels.next(), None);
     }
 
     /// Found by fuzzing the packet parser.

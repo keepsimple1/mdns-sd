@@ -35,8 +35,8 @@ use crate::{
     dns_parser::{
         ip_address_rr_type, max_pkt_absolute, DnsAddress, DnsEntryExt, DnsIncoming, DnsNSec,
         DnsOutgoing, DnsPointer, DnsQuestion, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt,
-        InterfaceId, RRType, ScopedIp, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY,
-        FLAGS_QR_RESPONSE, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
+        EscapedLabels, InterfaceId, RRType, ScopedIp, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA,
+        FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
     },
     error::{e_fmt, Error, Result},
     service_info::{
@@ -5673,6 +5673,18 @@ fn announce_service_on_intf(
     Ok(false)
 }
 
+/// Splits `fullname` at the first unescaped dot per RFC 6763 section 4.3, so
+/// the first label keeps its `\.` escapes intact.
+///
+/// Returns the escaped text of the first label and the remainder of the name
+/// starting at the separating dot. When `fullname` has no unescaped dot, the
+/// remainder is empty. The boundary rule is shared with
+/// `DnsOutPacket::parse_escaped_name` via [`EscapedLabels`].
+fn split_first_label(fullname: &str) -> (&str, &str) {
+    let mut labels = EscapedLabels::new(fullname);
+    (labels.next().unwrap_or_default(), labels.rest())
+}
+
 /// Returns a new name based on the `original` to avoid conflicts.
 /// If the name already contains a number in parentheses, increments that number.
 ///
@@ -5681,11 +5693,10 @@ fn announce_service_on_intf(
 /// - `foo (2).local.` becomes `foo (3).local.`
 /// - `foo (9)` becomes `foo (10)`
 fn name_change(original: &str) -> String {
-    let mut parts: Vec<_> = original.split('.').collect();
-    let Some(first_part) = parts.get_mut(0) else {
-        return format!("{original} (2)");
-    };
+    let (first_part, rest) = split_first_label(original);
 
+    // An empty first label is a real label, so `._lara._tcp.local.` gets its
+    // suffix inside that label: ` (2)._lara._tcp.local.`
     let mut new_name = format!("{first_part} (2)");
 
     // check if there is already has `(<num>)` suffix.
@@ -5705,8 +5716,7 @@ fn name_change(original: &str) -> String {
         }
     }
 
-    *first_part = &new_name;
-    parts.join(".")
+    format!("{new_name}{rest}")
 }
 
 /// Returns a new name based on the `original` to avoid conflicts.
@@ -5717,11 +5727,9 @@ fn name_change(original: &str) -> String {
 /// - `foo-2.local.` becomes `foo-3.local.`
 /// - `foo` becomes `foo-2`
 fn hostname_change(original: &str) -> String {
-    let mut parts: Vec<_> = original.split('.').collect();
-    let Some(first_part) = parts.get_mut(0) else {
-        return format!("{original}-2");
-    };
+    let (first_part, rest) = split_first_label(original);
 
+    // An empty first label is a real label, so `._x.local.` becomes `-2._x.local.`
     let mut new_name = format!("{first_part}-2");
 
     // check if there is already a `-<num>` suffix
@@ -5733,8 +5741,7 @@ fn hostname_change(original: &str) -> String {
         }
     }
 
-    *first_part = &new_name;
-    parts.join(".")
+    format!("{new_name}{rest}")
 }
 
 /// Check probes in a registry and returns: a probing packet to send out, and a list of probe names
@@ -7605,6 +7612,18 @@ mod tests {
         assert_eq!(name_change("foo (abc)"), "foo (abc) (2)"); // Invalid number
         assert_eq!(name_change("foo (2"), "foo (2 (2)"); // Missing closing parenthesis
         assert_eq!(name_change("foo (2) extra"), "foo (2) extra (2)"); // Extra text after number
+
+        // Escaped dots stay inside the first label (RFC 6763 section 4.3)
+        assert_eq!(
+            name_change(r"L\.A\.R\.A Hub._lara._tcp.local."),
+            r"L\.A\.R\.A Hub (2)._lara._tcp.local."
+        );
+        assert_eq!(name_change(r"a\.b (2).local."), r"a\.b (3).local.");
+        // An escaped backslash does not escape the following dot
+        assert_eq!(name_change(r"a\\.b.local."), r"a\\ (2).b.local.");
+        // An empty first label is a real label: the suffix goes into it.
+        assert_eq!(name_change("._lara._tcp.local."), " (2)._lara._tcp.local.");
+        assert_eq!(name_change("."), " (2).");
     }
 
     #[test]
@@ -7614,6 +7633,12 @@ mod tests {
         assert_eq!(hostname_change("foo-2.local."), "foo-3.local.");
         assert_eq!(hostname_change("foo-9"), "foo-10");
         assert_eq!(hostname_change("test-42.domain."), "test-43.domain.");
+        // An empty first label is a real label: the suffix goes into it.
+        assert_eq!(hostname_change("._x.local."), "-2._x.local.");
+
+        // Escaped dots stay inside the first label (RFC 6763 section 4.3)
+        assert_eq!(hostname_change(r"my\.host.local."), r"my\.host-2.local.");
+        assert_eq!(hostname_change(r"my\.host-2.local."), r"my\.host-3.local.");
     }
 
     /// An interface with the IPv4 address 192.168.1.10, and an announced service
