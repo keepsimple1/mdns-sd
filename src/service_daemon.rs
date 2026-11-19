@@ -33,10 +33,11 @@ use crate::log::{debug, error, trace};
 use crate::{
     dns_cache::{DnsCache, IpType},
     dns_parser::{
-        ip_address_rr_type, max_pkt_absolute, DnsAddress, DnsEntryExt, DnsIncoming, DnsNSec,
-        DnsOutgoing, DnsPointer, DnsQuestion, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt,
-        EscapedLabels, InterfaceId, RRType, ScopedIp, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA,
-        FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
+        first_label_wire_len, ip_address_rr_type, max_pkt_absolute, truncate_label_to_wire_len,
+        DnsAddress, DnsEntryExt, DnsIncoming, DnsNSec, DnsOutgoing, DnsPointer, DnsQuestion,
+        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, EscapedLabels, InterfaceId, RRType, ScopedIp,
+        CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_LABEL_BYTES,
+        MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
     },
     error::{e_fmt, Error, Result},
     service_info::{
@@ -2638,6 +2639,14 @@ impl Zeroconf {
             return;
         }
 
+        // Check the instance name fits in a single DNS label on the wire,
+        // otherwise writing its records would fail silently on the network.
+        if let Err(e) = check_instance_label_length(info.get_fullname()) {
+            error!("check_instance_label_length: {}", e);
+            self.notify_monitors(DaemonEvent::Error(e));
+            return;
+        }
+
         if info.is_addr_auto() {
             let selected_intfs =
                 self.selected_intfs(my_ip_interfaces_inner(true, self.include_apple_p2p));
@@ -5188,6 +5197,21 @@ fn check_service_name_length(ty_domain: &str, limit: u8) -> Result<()> {
     Ok(())
 }
 
+/// Checks that the first label (the instance name) of `fullname` fits in a
+/// single DNS label on the wire, per `parse_escaped_name` escape rules.
+fn check_instance_label_length(fullname: &str) -> Result<()> {
+    let wire_len = first_label_wire_len(fullname);
+    if wire_len > MAX_LABEL_BYTES {
+        return Err(e_fmt!(
+            "Instance label must be <= {} bytes on the wire, got {}: {}",
+            MAX_LABEL_BYTES,
+            wire_len,
+            fullname
+        ));
+    }
+    Ok(())
+}
+
 /// Checks if `name` ends with a valid domain: '._tcp.local.' or '._udp.local.'
 fn check_domain_suffix(name: &str) -> Result<()> {
     if !(name.ends_with("._tcp.local.") || name.ends_with("._udp.local.")) {
@@ -5691,10 +5715,10 @@ fn name_change(original: &str) -> String {
     let (first_part, rest) = split_first_label(original);
 
     // An empty first label is a real label, so `._lara._tcp.local.` gets its
-    // suffix inside that label: ` (2)._lara._tcp.local.`
-    let mut new_name = format!("{first_part} (2)");
-
-    // check if there is already has `(<num>)` suffix.
+    // suffix inside that label: ` (2)._lara._tcp.local.` Separate the base
+    // name from an existing `(<num>)` suffix.
+    let mut base_name = first_part;
+    let mut number = 2;
     if let Some(paren_pos) = first_part.rfind(" (") {
         // Check if there's a closing parenthesis
         if let Some(end_paren) = first_part[paren_pos..].find(')') {
@@ -5703,13 +5727,23 @@ fn name_change(original: &str) -> String {
             if absolute_end_pos == first_part.len() - 1 {
                 let num_start = paren_pos + 2; // Skip " ("
                                                // Try to parse the number between parentheses
-                if let Ok(number) = first_part[num_start..absolute_end_pos].parse::<u32>() {
-                    let base_name = &first_part[..paren_pos];
-                    new_name = format!("{} ({})", base_name, number + 1)
+                if let Ok(parsed) = first_part[num_start..absolute_end_pos].parse::<u32>() {
+                    base_name = &first_part[..paren_pos];
+                    number = parsed + 1;
                 }
             }
         }
     }
+
+    // Shorten the base so the label with the new suffix still fits in
+    // MAX_LABEL_BYTES on the wire, like mDNSResponder does. A trailing space
+    // is trimmed so the result does not end up as `foo  (2)`.
+    let suffix = format!(" ({number})");
+    let budget = MAX_LABEL_BYTES.saturating_sub(suffix.len());
+    let new_name = format!(
+        "{}{suffix}",
+        truncate_label_to_wire_len(base_name, budget).trim_end()
+    );
 
     format!("{new_name}{rest}")
 }
@@ -5725,16 +5759,26 @@ fn hostname_change(original: &str) -> String {
     let (first_part, rest) = split_first_label(original);
 
     // An empty first label is a real label, so `._x.local.` becomes `-2._x.local.`
-    let mut new_name = format!("{first_part}-2");
-
-    // check if there is already a `-<num>` suffix
+    // Separate the base name from an existing `-<num>` suffix.
+    let mut base_name = first_part;
+    let mut number = 2;
     if let Some(hyphen_pos) = first_part.rfind('-') {
         // Try to parse everything after the hyphen as a number
-        if let Ok(number) = first_part[hyphen_pos + 1..].parse::<u32>() {
-            let base_name = &first_part[..hyphen_pos];
-            new_name = format!("{}-{}", base_name, number + 1);
+        if let Ok(parsed) = first_part[hyphen_pos + 1..].parse::<u32>() {
+            base_name = &first_part[..hyphen_pos];
+            number = parsed + 1;
         }
     }
+
+    // Shorten the base so the label with the new suffix still fits in
+    // MAX_LABEL_BYTES on the wire, like mDNSResponder does. A trailing '-'
+    // is trimmed so the result does not end up as `foo--2`.
+    let suffix = format!("-{number}");
+    let budget = MAX_LABEL_BYTES.saturating_sub(suffix.len());
+    let new_name = format!(
+        "{}{suffix}",
+        truncate_label_to_wire_len(base_name, budget).trim_end_matches('-')
+    );
 
     format!("{new_name}{rest}")
 }
@@ -5886,20 +5930,22 @@ fn resolve_addr_to_index(if_kind: IfKind, interfaces: &[Interface]) -> IfKind {
 #[cfg(test)]
 mod tests {
     use super::{
-        _new_socket_bind, answer_hostname_question, check_domain_suffix, check_service_name_length,
-        hostname_change, ip_address_rr_type, is_own_address, my_ip_interfaces, name_change,
-        resolve_max_packet_size, send_dns_outgoing_impl, valid_instance_name, valid_ip_on_intf,
-        DaemonEvent, HostnameResolutionEvent, IfKind, MaxPacketSizeSelection, MyIntf, SendConfig,
-        ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4, INITIAL_QUERY_DELAY_MAX_MILLIS,
+        _new_socket_bind, answer_hostname_question, check_domain_suffix,
+        check_instance_label_length, check_service_name_length, hostname_change,
+        ip_address_rr_type, is_own_address, my_ip_interfaces, name_change, resolve_max_packet_size,
+        send_dns_outgoing_impl, valid_instance_name, valid_ip_on_intf, DaemonEvent,
+        HostnameResolutionEvent, IfKind, MaxPacketSizeSelection, MyIntf, SendConfig, ServiceDaemon,
+        ServiceEvent, ServiceInfo, GROUP_ADDR_V4, INITIAL_QUERY_DELAY_MAX_MILLIS,
         INITIAL_QUERY_DELAY_MIN_MILLIS, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MDNS_PORT,
         MIN_MAX_PACKET_SIZE, RESOLVE_MAX_TRY, SHARED_RESPONSE_DELAY_MAX_MILLIS,
         SHARED_RESPONSE_DELAY_MIN_MILLIS,
     };
     use crate::{
         dns_parser::{
-            DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
-            DnsRecordExt, DnsSrv, DnsTxt, InterfaceId, RRType, ScopedIp, CLASS_CACHE_FLUSH,
-            CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, LEGACY_UNICAST_MAX_TTL,
+            escaped_label_wire_len, DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer,
+            DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, InterfaceId, RRType, ScopedIp,
+            CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
+            LEGACY_UNICAST_MAX_TTL,
         },
         service_daemon::{add_answer_of_service, check_hostname},
         service_info::{DnsRegistry, Probe, ServiceStatus},
@@ -7157,6 +7203,23 @@ mod tests {
     }
 
     #[test]
+    fn test_check_instance_label_length() {
+        assert!(check_instance_label_length("my-host._printer._tcp.local.").is_ok());
+        assert!(check_instance_label_length(&format!("{}._s._tcp.local.", "a".repeat(63))).is_ok());
+        // A 64-byte instance label cannot be encoded on the wire.
+        assert!(
+            check_instance_label_length(&format!("{}._s._tcp.local.", "a".repeat(64))).is_err()
+        );
+        // An escaped dot stays inside the first label and counts as one byte.
+        assert!(
+            check_instance_label_length(&format!("{}\\.x._s._tcp.local.", "a".repeat(62))).is_err()
+        );
+        assert!(
+            check_instance_label_length(&format!("{}\\.x._s._tcp.local.", "a".repeat(61))).is_ok()
+        );
+    }
+
+    #[test]
     fn test_check_hostname() {
         // valid hostnames
         for hostname in &[
@@ -7544,6 +7607,75 @@ mod tests {
         // Escaped dots stay inside the first label (RFC 6763 section 4.3)
         assert_eq!(hostname_change(r"my\.host.local."), r"my\.host-2.local.");
         assert_eq!(hostname_change(r"my\.host-2.local."), r"my\.host-3.local.");
+    }
+
+    #[test]
+    fn test_name_change_label_too_long() {
+        // The new first label must still fit in one 63-byte DNS label,
+        // otherwise write_name fails on every probe and announcement (#549).
+        let renamed = name_change(&format!("{}.local.", "a".repeat(63)));
+        assert_eq!(renamed, format!("{} (2).local.", "a".repeat(59)));
+        assert_eq!(
+            escaped_label_wire_len(renamed.split('.').next().unwrap()),
+            63
+        );
+
+        // ` (9)` -> ` (10)` grows the suffix by one byte, so the base loses one.
+        let renamed = name_change(&format!("{} (9).local.", "a".repeat(59)));
+        assert_eq!(renamed, format!("{} (10).local.", "a".repeat(58)));
+        assert_eq!(
+            escaped_label_wire_len(renamed.split('.').next().unwrap()),
+            63
+        );
+
+        // A multi-byte character at the cut point is dropped entirely.
+        let renamed = name_change(&format!("{}é.local.", "a".repeat(58)));
+        assert_eq!(renamed, format!("{} (2).local.", "a".repeat(58)));
+        assert_eq!(
+            escaped_label_wire_len(renamed.split('.').next().unwrap()),
+            62
+        );
+
+        // An escape pair at the cut point is kept whole or dropped whole;
+        // a backslash never dangles at the end of the label.
+        let renamed = name_change(&format!("{}\\\\.local.", "a".repeat(58)));
+        assert_eq!(renamed, format!("{}\\\\ (2).local.", "a".repeat(58)));
+        assert_eq!(
+            escaped_label_wire_len(renamed.split('.').next().unwrap()),
+            63
+        );
+        let renamed = name_change(&format!("{}\\\\.local.", "a".repeat(59)));
+        assert_eq!(renamed, format!("{} (2).local.", "a".repeat(59)));
+        assert_eq!(
+            escaped_label_wire_len(renamed.split('.').next().unwrap()),
+            63
+        );
+    }
+
+    #[test]
+    fn test_hostname_change_label_too_long() {
+        let renamed = hostname_change(&format!("{}.local.", "a".repeat(63)));
+        assert_eq!(renamed, format!("{}-2.local.", "a".repeat(61)));
+        assert_eq!(
+            escaped_label_wire_len(renamed.split('.').next().unwrap()),
+            63
+        );
+
+        // `-9` -> `-10` grows the suffix, so the base loses one more byte.
+        let renamed = hostname_change(&format!("{}-9.local.", "a".repeat(61)));
+        assert_eq!(renamed, format!("{}-10.local.", "a".repeat(60)));
+        assert_eq!(
+            escaped_label_wire_len(renamed.split('.').next().unwrap()),
+            63
+        );
+
+        // A trailing '-' in the base is trimmed, avoiding `foo--2`.
+        let renamed = hostname_change(&format!("{}-.local.", "a".repeat(60)));
+        assert_eq!(renamed, format!("{}-2.local.", "a".repeat(60)));
+        assert_eq!(
+            escaped_label_wire_len(renamed.split('.').next().unwrap()),
+            62
+        );
     }
 
     /// An interface with the IPv4 address 192.168.1.10, and an announced service
