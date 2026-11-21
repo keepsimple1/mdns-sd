@@ -287,7 +287,12 @@ impl fmt::Display for RRType {
 
 /// The class value for the Internet.
 pub const CLASS_IN: u16 = 1;
+/// The class value that matches records of any class in a DNS question.
+pub const CLASS_ANY: u16 = 255;
 pub const CLASS_MASK: u16 = 0x7FFF;
+
+/// The top bit of a question's class field, requesting a unicast response.
+pub const CLASS_UNICAST_RESPONSE: u16 = 0x8000;
 
 /// Cache-flush bit: the most significant bit of the rrclass field of the resource record.  
 pub const CLASS_CACHE_FLUSH: u16 = 0x8000;
@@ -434,9 +439,26 @@ pub trait DnsEntryExt: fmt::Debug {
 }
 
 /// A DNS question entry
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DnsQuestion {
     pub(crate) entry: DnsEntry,
+}
+
+impl DnsQuestion {
+    /// Whether this question requests Internet-class records or any class.
+    pub(crate) fn is_class_in_or_any(&self) -> bool {
+        self.entry.class == CLASS_IN || self.entry.class == CLASS_ANY
+    }
+
+    /// The qclass as written on the wire, including the QU bit if set.
+    fn wire_class(&self) -> u16 {
+        self.entry.class
+            | if self.entry.cache_flush {
+                CLASS_UNICAST_RESPONSE
+            } else {
+                0
+            }
+    }
 }
 
 impl DnsEntryExt for DnsQuestion {
@@ -1452,7 +1474,7 @@ impl DnsOutPacket {
             e
         })?;
         self.write_short(question.entry.ty as u16);
-        self.write_short(question.entry.class);
+        self.write_short(question.wire_class());
 
         if self.size() > self.max_size {
             self.rollback(start_size);
@@ -2060,6 +2082,11 @@ impl DnsOutgoing {
             entry: DnsEntry::new(name.to_string(), qtype, CLASS_IN),
         };
         self.questions.push(q);
+    }
+
+    /// Echo an incoming question with its original class and QU bit.
+    pub(crate) fn add_question_from(&mut self, question: &DnsQuestion) {
+        self.questions.push(question.clone());
     }
 
     /// Adjust records so the message is a valid legacy unicast response:
@@ -2971,8 +2998,9 @@ fn unescape_label(label: &str) -> String {
 mod tests {
     use super::{
         u16_from_be_slice, DnsAddress, DnsHostInfo, DnsIncoming, DnsOutPacket, DnsOutgoing,
-        DnsPointer, DnsTxt, EscapedLabels, RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY,
-        FLAGS_QR_RESPONSE, FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
+        DnsPointer, DnsTxt, EscapedLabels, RRType, CLASS_ANY, CLASS_CACHE_FLUSH, CLASS_IN,
+        CLASS_UNICAST_RESPONSE, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6,
+        MAX_PKT_DEFAULT,
     };
     use crate::InterfaceId;
     use std::collections::HashMap;
@@ -2981,6 +3009,44 @@ mod tests {
     /// The `is_ipv4` argument of `to_packets`. IPv6 has the smaller of the two
     /// absolute ceilings, so it is the stricter one to encode for.
     const IPV6: bool = false;
+
+    #[test]
+    fn test_question_class() {
+        let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        query.add_question("peer.local.", RRType::A);
+        let packet = query.to_data_on_wire(MAX_PKT_DEFAULT, true).remove(0);
+
+        for (wire_class, should_match) in [
+            (CLASS_IN, true),
+            (CLASS_ANY, true),                         // QCLASS ANY
+            (2, false),                                // unsupported class
+            (CLASS_IN | CLASS_UNICAST_RESPONSE, true), // QU bit does not change class
+            (2 | CLASS_UNICAST_RESPONSE, false),
+        ] {
+            let mut packet = packet.clone();
+            let len = packet.len();
+            packet[len - 2..].copy_from_slice(&wire_class.to_be_bytes());
+            let incoming = DnsIncoming::new(
+                packet,
+                InterfaceId {
+                    name: "test".to_string(),
+                    index: 1,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                incoming.questions()[0].is_class_in_or_any(),
+                should_match,
+                "wire class {wire_class:#06x}"
+            );
+            if should_match {
+                let mut response = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+                response.add_question_from(&incoming.questions()[0]);
+                let echoed = response.to_data_on_wire(MAX_PKT_DEFAULT, true).remove(0);
+                assert_eq!(&echoed[echoed.len() - 2..], &wire_class.to_be_bytes());
+            }
+        }
+    }
 
     /// `EscapedLabels` finds where each escaped label ends, and
     /// `parse_escaped_name` unescapes the same slices and drops the empty
