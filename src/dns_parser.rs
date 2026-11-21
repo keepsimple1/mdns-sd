@@ -338,7 +338,7 @@ const MSG_HEADER_LEN: usize = 12;
 /// Max size of a single DNS label, in bytes.
 ///
 /// Reference: [RFC1035 section 2.3.4](https://datatracker.ietf.org/doc/html/rfc1035#section-2.3.4)
-const MAX_LABEL_BYTES: usize = 63;
+pub(crate) const MAX_LABEL_BYTES: usize = 63;
 
 /// Max size of a whole domain name, in bytes.
 ///
@@ -2994,9 +2994,82 @@ fn unescape_label(label: &str) -> String {
     out
 }
 
+/// Returns the number of bytes `label` takes on the wire, i.e. the length of
+/// the label after `\.` and `\\` escapes are resolved the way
+/// `parse_escaped_name` resolves them. A backslash not followed by `.` or `\`
+/// stays a literal byte, as does a trailing lone backslash.
+pub(crate) fn escaped_label_wire_len(label: &str) -> usize {
+    let mut wire_len = 0;
+    let mut chars = label.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(&next_ch) = chars.peek() {
+                if next_ch == '.' || next_ch == '\\' {
+                    chars.next();
+                }
+            }
+            wire_len += 1;
+        } else {
+            wire_len += ch.len_utf8();
+        }
+    }
+    wire_len
+}
+
+/// Truncates `label` so that `escaped_label_wire_len` of the returned slice is
+/// at most `max_wire_len` bytes. A `\.` or `\\` escape pair is kept whole or
+/// dropped whole, and a UTF-8 character is never split.
+pub(crate) fn truncate_label_to_wire_len(label: &str, max_wire_len: usize) -> &str {
+    let mut wire_len = 0;
+    let mut end = 0;
+    let mut chars = label.char_indices().peekable();
+    while let Some((i, ch)) = chars.next() {
+        let cost = if ch == '\\' { 1 } else { ch.len_utf8() };
+        if wire_len + cost > max_wire_len {
+            break;
+        }
+        wire_len += cost;
+        end = i + ch.len_utf8();
+        if ch == '\\' {
+            if let Some(&(j, next_ch)) = chars.peek() {
+                if next_ch == '.' || next_ch == '\\' {
+                    // Keep the escape pair whole so no backslash dangles.
+                    chars.next();
+                    end = j + next_ch.len_utf8();
+                }
+            }
+        }
+    }
+    &label[..end]
+}
+
+/// Returns the wire length of the first label of `name`, treating an
+/// unescaped `.` as the label separator and `\.` / `\\` as escape pairs, the
+/// same rules as `parse_escaped_name`.
+pub(crate) fn first_label_wire_len(name: &str) -> usize {
+    let mut wire_len = 0;
+    let mut chars = name.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '.' => break,
+            '\\' => {
+                if let Some(&next_ch) = chars.peek() {
+                    if next_ch == '.' || next_ch == '\\' {
+                        chars.next();
+                    }
+                }
+                wire_len += 1;
+            }
+            _ => wire_len += ch.len_utf8(),
+        }
+    }
+    wire_len
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
+        escaped_label_wire_len, first_label_wire_len, truncate_label_to_wire_len,
         u16_from_be_slice, DnsAddress, DnsHostInfo, DnsIncoming, DnsOutPacket, DnsOutgoing,
         DnsPointer, DnsTxt, EscapedLabels, RRType, CLASS_ANY, CLASS_CACHE_FLUSH, CLASS_IN,
         CLASS_UNICAST_RESPONSE, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6,
@@ -3109,6 +3182,38 @@ mod tests {
         assert_eq!(labels.next(), Some("third"));
         assert_eq!(labels.rest(), "");
         assert_eq!(labels.next(), None);
+    }
+    #[test]
+    fn test_label_wire_helpers() {
+        // Wire length resolves `\.` and `\\` to one byte each; any other
+        // escaped character keeps its backslash as a literal byte.
+        assert_eq!(escaped_label_wire_len("foo"), 3);
+        assert_eq!(escaped_label_wire_len("a\\.b"), 3);
+        assert_eq!(escaped_label_wire_len("a\\\\b"), 3);
+        assert_eq!(escaped_label_wire_len("a\\xb"), 4);
+        assert_eq!(escaped_label_wire_len("ab\\"), 3);
+        assert_eq!(escaped_label_wire_len("é"), 2);
+
+        // The first label ends at the first unescaped dot.
+        assert_eq!(first_label_wire_len("foo.local."), 3);
+        assert_eq!(first_label_wire_len("a\\.b.local."), 3);
+        assert_eq!(first_label_wire_len("a\\\\b.local."), 3);
+        assert_eq!(first_label_wire_len("foo"), 3);
+        assert_eq!(first_label_wire_len(".local."), 0);
+
+        // Truncation fits a wire budget, on UTF-8 boundaries.
+        assert_eq!(truncate_label_to_wire_len("abcdef", 3), "abc");
+        assert_eq!(truncate_label_to_wire_len("abé", 3), "ab");
+        assert_eq!(truncate_label_to_wire_len("abé", 4), "abé");
+        assert_eq!(truncate_label_to_wire_len("abc", 0), "");
+        assert_eq!(truncate_label_to_wire_len("abc", 9), "abc");
+
+        // An escape pair is kept whole or dropped whole.
+        assert_eq!(truncate_label_to_wire_len("ab\\.cd", 3), "ab\\.");
+        assert_eq!(truncate_label_to_wire_len("ab\\.cd", 2), "ab");
+        assert_eq!(truncate_label_to_wire_len("ab\\\\cd", 3), "ab\\\\");
+        assert_eq!(truncate_label_to_wire_len("ab\\\\cd", 2), "ab");
+        assert_eq!(truncate_label_to_wire_len("ab\\xc", 4), "ab\\x");
     }
 
     /// Found by fuzzing the packet parser.
