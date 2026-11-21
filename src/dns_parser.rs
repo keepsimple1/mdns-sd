@@ -450,8 +450,8 @@ impl DnsQuestion {
         self.entry.class == CLASS_IN || self.entry.class == CLASS_ANY
     }
 
-    /// Restores the class field as it appeared in the incoming question.
-    pub(crate) fn wire_class(&self) -> u16 {
+    /// The qclass as written on the wire, including the QU bit if set.
+    fn wire_class(&self) -> u16 {
         self.entry.class
             | if self.entry.cache_flush {
                 CLASS_UNICAST_RESPONSE
