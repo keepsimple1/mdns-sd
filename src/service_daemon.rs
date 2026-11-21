@@ -7300,8 +7300,6 @@ mod tests {
         packet_buffer.add_additional_answer(invalidate_ptr_packet);
 
         // One socket per IP family, bound to the mDNS port like the daemon's own.
-        // `send_dns_outgoing_impl` picks the outgoing interface for each send.
-        // A socket is only unwrapped when an interface of its family uses it.
         let sock_v4 = new_multicast_socket(std::net::SocketAddr::from((
             Ipv4Addr::UNSPECIFIED,
             MDNS_PORT,
@@ -7312,6 +7310,7 @@ mod tests {
         )));
 
         for intf in intfs {
+            // A socket is only unwrapped when an interface of its family uses it.
             let sock = if intf.addr.ip().is_ipv4() {
                 sock_v4.as_ref()
             } else {
