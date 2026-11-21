@@ -7300,11 +7300,11 @@ mod tests {
         packet_buffer.add_additional_answer(invalidate_ptr_packet);
 
         // One socket per IP family, bound to the mDNS port like the daemon's own.
-        let sock_v4 = new_multicast_socket(std::net::SocketAddr::from((
+        let sock_v4_result = new_multicast_socket(std::net::SocketAddr::from((
             Ipv4Addr::UNSPECIFIED,
             MDNS_PORT,
         )));
-        let sock_v6 = new_multicast_socket(std::net::SocketAddr::from((
+        let sock_v6_result = new_multicast_socket(std::net::SocketAddr::from((
             Ipv6Addr::UNSPECIFIED,
             MDNS_PORT,
         )));
@@ -7312,9 +7312,9 @@ mod tests {
         for intf in intfs {
             // A socket is only unwrapped when an interface of its family uses it.
             let sock = if intf.addr.ip().is_ipv4() {
-                sock_v4.as_ref()
+                sock_v4_result.as_ref()
             } else {
-                sock_v6.as_ref()
+                sock_v6_result.as_ref()
             }
             .unwrap();
             send_dns_outgoing_impl(
