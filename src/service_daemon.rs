@@ -1005,70 +1005,6 @@ impl ServiceDaemon {
     }
 }
 
-/// Creates a new UDP socket that uses `intf` to send and recv multicast.
-fn _new_socket_bind(intf: &Interface, should_loop: bool) -> Result<MyUdpSocket> {
-    // Use the same socket for receiving and sending multicast packets.
-    // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
-    let intf_ip = &intf.ip();
-    match intf_ip {
-        IpAddr::V4(ip) => {
-            let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), MDNS_PORT);
-            let sock = new_socket(addr.into(), true)?;
-
-            // Join mDNS group to receive packets.
-            sock.join_multicast_v4(&GROUP_ADDR_V4, ip)
-                .map_err(|e| e_fmt!("join multicast group on addr {}: {}", intf_ip, e))?;
-
-            // Set IP_MULTICAST_IF to send packets.
-            sock.set_multicast_if_v4(ip)
-                .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
-
-            // Per RFC 6762 section 11:
-            // "All Multicast DNS responses (including responses sent via unicast) SHOULD
-            // be sent with IP TTL set to 255."
-            // Here we set the TTL to 255 for multicast as we don't support unicast yet.
-            sock.set_multicast_ttl_v4(255)
-                .map_err(|e| e_fmt!("set set_multicast_ttl_v4 on addr {}: {}", ip, e))?;
-
-            if !should_loop {
-                sock.set_multicast_loop_v4(false)
-                    .map_err(|e| e_fmt!("failed to set multicast loop v4 for {ip}: {e}"))?;
-            }
-
-            // Test if we can send packets successfully.
-            let multicast_addr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
-            let test_packets = DnsOutgoing::new(0).to_data_on_wire(MAX_PKT_DEFAULT, true);
-            for packet in test_packets {
-                sock.send_to(&packet, &multicast_addr)
-                    .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
-            }
-            MyUdpSocket::new(sock)
-                .map_err(|e| e_fmt!("failed to create MySocket for interface {}: {e}", intf.name))
-        }
-        IpAddr::V6(ip) => {
-            let addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), MDNS_PORT, 0, 0);
-            let sock = new_socket(addr.into(), true)?;
-
-            let if_index = intf.index.unwrap_or(0);
-
-            // Join mDNS group to receive packets.
-            sock.join_multicast_v6(&GROUP_ADDR_V6, if_index)
-                .map_err(|e| e_fmt!("join multicast group on addr {}: {}", ip, e))?;
-
-            // Set IPV6_MULTICAST_IF to send packets.
-            sock.set_multicast_if_v6(if_index)
-                .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
-
-            // We are not sending multicast packets to test this socket as there might
-            // be many IPv6 interfaces on a host and could cause such send error:
-            // "No buffer space available (os error 55)".
-
-            MyUdpSocket::new(sock)
-                .map_err(|e| e_fmt!("failed to create MySocket for interface {}: {e}", intf.name))
-        }
-    }
-}
-
 /// Creates a new UDP socket to bind to `port` with REUSEPORT option.
 /// `non_block` indicates whether to set O_NONBLOCK for the socket.
 fn new_socket(addr: SocketAddr, non_block: bool) -> Result<PktInfoUdpSocket> {
@@ -5891,8 +5827,8 @@ fn resolve_addr_to_index(if_kind: IfKind, interfaces: &[Interface]) -> IfKind {
 #[cfg(test)]
 mod tests {
     use super::{
-        _new_socket_bind, answer_hostname_question, check_domain_suffix, check_service_name_length,
-        hostname_change, ip_address_rr_type, is_own_address, my_ip_interfaces, name_change,
+        answer_hostname_question, check_domain_suffix, check_service_name_length, hostname_change,
+        ip_address_rr_type, is_own_address, my_ip_interfaces, name_change, new_multicast_socket,
         resolve_max_packet_size, send_dns_outgoing_impl, valid_instance_name, valid_ip_on_intf,
         DaemonEvent, HostnameResolutionEvent, IfKind, MaxPacketSizeSelection, MyIntf, SendConfig,
         ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4, INITIAL_QUERY_DELAY_MAX_MILLIS,
@@ -7363,8 +7299,24 @@ mod tests {
         let mut packet_buffer = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         packet_buffer.add_additional_answer(invalidate_ptr_packet);
 
+        // One socket per IP family, bound to the mDNS port like the daemon's own.
+        let sock_v4_result = new_multicast_socket(std::net::SocketAddr::from((
+            Ipv4Addr::UNSPECIFIED,
+            MDNS_PORT,
+        )));
+        let sock_v6_result = new_multicast_socket(std::net::SocketAddr::from((
+            Ipv6Addr::UNSPECIFIED,
+            MDNS_PORT,
+        )));
+
         for intf in intfs {
-            let sock = _new_socket_bind(&intf, true).unwrap();
+            // A socket is only unwrapped when an interface of its family uses it.
+            let sock = if intf.addr.ip().is_ipv4() {
+                sock_v4_result.as_ref()
+            } else {
+                sock_v6_result.as_ref()
+            }
+            .unwrap();
             send_dns_outgoing_impl(
                 &packet_buffer,
                 &intf.name,
