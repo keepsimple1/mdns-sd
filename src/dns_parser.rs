@@ -2971,7 +2971,6 @@ fn unescape_label(label: &str) -> String {
 /// the label after `\.` and `\\` escapes are resolved the way
 /// `parse_escaped_name` resolves them. A backslash not followed by `.` or `\`
 /// stays a literal byte, as does a trailing lone backslash.
-#[cfg(test)]
 pub(crate) fn escaped_label_wire_len(label: &str) -> usize {
     let mut wire_len = 0;
     let mut chars = label.chars().peekable();
