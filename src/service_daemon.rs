@@ -35,8 +35,8 @@ use crate::{
     dns_parser::{
         ip_address_rr_type, max_pkt_absolute, DnsAddress, DnsEntryExt, DnsIncoming, DnsNSec,
         DnsOutgoing, DnsPointer, DnsQuestion, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt,
-        InterfaceId, RRType, ScopedIp, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY,
-        FLAGS_QR_RESPONSE, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
+        EscapedLabels, InterfaceId, RRType, ScopedIp, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA,
+        FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
     },
     error::{e_fmt, Error, Result},
     service_info::{
@@ -52,7 +52,7 @@ use socket2::Domain;
 use socket_pktinfo::PktInfoUdpSocket;
 use std::{
     cmp::{self, Reverse},
-    collections::{BinaryHeap, HashMap, HashSet},
+    collections::{BTreeMap, BinaryHeap, HashMap, HashSet},
     fmt, io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     str,
@@ -156,11 +156,150 @@ pub enum UnregisterStatus {
 #[derive(Debug, PartialEq, Clone, Eq)]
 #[non_exhaustive]
 pub enum DaemonStatus {
-    /// The daemon is running as normal.
-    Running,
+    /// The daemon is running, with at least one of its IPv4 and IPv6 sockets bound.
+    Running(RunningState),
 
     /// The daemon has been shutdown.
     Shutdown,
+}
+
+/// A snapshot of the local setup of a running daemon: its multicast sockets
+/// and the interfaces it uses.
+///
+/// It only covers the daemon's own setup, as of when the daemon handled the
+/// [`status`](ServiceDaemon::status) request. It does not tell whether packets
+/// get delivered, or whether any service can be found or resolved.
+#[derive(Debug, PartialEq, Clone, Eq)]
+#[non_exhaustive]
+pub struct RunningState {
+    ipv4_socket: SocketState,
+    ipv6_socket: SocketState,
+    enabled_intfs: Vec<EnabledIntf>,
+}
+
+impl RunningState {
+    /// The state of the IPv4 multicast socket.
+    pub fn ipv4_socket(&self) -> &SocketState {
+        &self.ipv4_socket
+    }
+
+    /// The state of the IPv6 multicast socket.
+    pub fn ipv6_socket(&self) -> &SocketState {
+        &self.ipv6_socket
+    }
+
+    /// The enabled interfaces the daemon uses, ordered by interface index.
+    ///
+    /// An interface is listed once the daemon has tried to join the multicast
+    /// group on it for at least one IP version, whether or not that worked.
+    /// Interfaces disabled with [`disable_interface`](ServiceDaemon::disable_interface)
+    /// are not listed, nor are addresses of an IP version whose socket is not
+    /// bound.
+    ///
+    /// Interfaces are checked periodically (see
+    /// [`set_ip_check_interval`](ServiceDaemon::set_ip_check_interval)), so a
+    /// newly added address may only show up after the next check.
+    pub fn enabled_intfs(&self) -> &[EnabledIntf] {
+        &self.enabled_intfs
+    }
+}
+
+/// The state of the multicast socket of one IP version.
+///
+/// Sockets are only set up when the daemon starts, so this does not change
+/// while it runs.
+#[derive(Debug, PartialEq, Clone, Eq)]
+#[non_exhaustive]
+pub struct SocketState {
+    bind_error: Option<String>,
+}
+
+impl SocketState {
+    fn new(sock: &Result<MyUdpSocket>) -> Self {
+        Self {
+            bind_error: sock.as_ref().err().map(|e| e.to_string()),
+        }
+    }
+
+    /// Whether the multicast socket was bound successfully.
+    pub fn is_bound(&self) -> bool {
+        self.bind_error.is_none()
+    }
+
+    /// The error from setting up the multicast socket, if it failed.
+    pub fn bind_error(&self) -> Option<&str> {
+        self.bind_error.as_deref()
+    }
+}
+
+/// A network interface enabled in the daemon.
+#[derive(Debug, PartialEq, Clone, Eq)]
+#[non_exhaustive]
+pub struct EnabledIntf {
+    name: String,
+    index: u32,
+    ipv4: Option<Membership>,
+    ipv6: Option<Membership>,
+}
+
+impl EnabledIntf {
+    /// The name of the interface.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The index of the interface assigned by the OS.
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+
+    /// The IPv4 multicast membership on this interface, or `None` if the
+    /// daemon has no IPv4 address on it.
+    pub fn ipv4(&self) -> Option<&Membership> {
+        self.ipv4.as_ref()
+    }
+
+    /// The IPv6 multicast membership on this interface, or `None` if the
+    /// daemon has no IPv6 address on it.
+    pub fn ipv6(&self) -> Option<&Membership> {
+        self.ipv6.as_ref()
+    }
+}
+
+/// The multicast group membership of one IP version on an interface.
+///
+/// The membership is per interface and IP version: all addresses of that
+/// version on the interface share it.
+#[derive(Debug, PartialEq, Clone, Eq)]
+#[non_exhaustive]
+pub struct Membership {
+    addrs: Vec<IpAddr>,
+    join_error: Option<String>,
+}
+
+impl Membership {
+    /// The addresses of this IP version on the interface, sorted by their
+    /// numeric value, not in any order of preference.
+    pub fn addrs(&self) -> &[IpAddr] {
+        &self.addrs
+    }
+
+    /// Whether the interface has joined the mDNS multicast group.
+    pub fn is_joined(&self) -> bool {
+        self.join_error.is_none()
+    }
+
+    /// The error from the last attempt to join the multicast group, if it
+    /// failed.
+    ///
+    /// The daemon retries at its next IP check (see
+    /// [`set_ip_check_interval`](ServiceDaemon::set_ip_check_interval)). With IP
+    /// checks disabled, it only retries when
+    /// [`enable_interface`](ServiceDaemon::enable_interface) or
+    /// [`disable_interface`](ServiceDaemon::disable_interface) is called.
+    pub fn join_error(&self) -> Option<&str> {
+        self.join_error.as_deref()
+    }
 }
 
 /// Different counters included in the metrics.
@@ -340,10 +479,11 @@ impl ServiceDaemon {
     /// Returns [`Error::Msg`] if the daemon cannot be initialized. This wraps an
     /// underlying OS-level failure.
     ///
-    /// Note that this constructor does not open the mDNS multicast sockets — those
-    /// are opened lazily by the daemon thread once it starts, so platform issues
-    /// such as "multicast not permitted" are surfaced later via [`DaemonEvent`] from
-    /// [`monitor`](Self::monitor) rather than here.
+    /// This includes failing to set up both the IPv4 and the IPv6 multicast
+    /// sockets, e.g. when the port is held by another process without
+    /// `SO_REUSEADDR`. If only one of them fails, e.g. on a host without IPv6,
+    /// the daemon still runs, and [`status`](Self::status) tells which one
+    /// is bound.
     pub fn new() -> Result<Self> {
         Self::new_with_port(MDNS_PORT)
     }
@@ -374,11 +514,7 @@ impl ServiceDaemon {
     /// # Errors
     ///
     /// See [`new`](Self::new) for the set of OS-level failures that may surface
-    /// here. Note that `port` is *not* validated against the kernel until the
-    /// daemon thread tries to bind the mDNS sockets, so an unusable `port`
-    /// (e.g., already in use, requires elevated privileges) will not be
-    /// reported by this constructor — listen for such failures via
-    /// [`monitor`](Self::monitor).
+    /// here, including failing to bind both multicast sockets to `port`.
     pub fn new_with_port(port: u16) -> Result<Self> {
         let poller = Poll::new().map_err(|e| e_fmt!("failed to create mio Poll: {e}"))?;
         // Created before the thread starts so a registration failure is
@@ -391,11 +527,24 @@ impl ServiceDaemon {
 
         let (sender, receiver) = bounded(100);
 
+        // Created and registered here rather than in the daemon thread, so that
+        // a daemon without any multicast socket is reported to the caller.
+        let mut sockets = MulticastSockets::new(port);
+        if let (Err(e4), Err(e6)) = (&sockets.ipv4, &sockets.ipv6) {
+            return Err(e_fmt!(
+                "no mDNS socket on port {port}: IPv4: {e4}; IPv6: {e6}"
+            ));
+        }
+        sockets.register(poller.registry())?;
+
         let cmd_sender = sender.clone();
         let thread_waker = waker.clone();
         thread::Builder::new()
             .name("mDNS_daemon".to_string())
-            .spawn(move || Self::daemon_thread(thread_waker, poller, receiver, port, cmd_sender))
+            .spawn(move || {
+                let zc = Zeroconf::new(thread_waker, poller, sockets, port, cmd_sender);
+                Self::daemon_thread(zc, receiver)
+            })
             .map_err(|e| e_fmt!("thread builder failed to spawn: {}", e))?;
 
         Ok(Self { sender, waker })
@@ -593,6 +742,11 @@ impl ServiceDaemon {
     }
 
     /// Returns the status of the daemon.
+    ///
+    /// The status is a snapshot, as of when the daemon handled the request.
+    /// While running, it tells which of the IPv4 and IPv6 multicast sockets
+    /// are bound, and which interfaces have joined the multicast group, see
+    /// [`RunningState`].
     ///
     /// # Errors
     ///
@@ -833,15 +987,7 @@ impl ServiceDaemon {
         self.send_cmd(Command::Verify(instance_fullname, timeout))
     }
 
-    fn daemon_thread(
-        waker: Arc<Waker>,
-        poller: Poll,
-        receiver: Receiver<Command>,
-        port: u16,
-        cmd_sender: Sender<Command>,
-    ) {
-        let mut zc = Zeroconf::new(waker, poller, port, cmd_sender);
-
+    fn daemon_thread(mut zc: Zeroconf, receiver: Receiver<Command>) {
         if let Some(cmd) = zc.run(receiver) {
             match cmd {
                 Command::Exit(resp_s) => {
@@ -855,70 +1001,6 @@ impl ServiceDaemon {
                     debug!("Unexpected command: {:?}", cmd);
                 }
             }
-        }
-    }
-}
-
-/// Creates a new UDP socket that uses `intf` to send and recv multicast.
-fn _new_socket_bind(intf: &Interface, should_loop: bool) -> Result<MyUdpSocket> {
-    // Use the same socket for receiving and sending multicast packets.
-    // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
-    let intf_ip = &intf.ip();
-    match intf_ip {
-        IpAddr::V4(ip) => {
-            let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), MDNS_PORT);
-            let sock = new_socket(addr.into(), true)?;
-
-            // Join mDNS group to receive packets.
-            sock.join_multicast_v4(&GROUP_ADDR_V4, ip)
-                .map_err(|e| e_fmt!("join multicast group on addr {}: {}", intf_ip, e))?;
-
-            // Set IP_MULTICAST_IF to send packets.
-            sock.set_multicast_if_v4(ip)
-                .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
-
-            // Per RFC 6762 section 11:
-            // "All Multicast DNS responses (including responses sent via unicast) SHOULD
-            // be sent with IP TTL set to 255."
-            // Here we set the TTL to 255 for multicast as we don't support unicast yet.
-            sock.set_multicast_ttl_v4(255)
-                .map_err(|e| e_fmt!("set set_multicast_ttl_v4 on addr {}: {}", ip, e))?;
-
-            if !should_loop {
-                sock.set_multicast_loop_v4(false)
-                    .map_err(|e| e_fmt!("failed to set multicast loop v4 for {ip}: {e}"))?;
-            }
-
-            // Test if we can send packets successfully.
-            let multicast_addr = SocketAddrV4::new(GROUP_ADDR_V4, MDNS_PORT).into();
-            let test_packets = DnsOutgoing::new(0).to_data_on_wire(MAX_PKT_DEFAULT, true);
-            for packet in test_packets {
-                sock.send_to(&packet, &multicast_addr)
-                    .map_err(|e| e_fmt!("send multicast packet on addr {}: {}", ip, e))?;
-            }
-            MyUdpSocket::new(sock)
-                .map_err(|e| e_fmt!("failed to create MySocket for interface {}: {e}", intf.name))
-        }
-        IpAddr::V6(ip) => {
-            let addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), MDNS_PORT, 0, 0);
-            let sock = new_socket(addr.into(), true)?;
-
-            let if_index = intf.index.unwrap_or(0);
-
-            // Join mDNS group to receive packets.
-            sock.join_multicast_v6(&GROUP_ADDR_V6, if_index)
-                .map_err(|e| e_fmt!("join multicast group on addr {}: {}", ip, e))?;
-
-            // Set IPV6_MULTICAST_IF to send packets.
-            sock.set_multicast_if_v6(if_index)
-                .map_err(|e| e_fmt!("set multicast_if on addr {}: {}", ip, e))?;
-
-            // We are not sending multicast packets to test this socket as there might
-            // be many IPv6 interfaces on a host and could cause such send error:
-            // "No buffer space available (os error 55)".
-
-            MyUdpSocket::new(sock)
-                .map_err(|e| e_fmt!("failed to create MySocket for interface {}: {e}", intf.name))
         }
     }
 }
@@ -1194,7 +1276,15 @@ struct Zeroconf {
     /// set its timeout to the earliest timer in this list.
     timers: BinaryHeap<Reverse<Instant>>,
 
-    status: DaemonStatus,
+    /// Outcome of setting up the IPv4 multicast socket.
+    ipv4_socket_state: SocketState,
+
+    /// Outcome of setting up the IPv6 multicast socket.
+    ipv6_socket_state: SocketState,
+
+    /// Interface addresses not recorded in `my_intfs` because joining the
+    /// multicast group failed. Retried at the next IP check.
+    join_failures: JoinFailures,
 
     /// Service instances that are pending for resolving SRV and TXT.
     pending_resolves: HashSet<String>,
@@ -1296,6 +1386,21 @@ fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<
     Ok(())
 }
 
+/// A failed attempt to join the multicast group on an interface, for one IP version.
+struct JoinFailure {
+    /// The name of the interface.
+    name: String,
+
+    /// The addresses of that IP version not recorded because of the failure.
+    addrs: HashSet<IfAddr>,
+
+    /// The error from the last attempt.
+    error: String,
+}
+
+/// Failed joins, keyed by interface index and whether the IP version is IPv4.
+type JoinFailures = HashMap<(u32, bool), JoinFailure>;
+
 /// Records the address of `intf` in `my_intfs`, joining the multicast group first
 /// if its interface does not hold the membership yet.
 ///
@@ -1305,9 +1410,11 @@ fn join_multicast_group(my_sock: &PktInfoUdpSocket, intf: &Interface) -> Result<
 /// (`AddrInUse` on most platforms, `WSAEINVAL` on Windows), so that is skipped.
 ///
 /// Returns `false`, recording nothing, if the address is already recorded or the
-/// join fails. A failed address is then retried by the next IP check.
+/// join fails. A failed address is then retried by the next IP check or selection
+/// change, and kept in `join_failures` until it is recorded or gone.
 fn add_intf_addr(
     my_intfs: &mut HashMap<u32, MyIntf>,
+    join_failures: &mut JoinFailures,
     sock: &PktInfoUdpSocket,
     intf: &Interface,
 ) -> bool {
@@ -1327,12 +1434,27 @@ fn add_intf_addr(
         }
     });
 
+    let failure_key = (if_index, intf.ip().is_ipv4());
+
     if !has_membership {
         if let Err(e) = join_multicast_group(sock, intf) {
             debug!("failed to join multicast on {}: {e}. Skipped.", intf.name);
+            let failure = join_failures
+                .entry(failure_key)
+                .or_insert_with(|| JoinFailure {
+                    name: intf.name.clone(),
+                    addrs: HashSet::new(),
+                    error: String::new(),
+                });
+            failure.addrs.insert(intf.addr.clone());
+            failure.error = e.to_string();
             return false;
         }
     }
+
+    // The interface holds the membership of this IP version now. Its other
+    // addresses that failed before are recorded at the next IP check.
+    join_failures.remove(&failure_key);
 
     my_intfs
         .entry(if_index)
@@ -1374,8 +1496,58 @@ fn new_multicast_socket(addr: SocketAddr) -> Result<MyUdpSocket> {
     MyUdpSocket::new(sock).map_err(|e| e_fmt!("create MyUdpSocket for {}: {}", addr, e))
 }
 
+/// The IPv4 and IPv6 multicast sockets of a daemon, or why each failed.
+struct MulticastSockets {
+    ipv4: Result<MyUdpSocket>,
+    ipv6: Result<MyUdpSocket>,
+}
+
+impl MulticastSockets {
+    /// Creates both sockets on `port`. Either one may fail, e.g. on a host
+    /// without IPv6.
+    ///
+    /// Use the same socket for receiving and sending multicast packets.
+    /// Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
+    fn new(port: u16) -> Self {
+        let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port);
+        let ipv4 = new_multicast_socket(addr.into());
+        if let Err(e) = &ipv4 {
+            debug!("failed to set up IPv4 socket: {e}");
+        }
+
+        let addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), port, 0, 0);
+        let ipv6 = new_multicast_socket(addr.into());
+        if let Err(e) = &ipv6 {
+            debug!("failed to set up IPv6 socket: {e}");
+        }
+
+        Self { ipv4, ipv6 }
+    }
+
+    /// Registers the sockets that were set up with `registry`, for reading.
+    fn register(&mut self, registry: &Registry) -> Result<()> {
+        if let Ok(sock) = self.ipv4.as_mut() {
+            registry
+                .register(sock, Token(IPV4_SOCK_EVENT_KEY), Interest::READABLE)
+                .map_err(|e| e_fmt!("failed to register IPv4 socket with the poller: {e}"))?;
+        }
+        if let Ok(sock) = self.ipv6.as_mut() {
+            registry
+                .register(sock, Token(IPV6_SOCK_EVENT_KEY), Interest::READABLE)
+                .map_err(|e| e_fmt!("failed to register IPv6 socket with the poller: {e}"))?;
+        }
+        Ok(())
+    }
+}
+
 impl Zeroconf {
-    fn new(waker: Arc<Waker>, poller: Poll, port: u16, cmd_sender: Sender<Command>) -> Self {
+    fn new(
+        waker: Arc<Waker>,
+        poller: Poll,
+        sockets: MulticastSockets,
+        port: u16,
+        cmd_sender: Sender<Command>,
+    ) -> Self {
         // Get interfaces.
         let my_ifaddrs = my_ip_interfaces(true);
 
@@ -1385,21 +1557,12 @@ impl Zeroconf {
         let mut my_intfs = HashMap::new();
         let mut dns_registry_map = HashMap::new();
 
-        // Use the same socket for receiving and sending multicast packets.
-        // Such socket has to bind to INADDR_ANY or IN6ADDR_ANY.
-        let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port);
-        let ipv4_sock = new_multicast_socket(addr.into());
-        if let Err(e) = &ipv4_sock {
-            debug!("failed to set up IPv4 socket: {e}");
-        }
-        let ipv4_sock = ipv4_sock.ok();
+        let mut join_failures = HashMap::new();
 
-        let addr = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), port, 0, 0);
-        let ipv6_sock = new_multicast_socket(addr.into());
-        if let Err(e) = &ipv6_sock {
-            debug!("failed to set up IPv6 socket: {e}");
-        }
-        let ipv6_sock = ipv6_sock.ok();
+        let ipv4_socket_state = SocketState::new(&sockets.ipv4);
+        let ipv6_socket_state = SocketState::new(&sockets.ipv6);
+        let ipv4_sock = sockets.ipv4.ok();
+        let ipv6_sock = sockets.ipv6.ok();
 
         // Configure sockets to join multicast groups.
         for intf in my_ifaddrs {
@@ -1417,7 +1580,7 @@ impl Zeroconf {
                 continue;
             };
 
-            if add_intf_addr(&mut my_intfs, &sock.pktinfo, &intf) {
+            if add_intf_addr(&mut my_intfs, &mut join_failures, &sock.pktinfo, &intf) {
                 dns_registry_map
                     .entry(intf.index.unwrap_or(0))
                     .or_insert_with(DnsRegistry::new);
@@ -1432,8 +1595,6 @@ impl Zeroconf {
 
         // Enable everything, including loopback interfaces.
         let if_selections = vec![];
-
-        let status = DaemonStatus::Running;
 
         Self {
             port,
@@ -1456,7 +1617,9 @@ impl Zeroconf {
             max_packet_sizes: Vec::new(),
             if_selections,
             timers,
-            status,
+            ipv4_socket_state,
+            ipv6_socket_state,
+            join_failures,
             pending_resolves: HashSet::new(),
             resolved: HashSet::new(),
             multicast_loop_v4: true,
@@ -1656,28 +1819,7 @@ impl Zeroconf {
     /// 4. announce its registered services.
     /// 5. process retransmissions if any.
     fn run(&mut self, receiver: Receiver<Command>) -> Option<Command> {
-        // The `Waker` is already registered with this poller.
-        if let Some(sock) = self.ipv4_sock.as_mut() {
-            if let Err(e) = self.poller.registry().register(
-                sock,
-                mio::Token(IPV4_SOCK_EVENT_KEY),
-                mio::Interest::READABLE,
-            ) {
-                debug!("failed to register ipv4 socket: {}", e);
-                return None;
-            }
-        }
-
-        if let Some(sock) = self.ipv6_sock.as_mut() {
-            if let Err(e) = self.poller.registry().register(
-                sock,
-                mio::Token(IPV6_SOCK_EVENT_KEY),
-                mio::Interest::READABLE,
-            ) {
-                debug!("failed to register ipv6 socket: {}", e);
-                return None;
-            }
-        }
+        // The `Waker` and the sockets are already registered with this poller.
 
         // Setup timer for IP checks.
         self.schedule_ip_check(Instant::now());
@@ -1732,7 +1874,6 @@ impl Zeroconf {
                 if matches!(command, Command::Exit(_)) {
                     debug!("Exit command received, performing cleanup");
                     self.cleanup();
-                    self.status = DaemonStatus::Shutdown;
                     return Some(command);
                 }
                 self.exec_command(command, false);
@@ -2049,6 +2190,63 @@ impl Zeroconf {
         self.notify_monitors(DaemonEvent::IpDel(ip));
     }
 
+    /// A snapshot of the sockets and the enabled interfaces, for `GetStatus`.
+    fn running_state(&self) -> RunningState {
+        fn sorted_ips<'a>(addrs: impl Iterator<Item = &'a IfAddr>) -> Vec<IpAddr> {
+            let mut ips: Vec<IpAddr> = addrs.map(|a| a.ip()).collect();
+            ips.sort();
+            ips
+        }
+
+        let mut intfs: BTreeMap<u32, EnabledIntf> = BTreeMap::new();
+
+        for (if_index, my_intf) in self.my_intfs.iter() {
+            let membership = |is_v4: bool| {
+                let addrs = sorted_ips(my_intf.addrs.iter().filter(|a| a.ip().is_ipv4() == is_v4));
+                (!addrs.is_empty()).then_some(Membership {
+                    addrs,
+                    join_error: None,
+                })
+            };
+            intfs.insert(
+                *if_index,
+                EnabledIntf {
+                    name: my_intf.name.clone(),
+                    index: *if_index,
+                    ipv4: membership(true),
+                    ipv6: membership(false),
+                },
+            );
+        }
+
+        for ((if_index, is_v4), failure) in self.join_failures.iter() {
+            let intf = intfs.entry(*if_index).or_insert_with(|| EnabledIntf {
+                name: failure.name.clone(),
+                index: *if_index,
+                ipv4: None,
+                ipv6: None,
+            });
+            let slot = if *is_v4 {
+                &mut intf.ipv4
+            } else {
+                &mut intf.ipv6
+            };
+            // A successful join removes the failure, so the slot is empty.
+            if slot.is_none() {
+                *slot = Some(Membership {
+                    addrs: sorted_ips(failure.addrs.iter()),
+                    join_error: Some(failure.error.clone()),
+                });
+            }
+        }
+
+        RunningState {
+            ipv4_socket: self.ipv4_socket_state.clone(),
+            ipv6_socket: self.ipv6_socket_state.clone(),
+            enabled_intfs: intfs.into_values().collect(),
+        }
+    }
+
     /// Check for IP changes and update [my_intfs] as needed.
     fn check_ip_changes(&mut self) {
         // Get the current interfaces.
@@ -2066,6 +2264,15 @@ impl Zeroconf {
                 acc.entry(if_index).or_default().push(&intf.addr);
                 acc
             });
+
+        // Forget failed joins of addresses that are gone.
+        self.join_failures.retain(|(if_index, _), failure| {
+            let current_addrs = ifaddrs_map.get(if_index);
+            failure
+                .addrs
+                .retain(|addr| current_addrs.is_some_and(|addrs| addrs.contains(&addr)));
+            !failure.addrs.is_empty()
+        });
 
         let mut deleted_intfs = Vec::new();
         let mut deleted_ips = Vec::new();
@@ -2187,6 +2394,15 @@ impl Zeroconf {
             intf.ip()
         );
 
+        // A disabled or invalid address is no longer retried.
+        let failure_key = (if_index, intf.ip().is_ipv4());
+        if let Some(failure) = self.join_failures.get_mut(&failure_key) {
+            failure.addrs.remove(&intf.addr);
+            if failure.addrs.is_empty() {
+                self.join_failures.remove(&failure_key);
+            }
+        }
+
         // Another interface with the same address still serves it, and shares its
         // IPv4 membership, e.g. the `bridge1NN` and `vmenetN` pairs of VMs on macOS.
         let shared = self.intfs_with_ip(&intf.ip()).any(|i| i != if_index);
@@ -2294,7 +2510,12 @@ impl Zeroconf {
             return;
         };
 
-        if !add_intf_addr(&mut self.my_intfs, &sock.pktinfo, intf) {
+        if !add_intf_addr(
+            &mut self.my_intfs,
+            &mut self.join_failures,
+            &sock.pktinfo,
+            intf,
+        ) {
             return;
         }
 
@@ -3377,13 +3598,15 @@ impl Zeroconf {
             let mut new_records = Vec::new();
 
             let name = answer.get_name();
-            let Some(probe) = dns_registry.probing.get_mut(name) else {
+            if !dns_registry.probing.contains_key(name) {
                 continue;
-            };
+            }
 
-            // check against possible multicast forwarding
-            if answer.get_type() == RRType::A || answer.get_type() == RRType::AAAA {
+            let is_address = matches!(answer.get_type(), RRType::A | RRType::AAAA);
+
+            if is_address {
                 if let Some(answer_addr) = answer.any().downcast_ref::<DnsAddress>() {
+                    // check against possible multicast forwarding
                     if answer_addr.interface_id.index != if_index {
                         debug!(
                             "conflict handler: answer addr {:?} not in the subnet of intf {}",
@@ -3391,8 +3614,30 @@ impl Zeroconf {
                         );
                         continue;
                     }
-                }
 
+                    // RFC 6762 section 9: only a record with different rdata
+                    // from another host is a conflict.
+                    if is_own_address(
+                        &self.my_services,
+                        my_intf,
+                        dns_registry,
+                        name,
+                        &answer_addr.ip(),
+                    ) {
+                        debug!(
+                            "conflict handler: answer addr {} for '{name}' is our own",
+                            answer_addr.ip()
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            let Some(probe) = dns_registry.probing.get_mut(name) else {
+                continue;
+            };
+
+            if is_address {
                 // double check if any other address record matches rrdata,
                 // as there could be multiple addresses for the same name.
                 let any_match = probe.records.iter().any(|r| {
@@ -3405,11 +3650,21 @@ impl Zeroconf {
                 }
             }
 
+            // Note: for address records, a conflict is detected at this point.
+
             probe.records.retain(|record| {
-                if record.get_type() == answer.get_type()
-                    && record.get_class() == answer.get_class()
-                    && !record.rrdata_match(answer.as_ref())
-                {
+                let is_conflict = if is_address {
+                    // A conflict on a hostname renames the host, so all of its
+                    // address records (A and AAAA) move to the new name together.
+                    matches!(record.get_type(), RRType::A | RRType::AAAA)
+                        && record.get_class() == answer.get_class()
+                } else {
+                    record.get_type() == answer.get_type()
+                        && record.get_class() == answer.get_class()
+                        && !record.rrdata_match(answer.as_ref())
+                };
+
+                if is_conflict {
                     debug!(
                         "found conflict name: '{name}' record: {}: {} PEER: {}",
                         record.get_type(),
@@ -3420,10 +3675,10 @@ impl Zeroconf {
                     // create a new name for this record
                     // then remove the old record in probing.
                     let mut new_record = record.clone();
-                    let new_name = match record.get_type() {
-                        RRType::A => hostname_change(name),
-                        RRType::AAAA => hostname_change(name),
-                        _ => name_change(name),
+                    let new_name = if is_address {
+                        hostname_change(name)
+                    } else {
+                        name_change(name)
                     };
                     new_record.get_record_mut().set_new_name(new_name);
                     new_records.push(new_record);
@@ -3438,10 +3693,56 @@ impl Zeroconf {
             //     dns_registry.probing.remove(name);
             // }
 
+            if new_records.is_empty() {
+                continue;
+            }
+
+            let mut waiting_services = probe.waiting_services.clone();
+
+            // The address records of this host that already finished probing
+            // also move to the new hostname, so that the new probe has all of
+            // the host's addresses.
+            if is_address {
+                if let Some(active_records) = dns_registry.active.get_mut(name) {
+                    active_records.retain(|record| {
+                        if matches!(record.get_type(), RRType::A | RRType::AAAA) {
+                            let mut new_record = record.clone();
+                            new_record
+                                .get_record_mut()
+                                .set_new_name(hostname_change(name));
+                            new_records.push(new_record);
+                            return false;
+                        }
+                        true
+                    });
+                }
+
+                // A new hostname affects every service on the host, not only
+                // the ones waiting on this probe. Note: must run before
+                // `name_changes` is updated below, while `name` still resolves.
+                for service in self.my_services.values() {
+                    let original = service.get_hostname();
+                    if original.eq_ignore_ascii_case(name)
+                        || dns_registry
+                            .resolve_name(original)
+                            .eq_ignore_ascii_case(name)
+                    {
+                        waiting_services.insert(service.get_fullname().to_string());
+                    }
+                }
+            }
+
+            // The rename invalidates what these services announced on this
+            // interface. They go back to probing, and are announced again under
+            // the new names when the new probes finish.
+            for service_name in waiting_services.iter() {
+                if let Some(info) = self.my_services.get_mut(&service_name.to_lowercase()) {
+                    info.set_status(if_index, ServiceStatus::Probing);
+                }
+            }
+
             // Probing again with the new names.
             let create_time = Instant::now() + Duration::from_millis(fastrand::u64(0..250));
-
-            let waiting_services = probe.waiting_services.clone();
 
             for record in new_records {
                 if dns_registry.update_hostname(name, record.get_name(), create_time) {
@@ -3597,6 +3898,11 @@ impl Zeroconf {
         };
 
         for question in msg.questions().iter() {
+            // RFC 6762 §6: the question class must match our IN records,
+            // unless the querier asks for any class.
+            if !question.is_class_in_or_any() {
+                continue;
+            }
             let qtype = question.entry_type();
             let q_name = question.entry_name();
 
@@ -3680,6 +3986,7 @@ impl Zeroconf {
                     service,
                     qtype,
                     intf_addrs,
+                    dns_registry,
                 );
             }
         }
@@ -3759,8 +4066,8 @@ impl Zeroconf {
         };
 
         if unicast_dest.is_some() {
-            for q in msg.questions() {
-                out.add_question(q.entry_name(), q.entry_type());
+            for question in msg.questions().iter().filter(|q| q.is_class_in_or_any()) {
+                out.add_question_from(question);
             }
             out.update_records_for_legacy_unicast();
             out.set_multicast(false);
@@ -3940,10 +4247,12 @@ impl Zeroconf {
 
             Command::GetMetrics(resp_s) => self.exec_command_get_metrics(resp_s),
 
-            Command::GetStatus(resp_s) => match resp_s.send(self.status.clone()) {
-                Ok(()) => trace!("Sent status to the client"),
-                Err(e) => debug!("Failed to send status: {}", e),
-            },
+            Command::GetStatus(resp_s) => {
+                match resp_s.send(DaemonStatus::Running(self.running_state())) {
+                    Ok(()) => trace!("Sent status to the client"),
+                    Err(e) => debug!("Failed to send status: {}", e),
+                }
+            }
 
             Command::Monitor(resp_s) => {
                 self.monitors.push(resp_s);
@@ -4441,6 +4750,8 @@ impl Zeroconf {
 }
 
 /// Adds one or more answers of a service for incoming msg and RR entry name.
+///
+/// RFC 6762 section 8.1: leaves out the records that are still being probed.
 fn add_answer_of_service(
     out: &mut DnsOutgoing,
     msg: &DnsIncoming,
@@ -4448,8 +4759,16 @@ fn add_answer_of_service(
     service: &ServiceInfo,
     qtype: RRType,
     intf_addrs: Vec<IpAddr>,
+    dns_registry: &DnsRegistry,
 ) {
-    if qtype == RRType::SRV || qtype == RRType::ANY {
+    // Use the names after any rename, as announced. The probes are keyed by
+    // them too.
+    let fullname = dns_registry.resolve_name(service.get_fullname());
+    let hostname = dns_registry.resolve_name(service.get_hostname());
+
+    if (qtype == RRType::SRV || qtype == RRType::ANY)
+        && !dns_registry.is_type_probing(fullname, RRType::SRV)
+    {
         out.add_answer(
             msg,
             DnsSrv::new(
@@ -4459,12 +4778,14 @@ fn add_answer_of_service(
                 service.get_priority(),
                 service.get_weight(),
                 service.get_port(),
-                service.get_hostname().to_string(),
+                hostname.to_string(),
             ),
         );
     }
 
-    if qtype == RRType::TXT || qtype == RRType::ANY {
+    if (qtype == RRType::TXT || qtype == RRType::ANY)
+        && !dns_registry.is_type_probing(fullname, RRType::TXT)
+    {
         out.add_answer(
             msg,
             DnsTxt::new(
@@ -4477,9 +4798,12 @@ fn add_answer_of_service(
     }
 
     if qtype == RRType::SRV {
-        for address in intf_addrs {
+        for address in intf_addrs
+            .into_iter()
+            .filter(|addr| !dns_registry.is_address_probing(hostname, addr))
+        {
             out.add_additional_answer(DnsAddress::new(
-                service.get_hostname(),
+                hostname,
                 ip_address_rr_type(&address),
                 CLASS_IN | CLASS_CACHE_FLUSH,
                 service.get_host_ttl(),
@@ -4488,6 +4812,32 @@ fn add_answer_of_service(
             ));
         }
     }
+}
+
+/// Returns true if `addr` is one of our own addresses for `hostname` on `intf`,
+/// i.e. one of our services publishes it on `intf` for that hostname (original
+/// or renamed).
+///
+/// Note: an address being on `intf` is not enough to call it ours. It might be an
+/// address that our services don't publish, that is a real conflict.
+fn is_own_address(
+    services: &HashMap<String, ServiceInfo>,
+    intf: &MyIntf,
+    dns_registry: &DnsRegistry,
+    hostname: &str,
+    addr: &IpAddr,
+) -> bool {
+    services.values().any(|service| {
+        let original = service.get_hostname();
+        let current = dns_registry.resolve_name(original);
+        let same_host =
+            original.eq_ignore_ascii_case(hostname) || current.eq_ignore_ascii_case(hostname);
+        same_host
+            && match addr {
+                IpAddr::V4(_) => service.get_addrs_on_my_intf_v4(intf).contains(addr),
+                IpAddr::V6(_) => service.get_addrs_on_my_intf_v6(intf).contains(addr),
+            }
+    })
 }
 
 /// Answers a query for a hostname we own: A/AAAA (address records), SVCB/HTTPS
@@ -4518,15 +4868,21 @@ fn answer_hostname_question(
         let service_hostname = dns_registry.resolve_name(service.get_hostname());
 
         if service_hostname.to_lowercase() == question.entry_name().to_lowercase() {
-            let ipv4 = service.get_addrs_on_my_intf_v4(intf);
-            let ipv6 = service.get_addrs_on_my_intf_v6(intf);
+            // RFC 6762 section 8.1: don't answer with an address record that
+            // is still being probed.
+            let not_probing =
+                |addr: &IpAddr| !dns_registry.is_address_probing(service_hostname, addr);
+            let mut ipv4 = service.get_addrs_on_my_intf_v4(intf);
+            let mut ipv6 = service.get_addrs_on_my_intf_v6(intf);
+            has_ipv4 |= !ipv4.is_empty();
+            has_ipv6 |= !ipv6.is_empty();
+            ipv4.retain(not_probing);
+            ipv6.retain(not_probing);
             if ipv4.is_empty() && ipv6.is_empty() {
                 continue;
             }
             hostname = Some(service_hostname);
             host_ttl = host_ttl.min(service.get_host_ttl());
-            has_ipv4 |= !ipv4.is_empty();
-            has_ipv6 |= !ipv6.is_empty();
             // Pick addresses based on the question type, not the
             // socket family. RFC 6762 doesn't require A queries
             // to come over IPv4 transport — Android's getaddrinfo
@@ -4593,12 +4949,18 @@ pub enum ServiceEvent {
     SearchStarted(String),
 
     /// Found a specific (service_type, fullname).
+    ///
+    /// A dot or backslash in the instance name is escaped in the fullname. Use
+    /// [`instance_name_unescaped`](crate::instance_name_unescaped) to get a readable
+    /// instance name.
     ServiceFound(String, String),
 
     /// Resolved a service instance in a ResolvedService struct.
     ServiceResolved(Box<ResolvedService>),
 
     /// A service instance (service_type, fullname) was removed.
+    ///
+    /// The fullname is escaped as in [`ServiceEvent::ServiceFound`].
     ServiceRemoved(String, String),
 
     /// Stopped searching for a service type.
@@ -5278,6 +5640,18 @@ fn announce_service_on_intf(
     Ok(false)
 }
 
+/// Splits `fullname` at the first unescaped dot per RFC 6763 section 4.3, so
+/// the first label keeps its `\.` escapes intact.
+///
+/// Returns the escaped text of the first label and the remainder of the name
+/// starting at the separating dot. When `fullname` has no unescaped dot, the
+/// remainder is empty. The boundary rule is shared with
+/// `DnsOutPacket::parse_escaped_name` via [`EscapedLabels`].
+fn split_first_label(fullname: &str) -> (&str, &str) {
+    let mut labels = EscapedLabels::new(fullname);
+    (labels.next().unwrap_or_default(), labels.rest())
+}
+
 /// Returns a new name based on the `original` to avoid conflicts.
 /// If the name already contains a number in parentheses, increments that number.
 ///
@@ -5286,11 +5660,10 @@ fn announce_service_on_intf(
 /// - `foo (2).local.` becomes `foo (3).local.`
 /// - `foo (9)` becomes `foo (10)`
 fn name_change(original: &str) -> String {
-    let mut parts: Vec<_> = original.split('.').collect();
-    let Some(first_part) = parts.get_mut(0) else {
-        return format!("{original} (2)");
-    };
+    let (first_part, rest) = split_first_label(original);
 
+    // An empty first label is a real label, so `._lara._tcp.local.` gets its
+    // suffix inside that label: ` (2)._lara._tcp.local.`
     let mut new_name = format!("{first_part} (2)");
 
     // check if there is already has `(<num>)` suffix.
@@ -5310,8 +5683,7 @@ fn name_change(original: &str) -> String {
         }
     }
 
-    *first_part = &new_name;
-    parts.join(".")
+    format!("{new_name}{rest}")
 }
 
 /// Returns a new name based on the `original` to avoid conflicts.
@@ -5322,11 +5694,9 @@ fn name_change(original: &str) -> String {
 /// - `foo-2.local.` becomes `foo-3.local.`
 /// - `foo` becomes `foo-2`
 fn hostname_change(original: &str) -> String {
-    let mut parts: Vec<_> = original.split('.').collect();
-    let Some(first_part) = parts.get_mut(0) else {
-        return format!("{original}-2");
-    };
+    let (first_part, rest) = split_first_label(original);
 
+    // An empty first label is a real label, so `._x.local.` becomes `-2._x.local.`
     let mut new_name = format!("{first_part}-2");
 
     // check if there is already a `-<num>` suffix
@@ -5338,8 +5708,7 @@ fn hostname_change(original: &str) -> String {
         }
     }
 
-    *first_part = &new_name;
-    parts.join(".")
+    format!("{new_name}{rest}")
 }
 
 /// Check probes in a registry and returns: a probing packet to send out, and a list of probe names
@@ -5489,25 +5858,27 @@ fn resolve_addr_to_index(if_kind: IfKind, interfaces: &[Interface]) -> IfKind {
 #[cfg(test)]
 mod tests {
     use super::{
-        _new_socket_bind, check_domain_suffix, check_service_name_length, hostname_change,
-        my_ip_interfaces, name_change, resolve_max_packet_size, send_dns_outgoing_impl,
-        valid_instance_name, valid_ip_on_intf, DaemonEvent, HostnameResolutionEvent, IfKind,
-        MaxPacketSizeSelection, MyIntf, SendConfig, ServiceDaemon, ServiceEvent, ServiceInfo,
-        GROUP_ADDR_V4, INITIAL_QUERY_DELAY_MAX_MILLIS, INITIAL_QUERY_DELAY_MIN_MILLIS,
-        MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MDNS_PORT, MIN_MAX_PACKET_SIZE, RESOLVE_MAX_TRY,
-        SHARED_RESPONSE_DELAY_MAX_MILLIS, SHARED_RESPONSE_DELAY_MIN_MILLIS,
+        answer_hostname_question, check_domain_suffix, check_service_name_length, hostname_change,
+        ip_address_rr_type, is_own_address, my_ip_interfaces, name_change, new_multicast_socket,
+        resolve_max_packet_size, send_dns_outgoing_impl, valid_instance_name, valid_ip_on_intf,
+        DaemonEvent, HostnameResolutionEvent, IfKind, MaxPacketSizeSelection, MyIntf, SendConfig,
+        ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4, INITIAL_QUERY_DELAY_MAX_MILLIS,
+        INITIAL_QUERY_DELAY_MIN_MILLIS, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MDNS_PORT,
+        MIN_MAX_PACKET_SIZE, RESOLVE_MAX_TRY, SHARED_RESPONSE_DELAY_MAX_MILLIS,
+        SHARED_RESPONSE_DELAY_MIN_MILLIS,
     };
     use crate::{
         dns_parser::{
-            DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer, DnsSrv, InterfaceId,
-            RRType, ScopedIp, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
-            LEGACY_UNICAST_MAX_TTL,
+            DnsAddress, DnsEntryExt, DnsIncoming, DnsOutgoing, DnsPointer, DnsRecordBox,
+            DnsRecordExt, DnsSrv, DnsTxt, InterfaceId, RRType, ScopedIp, CLASS_CACHE_FLUSH,
+            CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, LEGACY_UNICAST_MAX_TTL,
         },
         service_daemon::{add_answer_of_service, check_hostname},
+        service_info::{DnsRegistry, Probe, ServiceStatus},
     };
     use if_addrs::{IfAddr, Ifv4Addr, Ifv6Addr, Interface};
     use std::{
-        collections::HashSet,
+        collections::{HashMap, HashSet},
         net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket},
         thread,
         time::{Duration, Instant, SystemTime},
@@ -5564,7 +5935,16 @@ mod tests {
         let waker = std::sync::Arc::new(
             mio::Waker::new(poller.registry(), mio::Token(super::WAKER_EVENT_KEY)).unwrap(),
         );
-        (super::Zeroconf::new(waker, poller, port, sender), receiver)
+        (
+            super::Zeroconf::new(
+                waker,
+                poller,
+                super::MulticastSockets::new(port),
+                port,
+                sender,
+            ),
+            receiver,
+        )
     }
 
     fn recv_status(receiver: &flume::Receiver<super::DaemonStatus>) -> super::DaemonStatus {
@@ -5592,10 +5972,16 @@ mod tests {
         // The first response means the thread has already run a loop iteration
         // and returned to `poll` before the second command is submitted.
         let first = status_until_accepted(&daemon);
-        assert_eq!(recv_status(&first), super::DaemonStatus::Running);
+        assert!(matches!(
+            recv_status(&first),
+            super::DaemonStatus::Running(_)
+        ));
 
         let second = status_until_accepted(&daemon);
-        assert_eq!(recv_status(&second), super::DaemonStatus::Running);
+        assert!(matches!(
+            recv_status(&second),
+            super::DaemonStatus::Running(_)
+        ));
 
         let shutdown = daemon.shutdown().unwrap();
         assert_eq!(recv_status(&shutdown), super::DaemonStatus::Shutdown);
@@ -5605,7 +5991,10 @@ mod tests {
     fn test_command_submitted_immediately_after_construction() {
         let daemon = ServiceDaemon::new().unwrap();
         let status = daemon.status().expect("enqueue during startup");
-        assert_eq!(recv_status(&status), super::DaemonStatus::Running);
+        assert!(matches!(
+            recv_status(&status),
+            super::DaemonStatus::Running(_)
+        ));
         let shutdown = daemon.shutdown().unwrap();
         assert_eq!(recv_status(&shutdown), super::DaemonStatus::Shutdown);
     }
@@ -5629,7 +6018,9 @@ mod tests {
         for handle in handles {
             let statuses = handle.join().expect("status thread");
             assert_eq!(statuses.len(), 20);
-            assert!(statuses.iter().all(|s| *s == super::DaemonStatus::Running));
+            assert!(statuses
+                .iter()
+                .all(|s| matches!(s, super::DaemonStatus::Running(_))));
         }
 
         let shutdown = daemon.shutdown().unwrap();
@@ -5711,7 +6102,10 @@ mod tests {
         drop(daemon);
 
         let status = status_until_accepted(&remaining);
-        assert_eq!(recv_status(&status), super::DaemonStatus::Running);
+        assert!(matches!(
+            recv_status(&status),
+            super::DaemonStatus::Running(_)
+        ));
 
         let shutdown = remaining.shutdown().unwrap();
         assert_eq!(recv_status(&shutdown), super::DaemonStatus::Shutdown);
@@ -5887,6 +6281,101 @@ mod tests {
             "a failed join must not be reported as IpAdd: {:?}",
             events
         );
+    }
+
+    /// Finds the interface `index` in a fresh status snapshot of `daemon`.
+    fn enabled_intf(daemon: &super::Zeroconf, index: u32) -> Option<super::EnabledIntf> {
+        daemon
+            .running_state()
+            .enabled_intfs()
+            .iter()
+            .find(|intf| intf.index() == index)
+            .cloned()
+    }
+
+    #[test]
+    fn test_running_state_reports_join_per_ip_version() {
+        let mut daemon = new_test_zeroconf();
+        let index = 65_534;
+        let v4 = test_interface(
+            "mdns-sd-fake",
+            index,
+            test_ifaddr_v4(Ipv4Addr::new(192, 0, 2, 1)),
+        );
+
+        // Nothing recorded, but the failed join is listed with its error.
+        daemon.add_interface(&v4, std::slice::from_ref(&v4));
+        let intf = enabled_intf(&daemon, index).expect("a failed join must be listed");
+        assert_eq!(intf.name(), "mdns-sd-fake");
+        let membership = intf.ipv4().expect("IPv4 was tried");
+        assert!(!membership.is_joined());
+        assert!(membership.join_error().is_some());
+        assert_eq!(
+            membership.addrs(),
+            &[IpAddr::from(Ipv4Addr::new(192, 0, 2, 1))]
+        );
+        assert!(intf.ipv6().is_none(), "no IPv6 address, not a failure");
+
+        // IPv6 joined, IPv4 still failed: reported independently.
+        add_fake_intf(
+            &mut daemon,
+            index,
+            &[test_ifaddr_v6("2001:db8::1".parse().unwrap())],
+        );
+        let intf = enabled_intf(&daemon, index).unwrap();
+        let v6 = intf.ipv6().expect("IPv6 is recorded");
+        assert!(v6.is_joined());
+        assert_eq!(v6.join_error(), None);
+        assert_eq!(v6.addrs(), &["2001:db8::1".parse::<IpAddr>().unwrap()]);
+        assert!(!intf.ipv4().unwrap().is_joined());
+
+        // A disabled address is no longer tried, so no longer listed.
+        daemon.del_interface_addr(&v4, std::slice::from_ref(&v4));
+        let intf = enabled_intf(&daemon, index).unwrap();
+        assert!(intf.ipv4().is_none());
+        assert!(intf.ipv6().unwrap().is_joined());
+    }
+
+    #[test]
+    fn test_ip_check_forgets_failed_join_of_gone_address() {
+        let mut daemon = new_test_zeroconf();
+        let index = 65_534;
+        let v4 = test_interface(
+            "mdns-sd-fake",
+            index,
+            test_ifaddr_v4(Ipv4Addr::new(192, 0, 2, 1)),
+        );
+        daemon.add_interface(&v4, std::slice::from_ref(&v4));
+        assert!(enabled_intf(&daemon, index).is_some());
+
+        // The host has no such interface, so the IP check drops the failure.
+        daemon.check_ip_changes();
+        assert!(enabled_intf(&daemon, index).is_none());
+        assert!(!daemon.join_failures.contains_key(&(index, true)));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn test_successful_join_clears_failure() {
+        let mut daemon = new_test_zeroconf();
+        let alias = loopback_alias();
+        let index = alias.index.unwrap();
+
+        // As if an earlier attempt had failed.
+        daemon.join_failures.insert(
+            (index, true),
+            super::JoinFailure {
+                name: alias.name.clone(),
+                addrs: HashSet::from([alias.addr.clone()]),
+                error: "earlier failure".to_string(),
+            },
+        );
+
+        // 127.0.0.1 is already joined on loopback, so this join succeeds.
+        daemon.add_interface(&alias, std::slice::from_ref(&alias));
+        assert!(daemon.join_failures.is_empty());
+        let intf = enabled_intf(&daemon, index).unwrap();
+        assert!(intf.ipv4().unwrap().is_joined());
     }
 
     #[test]
@@ -6427,6 +6916,96 @@ mod tests {
     }
 
     #[test]
+    fn test_responder_question_class() {
+        let Some(intf_ip) = my_ip_interfaces(false).into_iter().find_map(|intf| {
+            if let IpAddr::V4(ip) = intf.ip() {
+                Some(ip)
+            } else {
+                None
+            }
+        }) else {
+            println!("No IPv4 interface available; skipping test.");
+            return;
+        };
+
+        let daemon = ServiceDaemon::new().unwrap();
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+        let hostname = format!("question-class-{unique}.local.");
+        daemon
+            .register(
+                ServiceInfo::new(
+                    "_question-class._udp.local.",
+                    "instance",
+                    &hostname,
+                    &[IpAddr::V4(intf_ip)] as &[IpAddr],
+                    5353,
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        // An ephemeral source port gets a direct reply, making the result
+        // observable without joining the mDNS multicast group.
+        let querier = UdpSocket::bind((intf_ip, 0)).unwrap();
+        querier
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let if_id = InterfaceId {
+            name: "test".to_string(),
+            index: 0,
+        };
+        let make_query = |class: u16, id: u16| {
+            let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+            query.set_id(id);
+            query.set_multicast(false);
+            query.add_question(&hostname, RRType::A);
+            let mut packet = query.to_data_on_wire(MAX_PKT_DEFAULT, true).remove(0);
+            let len = packet.len();
+            packet[len - 2..].copy_from_slice(&class.to_be_bytes());
+            packet
+        };
+        let receives_answer = |packet: &[u8], id: u16, timeout: Duration| {
+            let deadline = Instant::now() + timeout;
+            while Instant::now() < deadline {
+                querier
+                    .send_to(packet, (GROUP_ADDR_V4, MDNS_PORT))
+                    .expect("send query");
+                let mut buf = [0u8; 1500];
+                while let Ok((len, _)) = querier.recv_from(&mut buf) {
+                    if let Ok(msg) = DnsIncoming::new(buf[..len].to_vec(), if_id.clone()) {
+                        if msg.id() == id && msg.answers().iter().any(|a| a.get_name() == hostname)
+                        {
+                            return true;
+                        }
+                    }
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                }
+            }
+            false
+        };
+
+        assert!(
+            receives_answer(
+                &make_query(CLASS_IN, 0x5131),
+                0x5131,
+                Duration::from_secs(8)
+            ),
+            "class IN should get an answer once the service is announced"
+        );
+        let class_two_answered =
+            receives_answer(&make_query(2, 0x5132), 0x5132, Duration::from_millis(600));
+        println!("class 2 received an answer: {class_two_answered}");
+        assert!(!class_two_answered, "class 2 must not get an IN answer");
+        daemon.shutdown().unwrap();
+    }
+
+    #[test]
     fn test_shared_response_delay_bounds() {
         // A shared-record (PTR) response is delayed by a uniform-random amount.
         // We deviate from the RFC 6762 §6 suggested 20-120 ms window and use a
@@ -6794,8 +7373,24 @@ mod tests {
         let mut packet_buffer = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         packet_buffer.add_additional_answer(invalidate_ptr_packet);
 
+        // One socket per IP family, bound to the mDNS port like the daemon's own.
+        let sock_v4_result = new_multicast_socket(std::net::SocketAddr::from((
+            Ipv4Addr::UNSPECIFIED,
+            MDNS_PORT,
+        )));
+        let sock_v6_result = new_multicast_socket(std::net::SocketAddr::from((
+            Ipv6Addr::UNSPECIFIED,
+            MDNS_PORT,
+        )));
+
         for intf in intfs {
-            let sock = _new_socket_bind(&intf, true).unwrap();
+            // A socket is only unwrapped when an interface of its family uses it.
+            let sock = if intf.addr.ip().is_ipv4() {
+                sock_v4_result.as_ref()
+            } else {
+                sock_v6_result.as_ref()
+            }
+            .unwrap();
             send_dns_outgoing_impl(
                 &packet_buffer,
                 &intf.name,
@@ -7043,6 +7638,18 @@ mod tests {
         assert_eq!(name_change("foo (abc)"), "foo (abc) (2)"); // Invalid number
         assert_eq!(name_change("foo (2"), "foo (2 (2)"); // Missing closing parenthesis
         assert_eq!(name_change("foo (2) extra"), "foo (2) extra (2)"); // Extra text after number
+
+        // Escaped dots stay inside the first label (RFC 6763 section 4.3)
+        assert_eq!(
+            name_change(r"L\.A\.R\.A Hub._lara._tcp.local."),
+            r"L\.A\.R\.A Hub (2)._lara._tcp.local."
+        );
+        assert_eq!(name_change(r"a\.b (2).local."), r"a\.b (3).local.");
+        // An escaped backslash does not escape the following dot
+        assert_eq!(name_change(r"a\\.b.local."), r"a\\ (2).b.local.");
+        // An empty first label is a real label: the suffix goes into it.
+        assert_eq!(name_change("._lara._tcp.local."), " (2)._lara._tcp.local.");
+        assert_eq!(name_change("."), " (2).");
     }
 
     #[test]
@@ -7052,6 +7659,632 @@ mod tests {
         assert_eq!(hostname_change("foo-2.local."), "foo-3.local.");
         assert_eq!(hostname_change("foo-9"), "foo-10");
         assert_eq!(hostname_change("test-42.domain."), "test-43.domain.");
+        // An empty first label is a real label: the suffix goes into it.
+        assert_eq!(hostname_change("._x.local."), "-2._x.local.");
+
+        // Escaped dots stay inside the first label (RFC 6763 section 4.3)
+        assert_eq!(hostname_change(r"my\.host.local."), r"my\.host-2.local.");
+        assert_eq!(hostname_change(r"my\.host-2.local."), r"my\.host-3.local.");
+    }
+
+    /// An interface with the IPv4 address 192.168.1.10, and an announced service
+    /// with `service_addrs` whose hostname was renamed from `rename545.local.`
+    /// to `rename545-2.local.`.
+    fn renamed_host_fixture(
+        service_addrs: &[IpAddr],
+    ) -> (MyIntf, HashMap<String, ServiceInfo>, DnsRegistry) {
+        let intf = MyIntf {
+            name: "dummy0".to_string(),
+            index: 1,
+            addrs: HashSet::from([test_ifaddr_v4(Ipv4Addr::new(192, 168, 1, 10))]),
+            max_packet_size_v4: MAX_PKT_DEFAULT,
+            max_packet_size_v6: MAX_PKT_DEFAULT,
+        };
+        let mut service = ServiceInfo::new(
+            "_rename-test._tcp.local.",
+            "instance",
+            "rename545.local.",
+            service_addrs,
+            8080,
+            None,
+        )
+        .unwrap();
+        service.set_status(intf.index, ServiceStatus::Announced);
+        let services = HashMap::from([(service.get_fullname().to_lowercase(), service)]);
+        let mut registry = DnsRegistry::new();
+        registry.name_changes.insert(
+            "rename545.local.".to_string(),
+            "rename545-2.local.".to_string(),
+        );
+        (intf, services, registry)
+    }
+
+    fn probe_address(registry: &mut DnsRegistry, intf: &MyIntf, name: &str, addr: IpAddr) {
+        registry
+            .probing
+            .entry(name.to_string())
+            .or_insert_with(|| Probe::new(Instant::now()))
+            .insert_record(
+                DnsAddress::new(
+                    name,
+                    ip_address_rr_type(&addr),
+                    CLASS_IN | CLASS_CACHE_FLUSH,
+                    120,
+                    addr,
+                    intf.into(),
+                )
+                .boxed(),
+            );
+    }
+
+    /// Returns the type and address of each answer to a `qtype` question for `name`.
+    fn answer_hostname(
+        intf: &MyIntf,
+        services: &HashMap<String, ServiceInfo>,
+        registry: &DnsRegistry,
+        name: &str,
+        qtype: RRType,
+    ) -> Vec<(RRType, Option<IpAddr>)> {
+        let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        query.add_question(name, qtype);
+        let packets = query.to_data_on_wire(MAX_PKT_DEFAULT, true);
+        let msg = DnsIncoming::new(packets[0].clone(), intf.into()).unwrap();
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+        answer_hostname_question(
+            services,
+            intf,
+            &msg.questions()[0],
+            registry,
+            &mut out,
+            &msg,
+        );
+        out._answers()
+            .iter()
+            .map(|r| {
+                let addr = r.any().downcast_ref::<DnsAddress>().map(|a| a.ip());
+                (r.get_type(), addr)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_answer_hostname_question_skips_probing_addresses() {
+        let addr_a = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        let addr_b = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
+        let (intf, services, mut registry) = renamed_host_fixture(&[addr_a, addr_b]);
+        let new_name = "rename545-2.local.";
+
+        let mut answers = answer_hostname(&intf, &services, &registry, new_name, RRType::ANY);
+        answers.sort();
+        assert_eq!(
+            answers,
+            vec![(RRType::A, Some(addr_a)), (RRType::A, Some(addr_b))]
+        );
+
+        // An address still being probed under the new name is not ours yet.
+        probe_address(&mut registry, &intf, new_name, addr_a);
+        let answers = answer_hostname(&intf, &services, &registry, new_name, RRType::ANY);
+        assert_eq!(answers, vec![(RRType::A, Some(addr_b))]);
+
+        // While all addresses are probed, answer nothing, not even a negative
+        // answer for the absent address family.
+        probe_address(&mut registry, &intf, new_name, addr_b);
+        for qtype in [RRType::A, RRType::AAAA, RRType::ANY] {
+            let answers = answer_hostname(&intf, &services, &registry, new_name, qtype);
+            assert!(answers.is_empty(), "{:?}: {:?}", qtype, answers);
+        }
+    }
+
+    #[test]
+    fn test_answer_hostname_question_no_nsec_for_probing_family() {
+        let v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
+        let v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x11));
+        let (mut intf, services, mut registry) = renamed_host_fixture(&[v4, v6]);
+        intf.addrs.insert(test_ifaddr_v6(Ipv6Addr::new(
+            0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x10,
+        )));
+        let name = "rename545-2.local.";
+        let ask = |registry: &DnsRegistry, qtype| {
+            answer_hostname(&intf, &services, registry, name, qtype)
+        };
+
+        // IPv4 is active and IPv6 is still being probed. IPv6 exists, so an
+        // AAAA query gets no answer yet, and no NSEC denying it either.
+        probe_address(&mut registry, &intf, name, v6);
+        assert!(ask(&registry, RRType::AAAA).is_empty());
+        assert_eq!(ask(&registry, RRType::A), vec![(RRType::A, Some(v4))]);
+        assert_eq!(ask(&registry, RRType::ANY), vec![(RRType::A, Some(v4))]);
+
+        // The NSEC for another type still lists AAAA as present.
+        let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        query.add_question(name, RRType::SVCB);
+        let packets = query.to_data_on_wire(MAX_PKT_DEFAULT, true);
+        let msg = DnsIncoming::new(packets[0].clone(), (&intf).into()).unwrap();
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+        answer_hostname_question(
+            &services,
+            &intf,
+            &msg.questions()[0],
+            &registry,
+            &mut out,
+            &msg,
+        );
+        let nsec = out._answers()[0]
+            .any()
+            .downcast_ref::<super::DnsNSec>()
+            .unwrap();
+        assert_eq!(nsec._types(), vec![RRType::A as u16, RRType::AAAA as u16]);
+
+        // The other way round: IPv6 is active and IPv4 is still being probed.
+        registry.probing.clear();
+        probe_address(&mut registry, &intf, name, v4);
+        assert!(ask(&registry, RRType::A).is_empty());
+        assert_eq!(ask(&registry, RRType::AAAA), vec![(RRType::AAAA, Some(v6))]);
+
+        // Two services on the host: one with only the IPv6 address, still
+        // being probed, and one with only the active IPv4 address. IPv6 still
+        // exists for the host, so it is not denied.
+        let mut v6_service = ServiceInfo::new(
+            "_rename-test._tcp.local.",
+            "instance-v6",
+            "rename545.local.",
+            &[v6][..],
+            8080,
+            None,
+        )
+        .unwrap();
+        v6_service.set_status(intf.index, ServiceStatus::Announced);
+        let (_, mut two_services, mut registry) = renamed_host_fixture(&[v4]);
+        two_services.insert(v6_service.get_fullname().to_lowercase(), v6_service);
+        probe_address(&mut registry, &intf, name, v6);
+        assert!(answer_hostname(&intf, &two_services, &registry, name, RRType::AAAA).is_empty());
+        assert_eq!(
+            answer_hostname(&intf, &two_services, &registry, name, RRType::A),
+            vec![(RRType::A, Some(v4))]
+        );
+
+        // A family the host doesn't have at all is still denied.
+        let (intf, services, registry) = renamed_host_fixture(&[v4]);
+        assert_eq!(
+            answer_hostname(&intf, &services, &registry, name, RRType::AAAA),
+            vec![(RRType::NSEC, None)]
+        );
+    }
+
+    #[test]
+    fn test_is_own_address() {
+        let intf_addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        let service_addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
+        let other_addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 12));
+        let (intf, services, registry) = renamed_host_fixture(&[service_addr]);
+        let own = |hostname: &str, addr: IpAddr| {
+            is_own_address(&services, &intf, &registry, hostname, &addr)
+        };
+
+        // An address the service publishes, under the renamed and the
+        // original hostname.
+        assert!(own("rename545-2.local.", service_addr));
+        assert!(own("RENAME545.local.", service_addr));
+        // Not ours, not even an address of the interface itself: another
+        // responder on this host can claim the hostname with it.
+        assert!(!own("rename545-2.local.", intf_addr));
+        assert!(!own("rename545-2.local.", other_addr));
+        assert!(!own("other.local.", service_addr));
+    }
+
+    /// Adds `record` to the probe for its name in `registry`.
+    fn probe_record(registry: &mut DnsRegistry, record: DnsRecordBox) {
+        registry
+            .probing
+            .entry(record.get_name().to_string())
+            .or_insert_with(|| Probe::new(Instant::now()))
+            .insert_record(record);
+    }
+
+    /// Returns the type and address of each record in `records`.
+    fn record_summary(records: &[DnsRecordBox]) -> Vec<(RRType, Option<IpAddr>)> {
+        records
+            .iter()
+            .map(|r| {
+                let addr = r.any().downcast_ref::<DnsAddress>().map(|a| a.ip());
+                (r.get_type(), addr)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_add_answer_of_service_skips_probing_records() {
+        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
+        let (intf, services, mut registry) = renamed_host_fixture(&[addr]);
+        let service = services.values().next().unwrap();
+        let fullname = service.get_fullname().to_string();
+
+        let answer = |registry: &DnsRegistry| {
+            let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+            query.add_question(&fullname, RRType::ANY);
+            let packets = query.to_data_on_wire(MAX_PKT_DEFAULT, true);
+            let msg = DnsIncoming::new(packets[0].clone(), (&intf).into()).unwrap();
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+            add_answer_of_service(
+                &mut out,
+                &msg,
+                &fullname,
+                service,
+                RRType::ANY,
+                vec![addr],
+                registry,
+            );
+            record_summary(out._answers())
+        };
+
+        assert_eq!(
+            answer(&registry),
+            vec![(RRType::SRV, None), (RRType::TXT, None)]
+        );
+
+        // The SRV record is still being probed, e.g. with the new hostname.
+        probe_record(
+            &mut registry,
+            DnsSrv::new(
+                &fullname,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                120,
+                0,
+                0,
+                8080,
+                "rename545-2.local.".to_string(),
+            )
+            .boxed(),
+        );
+        assert_eq!(answer(&registry), vec![(RRType::TXT, None)]);
+
+        // And the TXT record too.
+        probe_record(
+            &mut registry,
+            DnsTxt::new(&fullname, CLASS_IN | CLASS_CACHE_FLUSH, 120, Vec::new()).boxed(),
+        );
+        assert!(answer(&registry).is_empty());
+    }
+
+    #[test]
+    fn test_srv_answer_uses_renamed_hostname() {
+        let addr_a = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        let addr_b = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
+        let (intf, services, mut registry) = renamed_host_fixture(&[addr_a, addr_b]);
+        let service = services.values().next().unwrap();
+        let fullname = service.get_fullname().to_string();
+
+        // Returns the SRV hosts and the additional address records.
+        let answer = |registry: &DnsRegistry| {
+            let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+            query.add_question(&fullname, RRType::SRV);
+            let packets = query.to_data_on_wire(MAX_PKT_DEFAULT, true);
+            let msg = DnsIncoming::new(packets[0].clone(), (&intf).into()).unwrap();
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+            add_answer_of_service(
+                &mut out,
+                &msg,
+                &fullname,
+                service,
+                RRType::SRV,
+                vec![addr_a, addr_b],
+                registry,
+            );
+            let hosts: Vec<_> = out
+                ._answers()
+                .iter()
+                .filter_map(|r| r.any().downcast_ref::<DnsSrv>())
+                .map(|srv| srv.host().to_string())
+                .collect();
+            let mut addrs: Vec<_> = out
+                .additionals()
+                .iter()
+                .filter_map(|r| r.any().downcast_ref::<DnsAddress>())
+                .map(|a| (a.get_name().to_string(), a.ip()))
+                .collect();
+            addrs.sort();
+            (hosts, addrs)
+        };
+
+        let new_host = "rename545-2.local.".to_string();
+        assert_eq!(
+            answer(&registry),
+            (
+                vec![new_host.clone()],
+                vec![(new_host.clone(), addr_a), (new_host.clone(), addr_b)]
+            )
+        );
+
+        // An address of the renamed host is still being probed.
+        probe_address(&mut registry, &intf, "rename545-2.local.", addr_a);
+        assert_eq!(
+            answer(&registry),
+            (vec![new_host.clone()], vec![(new_host, addr_b)])
+        );
+    }
+
+    #[test]
+    fn test_ptr_answer_skips_probing_records() {
+        let addr_a = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        let addr_b = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11));
+        let (intf, services, mut registry) = renamed_host_fixture(&[addr_a, addr_b]);
+        let service = services.values().next().unwrap();
+        let fullname = service.get_fullname().to_string();
+
+        // Returns the answers and the additional address records.
+        let answer = |registry: &DnsRegistry| {
+            let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+            query.add_question(service.get_type(), RRType::PTR);
+            let packets = query.to_data_on_wire(MAX_PKT_DEFAULT, true);
+            let msg = DnsIncoming::new(packets[0].clone(), (&intf).into()).unwrap();
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+            out.add_answer_with_additionals(&msg, service, &intf, registry, true);
+            let mut addrs: Vec<_> = out
+                .additionals()
+                .iter()
+                .filter_map(|r| r.any().downcast_ref::<DnsAddress>())
+                .map(|a| (a.get_name().to_string(), a.ip()))
+                .collect();
+            addrs.sort();
+            (record_summary(out._answers()), addrs)
+        };
+
+        let new_host = "rename545-2.local.".to_string();
+        assert_eq!(
+            answer(&registry),
+            (
+                vec![(RRType::PTR, None)],
+                vec![(new_host.clone(), addr_a), (new_host.clone(), addr_b)]
+            )
+        );
+
+        // An address of the host is still being probed.
+        probe_address(&mut registry, &intf, "rename545-2.local.", addr_a);
+        assert_eq!(
+            answer(&registry),
+            (vec![(RRType::PTR, None)], vec![(new_host, addr_b)])
+        );
+
+        // The SRV record of the instance is still being probed: don't point
+        // to the instance at all.
+        probe_record(
+            &mut registry,
+            DnsSrv::new(
+                &fullname,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                120,
+                0,
+                0,
+                8080,
+                "rename545-2.local.".to_string(),
+            )
+            .boxed(),
+        );
+        assert_eq!(answer(&registry), (vec![], vec![]));
+    }
+
+    /// Issue #545: after a hostname rename, our own answer to our own probe
+    /// must not rename the hostname again.
+    #[test]
+    fn test_own_answer_is_not_a_hostname_conflict() {
+        let (mut daemon, index) = negative_answer_test_daemon();
+        let interface = InterfaceId {
+            name: "loopback-test".to_string(),
+            index,
+        };
+        let addr_1 = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let addr_2 = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let peer = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 9));
+        let service = ServiceInfo::new(
+            "_rename-test._tcp.local.",
+            "instance",
+            "rename545.local.",
+            &[addr_1, addr_2][..],
+            8080,
+            None,
+        )
+        .unwrap();
+        let fullname = service.get_fullname().to_lowercase();
+        daemon.register_service(service);
+
+        let response = |name: &str, addr: IpAddr| -> DnsIncoming {
+            let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+            out.add_answer_record(DnsAddress::new(
+                name,
+                RRType::A,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                120,
+                addr,
+                interface.clone(),
+            ));
+            let packets = out.to_data_on_wire(MAX_PKT_DEFAULT, true);
+            DnsIncoming::new(packets[0].clone(), interface.clone()).unwrap()
+        };
+        let current_hostname = |daemon: &super::Zeroconf| {
+            daemon.dns_registry_map[&index]
+                .resolve_name("rename545.local.")
+                .to_string()
+        };
+
+        // A peer claims our hostname while we probe it: rename the host, and
+        // move all of its address records to the new name.
+        daemon.conflict_handler(&response("rename545.local.", peer), index);
+        assert_eq!(current_hostname(&daemon), "rename545-2.local.");
+        let registry = &daemon.dns_registry_map[&index];
+        assert!(registry
+            .probing
+            .get("rename545.local.")
+            .map_or(true, |probe| probe.records.is_empty()));
+        assert!(registry.is_address_probing("rename545-2.local.", &addr_1));
+        assert!(registry.is_address_probing("rename545-2.local.", &addr_2));
+
+        // The service waits for the new probe.
+        assert_eq!(
+            daemon.my_services[&fullname].get_status(index),
+            ServiceStatus::Probing
+        );
+        assert!(registry.probing["rename545-2.local."]
+            .waiting_services
+            .iter()
+            .any(|s| s.to_lowercase() == fullname));
+
+        // Force the state of the issue, where the service stayed announced
+        // during the rename, to check the next steps on their own.
+        daemon
+            .my_services
+            .get_mut(&fullname)
+            .unwrap()
+            .set_status(index, ServiceStatus::Announced);
+
+        // Our own probe of the new name comes back to us. Don't answer it
+        // with the addresses that are still being probed.
+        if let Some(reply) = query_negative_answer_test_daemon(
+            &mut daemon,
+            index,
+            "rename545-2.local.",
+            &[RRType::ANY],
+        ) {
+            assert!(
+                reply.answers().iter().all(|r| r.get_type() != RRType::A),
+                "{:?}",
+                reply.answers()
+            );
+        }
+
+        // Our own answer has an address that the probe of the new name lacks.
+        // It is still our address, so it is not a conflict.
+        daemon
+            .dns_registry_map
+            .get_mut(&index)
+            .unwrap()
+            .probing
+            .get_mut("rename545-2.local.")
+            .unwrap()
+            .records
+            .retain(|r| {
+                r.any()
+                    .downcast_ref::<DnsAddress>()
+                    .map_or(true, |a| a.ip() != addr_2)
+            });
+        daemon.conflict_handler(&response("rename545-2.local.", addr_2), index);
+        assert_eq!(current_hostname(&daemon), "rename545-2.local.");
+
+        // A peer still causes another rename.
+        daemon.conflict_handler(&response("rename545-2.local.", peer), index);
+        assert_eq!(current_hostname(&daemon), "rename545-3.local.");
+    }
+
+    /// Finishes all probes on `index` and wakes up the services waiting on them.
+    fn finish_probes(daemon: &mut super::Zeroconf, index: u32) {
+        for probe in daemon
+            .dns_registry_map
+            .get_mut(&index)
+            .unwrap()
+            .probing
+            .values_mut()
+        {
+            probe.start_time = Instant::now() - Duration::from_millis(1000);
+            probe.next_send = probe.start_time;
+        }
+        daemon.probing_handler();
+    }
+
+    /// The probe of a new address on an announced host hits a conflict. The
+    /// host is renamed, every service on it goes back to probing, and they are
+    /// announced again under the new hostname.
+    #[test]
+    fn test_hostname_conflict_reannounces_services() {
+        let (mut daemon, index) = negative_answer_test_daemon();
+        let interface = InterfaceId {
+            name: "loopback-test".to_string(),
+            index,
+        };
+        let addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let new_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3));
+        let peer = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 9));
+        let status = |daemon: &super::Zeroconf, fullname: &str| {
+            daemon.my_services[fullname].get_status(index)
+        };
+
+        // Two services on the same host.
+        let mut fullnames = Vec::new();
+        for instance in ["first", "second"] {
+            let service = ServiceInfo::new(
+                "_reannounce._tcp.local.",
+                instance,
+                "reannounce.local.",
+                addr,
+                8080,
+                None,
+            )
+            .unwrap();
+            fullnames.push(service.get_fullname().to_lowercase());
+            daemon.register_service(service);
+        }
+        finish_probes(&mut daemon, index);
+        for fullname in &fullnames {
+            assert_eq!(status(&daemon, fullname), ServiceStatus::Announced);
+        }
+
+        // A new address of the host starts its own probe, which no service
+        // waits on.
+        let mut probe = Probe::new(Instant::now());
+        probe.insert_record(
+            DnsAddress::new(
+                "reannounce.local.",
+                RRType::A,
+                CLASS_IN | CLASS_CACHE_FLUSH,
+                120,
+                new_addr,
+                interface.clone(),
+            )
+            .boxed(),
+        );
+        daemon
+            .dns_registry_map
+            .get_mut(&index)
+            .unwrap()
+            .probing
+            .insert("reannounce.local.".to_string(), probe);
+
+        // A peer claims the hostname.
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+        out.add_answer_record(DnsAddress::new(
+            "reannounce.local.",
+            RRType::A,
+            CLASS_IN | CLASS_CACHE_FLUSH,
+            120,
+            peer,
+            interface.clone(),
+        ));
+        let packets = out.to_data_on_wire(MAX_PKT_DEFAULT, true);
+        let incoming = DnsIncoming::new(packets[0].clone(), interface.clone()).unwrap();
+        daemon.conflict_handler(&incoming, index);
+
+        let registry = &daemon.dns_registry_map[&index];
+        assert_eq!(
+            registry.resolve_name("reannounce.local."),
+            "reannounce-2.local."
+        );
+        // The address that was already announced is probed again too.
+        assert!(registry.is_address_probing("reannounce-2.local.", &addr));
+        for fullname in &fullnames {
+            assert_eq!(status(&daemon, fullname), ServiceStatus::Probing);
+        }
+
+        // When the new probes finish, both services are announced again, with
+        // the new hostname in their SRV records.
+        finish_probes(&mut daemon, index);
+        let registry = &daemon.dns_registry_map[&index];
+        for fullname in &fullnames {
+            assert_eq!(status(&daemon, fullname), ServiceStatus::Announced);
+            let hosts: Vec<_> = registry.active[fullname.as_str()]
+                .iter()
+                .filter_map(|r| r.any().downcast_ref::<DnsSrv>())
+                .map(|srv| srv.host().to_string())
+                .collect();
+            assert_eq!(hosts, vec!["reannounce-2.local.".to_string()]);
+        }
     }
 
     #[test]
@@ -7092,6 +8325,7 @@ mod tests {
             &my_service,
             RRType::TXT,
             if_addrs,
+            &DnsRegistry::new(),
         );
 
         // Check if the answer was added correctly

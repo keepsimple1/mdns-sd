@@ -1,7 +1,8 @@
 use if_addrs::{IfAddr, Interface};
 use mdns_sd::{
-    DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind, InterfaceId, IntoTxtProperties,
-    RRType, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo, TxtProperty, UnregisterStatus,
+    instance_name_unescaped, DaemonEvent, DaemonStatus, HostnameResolutionEvent, IfKind,
+    InterfaceId, IntoTxtProperties, RRType, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo,
+    TxtProperty, UnregisterStatus,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -1269,7 +1270,7 @@ fn test_shutdown() {
     // Check the status.
     let receiver = mdns.status().unwrap();
     let status = receiver.recv().unwrap();
-    assert!(matches!(status, DaemonStatus::Running));
+    assert!(matches!(status, DaemonStatus::Running(_)));
 
     // Shutdown the daemon immediately.
     let receiver = mdns.shutdown().unwrap();
@@ -2516,7 +2517,7 @@ fn test_rfc6763_utf8_network_integration() {
                 println!("Resolved service: {}", resolved_fullname);
 
                 // Compare by checking if the resolved fullname contains our instance base
-                // and UTF-8 characters (network returns decoded names without escaping)
+                // and UTF-8 characters
                 if resolved_fullname.contains(&instance_base)
                     && resolved_fullname.contains("Café")
                     && resolved_fullname.contains('🌐')
@@ -2529,9 +2530,13 @@ fn test_rfc6763_utf8_network_integration() {
                     assert_eq!(info.get_port(), port);
                     assert!(!info.get_addresses().is_empty());
 
-                    // Verify UTF-8 characters are preserved
-                    assert!(resolved_fullname.contains("Café.Service"));
+                    // A name read from the network keeps its escapes, so it is exactly
+                    // the name that was registered, UTF-8 characters included.
+                    assert_eq!(resolved_fullname, fullname);
                     assert!(resolved_fullname.contains('🌐'));
+
+                    // The instance name comes back without the escapes.
+                    assert_eq!(instance_name_unescaped(resolved_fullname), instance_name);
                     break;
                 }
             }
@@ -2693,4 +2698,82 @@ fn test_goodbye_uses_conflict_resolved_name() {
     server1.shutdown().unwrap();
     server2.shutdown().unwrap();
     client.shutdown().unwrap();
+}
+
+/// Binds `port` on IPv6 only, without `SO_REUSEADDR`, so that the daemon cannot
+/// bind its IPv6 socket there. Port 0 picks a free port.
+///
+/// Returns `None` if the host has no IPv6.
+#[cfg(not(windows))]
+fn hold_ipv6_port(port: u16) -> Option<socket2::Socket> {
+    use socket2::{Domain, Socket, Type};
+
+    let sock = Socket::new(Domain::IPV6, Type::DGRAM, None).ok()?;
+    sock.set_only_v6(true).ok()?;
+    let addr = std::net::SocketAddr::from((Ipv6Addr::UNSPECIFIED, port));
+    sock.bind(&addr.into()).ok()?;
+    Some(sock)
+}
+
+#[test]
+#[cfg(not(windows))] // Windows lets `SO_REUSEADDR` take over a held port.
+fn test_running_state_reports_failed_socket() {
+    // Hold a port on IPv6 only, so the daemon binds IPv4 but not IPv6. Without
+    // IPv6 on the host, its IPv6 socket fails anyway.
+    let ipv6_holder = hold_ipv6_port(0);
+    let port = match &ipv6_holder {
+        Some(sock) => sock.local_addr().unwrap().as_socket().unwrap().port(),
+        None => std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port(),
+    };
+
+    let daemon = ServiceDaemon::new_with_port(port).expect("IPv4 alone is enough to run");
+    let status = daemon.status().unwrap().recv().unwrap();
+    let DaemonStatus::Running(state) = status else {
+        panic!("unexpected status: {:?}", status);
+    };
+
+    assert!(state.ipv4_socket().is_bound());
+    assert_eq!(state.ipv4_socket().bind_error(), None);
+    assert!(!state.ipv6_socket().is_bound());
+    assert!(
+        state.ipv6_socket().bind_error().is_some(),
+        "a failed socket must come with its error"
+    );
+
+    // Without the IPv6 socket, no IPv6 join is tried. Loopback is always there
+    // to join on IPv4.
+    let intfs = state.enabled_intfs();
+    assert!(
+        intfs.iter().all(|intf| intf.ipv6().is_none()),
+        "no IPv6 membership without the IPv6 socket: {:?}",
+        intfs
+    );
+    assert!(
+        intfs
+            .iter()
+            .any(|intf| intf.ipv4().is_some_and(|m| m.is_joined())),
+        "at least loopback joins on IPv4: {:?}",
+        intfs
+    );
+
+    daemon.shutdown().unwrap();
+}
+
+#[test]
+#[cfg(not(windows))] // Windows lets `SO_REUSEADDR` take over a held port.
+fn test_new_fails_without_any_socket() {
+    // Hold the port on both IP versions, without `SO_REUSEADDR`.
+    let ipv4_holder = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+    let port = ipv4_holder.local_addr().unwrap().port();
+    let _ipv6_holder = hold_ipv6_port(port);
+
+    let result = ServiceDaemon::new_with_port(port);
+    assert!(
+        result.is_err(),
+        "a daemon without any multicast socket must not start"
+    );
 }

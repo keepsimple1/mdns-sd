@@ -287,7 +287,12 @@ impl fmt::Display for RRType {
 
 /// The class value for the Internet.
 pub const CLASS_IN: u16 = 1;
+/// The class value that matches records of any class in a DNS question.
+pub const CLASS_ANY: u16 = 255;
 pub const CLASS_MASK: u16 = 0x7FFF;
+
+/// The top bit of a question's class field, requesting a unicast response.
+pub const CLASS_UNICAST_RESPONSE: u16 = 0x8000;
 
 /// Cache-flush bit: the most significant bit of the rrclass field of the resource record.  
 pub const CLASS_CACHE_FLUSH: u16 = 0x8000;
@@ -434,9 +439,26 @@ pub trait DnsEntryExt: fmt::Debug {
 }
 
 /// A DNS question entry
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DnsQuestion {
     pub(crate) entry: DnsEntry,
+}
+
+impl DnsQuestion {
+    /// Whether this question requests Internet-class records or any class.
+    pub(crate) fn is_class_in_or_any(&self) -> bool {
+        self.entry.class == CLASS_IN || self.entry.class == CLASS_ANY
+    }
+
+    /// The qclass as written on the wire, including the QU bit if set.
+    fn wire_class(&self) -> u16 {
+        self.entry.class
+            | if self.entry.cache_flush {
+                CLASS_UNICAST_RESPONSE
+            } else {
+                0
+            }
+    }
 }
 
 impl DnsEntryExt for DnsQuestion {
@@ -804,6 +826,11 @@ impl DnsAddress {
             address,
             interface_id,
         }
+    }
+
+    /// Returns the address without its interface scope.
+    pub(crate) const fn ip(&self) -> IpAddr {
+        self.address
     }
 
     pub fn address(&self) -> ScopedIp {
@@ -1387,8 +1414,8 @@ pub struct DnsOutPacket {
     /// All bytes in `data` is the actual packet on the wire.
     data: Vec<u8>,
 
-    /// k: name, v: offset
-    names: HashMap<String, u16>,
+    /// k: length-prefixed labels (without the root terminator), v: offset
+    names: HashMap<Vec<u8>, u16>,
 
     /// Max byte size of `data`. i.e. the max packet size.
     max_size: usize,
@@ -1447,7 +1474,7 @@ impl DnsOutPacket {
             e
         })?;
         self.write_short(question.entry.ty as u16);
-        self.write_short(question.entry.class);
+        self.write_short(question.wire_class());
 
         if self.size() > self.max_size {
             self.rollback(start_size);
@@ -1513,50 +1540,10 @@ impl DnsOutPacket {
     /// - \\. becomes . (literal dot)
     /// - \\\\ becomes \\ (literal backslash)
     fn parse_escaped_name(name: &str) -> Vec<String> {
-        let mut labels = Vec::new();
-        let mut current_label = String::new();
-        let mut chars = name.chars().peekable();
-
-        while let Some(ch) = chars.next() {
-            match ch {
-                '\\' => {
-                    // Backslash escape sequence
-                    if let Some(&next_ch) = chars.peek() {
-                        match next_ch {
-                            '.' | '\\' => {
-                                // \\. or \\\\ - consume the backslash and add the escaped char
-                                chars.next();
-                                current_label.push(next_ch);
-                            }
-                            _ => {
-                                // Not a recognized escape - treat backslash literally
-                                current_label.push(ch);
-                            }
-                        }
-                    } else {
-                        // Trailing backslash - add it literally
-                        current_label.push(ch);
-                    }
-                }
-                '.' => {
-                    // Unescaped dot - label separator
-                    if !current_label.is_empty() {
-                        labels.push(current_label.clone());
-                        current_label.clear();
-                    }
-                }
-                _ => {
-                    current_label.push(ch);
-                }
-            }
-        }
-
-        // Add the last label if not empty
-        if !current_label.is_empty() {
-            labels.push(current_label);
-        }
-
-        labels
+        EscapedLabels::new(name)
+            .filter(|label| !label.is_empty())
+            .map(unescape_label)
+            .collect()
     }
 
     // Write name to packet
@@ -1601,21 +1588,30 @@ impl DnsOutPacket {
             return Err(WriteError::NameTooLong);
         }
 
+        // Length prefixes preserve label boundaries, even when a label
+        // contains a literal dot or backslash.
+        let mut name_bytes = Vec::new();
+        for label in &labels {
+            name_bytes.push(label.len() as u8);
+            name_bytes.extend_from_slice(label.as_bytes());
+        }
+
         // Write each label
-        for (i, label) in labels.iter().enumerate() {
-            // Build the remaining name for compression (with dots as separators)
-            let remaining: String = labels[i..].join(".");
+        let mut suffix_offset = 0;
+        for label in &labels {
+            let remaining = &name_bytes[suffix_offset..];
 
             // Check if we can use compression for the remaining part
             const POINTER_MASK: u16 = 0xC000;
-            if let Some(&offset) = self.names.get(&remaining) {
+            if let Some(&offset) = self.names.get(remaining) {
                 let pointer = offset | POINTER_MASK;
                 self.write_short(pointer);
                 return Ok(());
             }
 
             // Store this position for potential future compression
-            self.names.insert(remaining, self.size() as u16);
+            self.names.insert(remaining.to_vec(), self.size() as u16);
+            suffix_offset += label.len() + 1;
 
             // Write the label
             self.write_utf8(label)?;
@@ -2010,6 +2006,15 @@ impl DnsOutgoing {
         let service_fullname = dns_registry.resolve_name(service.get_fullname());
         let hostname = dns_registry.resolve_name(service.get_hostname());
 
+        // RFC 6762 section 8.1: don't point to an instance name whose SRV or
+        // TXT record is still being probed, e.g. after a rename.
+        if dns_registry.is_type_probing(service_fullname, RRType::SRV)
+            || dns_registry.is_type_probing(service_fullname, RRType::TXT)
+        {
+            trace!("instance {service_fullname} is still being probed");
+            return;
+        }
+
         let ptr_added = self.add_answer(
             msg,
             DnsPointer::new(
@@ -2056,7 +2061,11 @@ impl DnsOutgoing {
             service.generate_txt(),
         ));
 
-        for address in intf_addrs {
+        // Same for an address of the host that is still being probed.
+        for address in intf_addrs
+            .into_iter()
+            .filter(|addr| !dns_registry.is_address_probing(hostname, addr))
+        {
             self.add_additional_answer(DnsAddress::new(
                 hostname,
                 ip_address_rr_type(&address),
@@ -2073,6 +2082,11 @@ impl DnsOutgoing {
             entry: DnsEntry::new(name.to_string(), qtype, CLASS_IN),
         };
         self.questions.push(q);
+    }
+
+    /// Echo an incoming question with its original class and QU bit.
+    pub(crate) fn add_question_from(&mut self, question: &DnsQuestion) {
+        self.questions.push(question.clone());
     }
 
     /// Adjust records so the message is a valid legacy unicast response:
@@ -2703,7 +2717,8 @@ impl DnsIncoming {
     /// domain name encoding.
     fn read_name(&mut self) -> Result<String> {
         let mut name = String::new();
-        self.offset = self.read_labels(self.offset, &mut name)?;
+        let mut wire_len = 0;
+        self.offset = self.read_labels(self.offset, &mut name, &mut wire_len)?;
         Ok(name)
     }
 
@@ -2734,8 +2749,16 @@ impl DnsIncoming {
     ///            ^len               ^ pointer: 0xC00C ^ 0xC000 = 12, jump back to offset 12
     /// ```
     ///
+    /// `wire_len` counts the bytes of the name on the wire, which is what
+    /// `MAX_NAME_BYTES` limits. `name` itself can be longer because of escapes.
+    ///
     /// Takes `&self` so that following a pointer cannot move the read cursor.
-    fn read_labels(&self, mut offset: usize, name: &mut String) -> Result<usize> {
+    fn read_labels(
+        &self,
+        mut offset: usize,
+        name: &mut String,
+        wire_len: &mut usize,
+    ) -> Result<usize> {
         let data = &self.data[..];
 
         // From RFC1035:
@@ -2791,19 +2814,27 @@ impl DnsIncoming {
                     //  bytes:  | 05 | "_http" | C0 | 0C |
                     //          +----+---------+----+----+
                     //            ^len           ^pointer targets offset 12.
-                    if name.len() + label.len() + 1 > MAX_NAME_BYTES {
+                    *wire_len += label.len() + 1;
+                    if *wire_len > MAX_NAME_BYTES {
                         return Err(Error::Msg(format!(
                             "read_labels: name exceeds {MAX_NAME_BYTES} bytes: {name}"
                         )));
                     }
 
-                    *name += label;
+                    // Escape a dot or backslash inside a label (RFC 6763 section 4.3), the same
+                    // form `write_name` and `ServiceInfo::new` use, so names compare equal.
+                    for ch in label.chars() {
+                        if ch == '.' || ch == '\\' {
+                            name.push('\\');
+                        }
+                        name.push(ch);
+                    }
                     *name += ".";
                     offset = ending;
                 }
                 0xC0 => {
                     // Message compression: a pointer marks the end of a domain name.
-                    self.follow_pointer(offset, name)?;
+                    self.follow_pointer(offset, name, wire_len)?;
                     return Ok(offset + U16_SIZE);
                 }
                 _ => {
@@ -2823,7 +2854,7 @@ impl DnsIncoming {
     ///
     /// See https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.4 for
     /// message compression.
-    fn follow_pointer(&self, at: usize, name: &mut String) -> Result<()> {
+    fn follow_pointer(&self, at: usize, name: &mut String, wire_len: &mut usize) -> Result<()> {
         let data = &self.data[..];
         let mut pointer_at = at;
 
@@ -2855,7 +2886,7 @@ impl DnsIncoming {
             pointer_at = target;
         };
 
-        self.read_labels(target, name)?;
+        self.read_labels(target, name, wire_len)?;
         Ok(())
     }
 }
@@ -2878,12 +2909,98 @@ fn get_expiration_time(created: Instant, ttl: u32, percent: u32) -> Instant {
     created + Duration::from_millis(ttl as u64 * percent as u64 * 10)
 }
 
+/// Iterates the escaped labels of a DNS name per RFC 6763 section 4.3: an
+/// unescaped `.` separates labels, while a backslash escapes whatever
+/// character follows it (so `\.` and `\\` stay inside the label). Each item
+/// is the escaped text of one label, which may be empty.
+///
+/// This is the single place that decides where a label ends. It is shared by
+/// `DnsOutPacket::parse_escaped_name`, which unescapes each item and drops
+/// the empty ones, and by the rename code in `service_daemon`, which needs
+/// the escaped form.
+pub(crate) struct EscapedLabels<'a> {
+    name: &'a str,
+    next_start: usize,
+    slice_end: usize,
+}
+
+impl<'a> EscapedLabels<'a> {
+    pub(crate) fn new(name: &'a str) -> Self {
+        Self {
+            name,
+            next_start: 0,
+            slice_end: 0,
+        }
+    }
+
+    /// Returns the part of the name after the last label yielded, starting
+    /// at its separating unescaped dot. Before `next` ran this is the whole
+    /// name; after a label that ends the name it is empty.
+    pub(crate) fn rest(&self) -> &'a str {
+        &self.name[self.slice_end..]
+    }
+}
+
+impl<'a> Iterator for EscapedLabels<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        if self.next_start > self.name.len() {
+            return None;
+        }
+        let mut escaped = false;
+        for (i, ch) in self.name[self.next_start..].char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '.' => {
+                    let end = self.next_start + i;
+                    let label = &self.name[self.next_start..end];
+                    self.slice_end = end;
+                    self.next_start = end + 1;
+                    return Some(label);
+                }
+                _ => {}
+            }
+        }
+        let label = &self.name[self.next_start..];
+        self.slice_end = self.name.len();
+        self.next_start = self.name.len() + 1;
+        Some(label)
+    }
+}
+
+/// Unescapes one label slice per RFC 6763 section 4.3: `\.` becomes `.` and
+/// `\\` becomes `\`. A backslash before any other character stays a literal
+/// backslash, as does a trailing lone backslash.
+fn unescape_label(label: &str) -> String {
+    let mut out = String::with_capacity(label.len());
+    let mut chars = label.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(&next_ch) = chars.peek() {
+                if next_ch == '.' || next_ch == '\\' {
+                    chars.next();
+                    out.push(next_ch);
+                    continue;
+                }
+            }
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         u16_from_be_slice, DnsAddress, DnsHostInfo, DnsIncoming, DnsOutPacket, DnsOutgoing,
-        DnsPointer, DnsTxt, RRType, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE,
-        FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MSG_HEADER_LEN,
+        DnsPointer, DnsTxt, EscapedLabels, RRType, CLASS_ANY, CLASS_CACHE_FLUSH, CLASS_IN,
+        CLASS_UNICAST_RESPONSE, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6,
+        MAX_PKT_DEFAULT,
     };
     use crate::InterfaceId;
     use std::collections::HashMap;
@@ -2892,6 +3009,107 @@ mod tests {
     /// The `is_ipv4` argument of `to_packets`. IPv6 has the smaller of the two
     /// absolute ceilings, so it is the stricter one to encode for.
     const IPV6: bool = false;
+
+    #[test]
+    fn test_question_class() {
+        let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        query.add_question("peer.local.", RRType::A);
+        let packet = query.to_data_on_wire(MAX_PKT_DEFAULT, true).remove(0);
+
+        for (wire_class, should_match) in [
+            (CLASS_IN, true),
+            (CLASS_ANY, true),                         // QCLASS ANY
+            (2, false),                                // unsupported class
+            (CLASS_IN | CLASS_UNICAST_RESPONSE, true), // QU bit does not change class
+            (2 | CLASS_UNICAST_RESPONSE, false),
+        ] {
+            let mut packet = packet.clone();
+            let len = packet.len();
+            packet[len - 2..].copy_from_slice(&wire_class.to_be_bytes());
+            let incoming = DnsIncoming::new(
+                packet,
+                InterfaceId {
+                    name: "test".to_string(),
+                    index: 1,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                incoming.questions()[0].is_class_in_or_any(),
+                should_match,
+                "wire class {wire_class:#06x}"
+            );
+            if should_match {
+                let mut response = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+                response.add_question_from(&incoming.questions()[0]);
+                let echoed = response.to_data_on_wire(MAX_PKT_DEFAULT, true).remove(0);
+                assert_eq!(&echoed[echoed.len() - 2..], &wire_class.to_be_bytes());
+            }
+        }
+    }
+
+    /// `EscapedLabels` finds where each escaped label ends, and
+    /// `parse_escaped_name` unescapes the same slices and drops the empty
+    /// ones — both use the same boundary rule per RFC 6763 section 4.3.
+    #[test]
+    fn test_escaped_labels() {
+        // `\.` stays inside the label.
+        assert_eq!(EscapedLabels::new(r"a\.b").collect::<Vec<_>>(), [r"a\.b"]);
+        assert_eq!(DnsOutPacket::parse_escaped_name(r"a\.b"), vec!["a.b"]);
+
+        // `\\.` ends the label: `\\` is a pair, the dot after it separates.
+        assert_eq!(
+            EscapedLabels::new(r"a\\.b").collect::<Vec<_>>(),
+            [r"a\\", "b"]
+        );
+        assert_eq!(DnsOutPacket::parse_escaped_name(r"a\\.b"), vec!["a\\", "b"]);
+
+        // An unrecognized escape keeps its backslash; the dot separates.
+        assert_eq!(
+            EscapedLabels::new(r"a\x.b").collect::<Vec<_>>(),
+            [r"a\x", "b"]
+        );
+        assert_eq!(
+            DnsOutPacket::parse_escaped_name(r"a\x.b"),
+            vec!["a\\x", "b"]
+        );
+
+        // `\\` then `\.` are both pairs: no separator.
+        assert_eq!(
+            EscapedLabels::new(r"a\\\.b").collect::<Vec<_>>(),
+            [r"a\\\.b"]
+        );
+        assert_eq!(DnsOutPacket::parse_escaped_name(r"a\\\.b"), vec!["a\\.b"]);
+
+        // A trailing lone backslash is a literal char inside the label.
+        assert_eq!(EscapedLabels::new(r"ab\").collect::<Vec<_>>(), [r"ab\"]);
+        assert_eq!(DnsOutPacket::parse_escaped_name(r"ab\"), vec!["ab\\"]);
+
+        // Empty labels are yielded as empty slices; `parse_escaped_name`
+        // drops them like before.
+        assert_eq!(EscapedLabels::new(".foo").collect::<Vec<_>>(), ["", "foo"]);
+        assert_eq!(DnsOutPacket::parse_escaped_name(".foo"), vec!["foo"]);
+        assert_eq!(EscapedLabels::new("..").collect::<Vec<_>>(), ["", "", ""]);
+        assert_eq!(DnsOutPacket::parse_escaped_name(".."), Vec::<String>::new());
+        assert_eq!(
+            EscapedLabels::new("foo.bar.").collect::<Vec<_>>(),
+            ["foo", "bar", ""]
+        );
+        assert_eq!(
+            DnsOutPacket::parse_escaped_name("foo.bar."),
+            vec!["foo", "bar"]
+        );
+
+        // `rest` is the remainder after the last label yielded.
+        let mut labels = EscapedLabels::new("first.second.third");
+        assert_eq!(labels.next(), Some("first"));
+        assert_eq!(labels.rest(), ".second.third");
+        assert_eq!(labels.next(), Some("second"));
+        assert_eq!(labels.rest(), ".third");
+        assert_eq!(labels.next(), Some("third"));
+        assert_eq!(labels.rest(), "");
+        assert_eq!(labels.next(), None);
+    }
 
     /// Found by fuzzing the packet parser.
     ///
@@ -2953,8 +3171,8 @@ mod tests {
             ]
         );
         let mut expected_names = HashMap::new();
-        expected_names.insert("123.test".to_string(), 12);
-        expected_names.insert("test".to_string(), 16);
+        expected_names.insert(b"\x03123\x04test".to_vec(), 12);
+        expected_names.insert(b"\x04test".to_vec(), 16);
         assert_eq!(&packets[0].names, &expected_names);
     }
 
@@ -2989,9 +3207,9 @@ mod tests {
             ]
         );
         let mut expected_names = HashMap::new();
-        expected_names.insert("123.test".to_string(), 12);
-        expected_names.insert("test".to_string(), 16);
-        expected_names.insert("124.test".to_string(), 26);
+        expected_names.insert(b"\x03123\x04test".to_vec(), 12);
+        expected_names.insert(b"\x04test".to_vec(), 16);
+        expected_names.insert(b"\x03124\x04test".to_vec(), 26);
         assert_eq!(&packets[0].names, &expected_names);
     }
 
@@ -3018,8 +3236,8 @@ mod tests {
             ]
         );
         let mut expected_names = HashMap::new();
-        expected_names.insert("test.local".to_string(), 12);
-        expected_names.insert("local".to_string(), 17);
+        expected_names.insert(b"\x04test\x05local".to_vec(), 12);
+        expected_names.insert(b"\x05local".to_vec(), 17);
         assert_eq!(&packets[0].names, &expected_names);
     }
 
@@ -3073,10 +3291,130 @@ mod tests {
             ]
         );
         let mut expected_names = HashMap::new();
-        expected_names.insert("test".to_string(), 12);
-        expected_names.insert("test-service.local".to_string(), 28);
-        expected_names.insert("local".to_string(), 41);
+        expected_names.insert(b"\x04test".to_vec(), 12);
+        expected_names.insert(b"\x0ctest-service\x05local".to_vec(), 28);
+        expected_names.insert(b"\x05local".to_vec(), 41);
         assert_eq!(&packets[0].names, &expected_names);
+    }
+
+    /// Check the wire representation, independently of read_name's escaping.
+    #[test]
+    fn test_dns_outgoing_compression_preserves_label_boundaries() {
+        let cases: &[(&str, &str, &[u8], &[u8])] = &[
+            (
+                r"L\.A.B.local.",
+                "L.A.B.local.",
+                b"\x03L.A\x01B\x05local\0",
+                b"\x01L\x01A\xc0\x10",
+            ),
+            (
+                "L.A.B.local.",
+                r"L\.A.B.local.",
+                b"\x01L\x01A\x01B\x05local\0",
+                b"\x03L.A\xc0\x10",
+            ),
+            (
+                r"L\.A.B.local.",
+                "x.L.A.B.local.",
+                b"\x03L.A\x01B\x05local\0",
+                b"\x01x\x01L\x01A\xc0\x10",
+            ),
+            (
+                "L.A.B.local.",
+                r"x.L\.A.B.local.",
+                b"\x01L\x01A\x01B\x05local\0",
+                b"\x01x\x03L.A\xc0\x10",
+            ),
+            (
+                r"L\\.A.B.local.",
+                r"L\\\.A.B.local.",
+                b"\x02L\\\x01A\x01B\x05local\0",
+                b"\x04L\\.A\xc0\x11",
+            ),
+            (
+                r"L\\\.A.B.local.",
+                r"L\\.A.B.local.",
+                b"\x04L\\.A\x01B\x05local\0",
+                b"\x02L\\\x01A\xc0\x11",
+            ),
+        ];
+
+        for &(first, second, first_wire, second_wire) in cases {
+            let mut out = DnsOutgoing::new(0);
+            out.add_question(first, RRType::PTR);
+            out.add_question(second, RRType::PTR);
+            let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
+            assert_eq!(packets.len(), 1);
+            let mut expected = first_wire.to_vec();
+            expected.extend_from_slice(&[0, 12, 0, 1]); // PTR, IN
+            expected.extend_from_slice(second_wire);
+            expected.extend_from_slice(&[0, 12, 0, 1]);
+            assert_eq!(&packets[0].as_bytes()[4..6], &[0, 2]);
+            assert_eq!(
+                &packets[0].as_bytes()[super::MSG_HEADER_LEN..],
+                expected,
+                "{first} then {second}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dns_outgoing_compression_max_length_labels() {
+        // 63 UTF-8 bytes, including a dot inside the first label. The full
+        // name occupies 255 bytes, including length octets and the root.
+        let first_label = format!("{}.ab", "界".repeat(20));
+        let second_label = "b".repeat(63);
+        let third_label = "c".repeat(63);
+        let fourth_label = "d".repeat(61);
+        let first = format!(
+            "{}.{}.{}.{}.",
+            first_label.replace('.', r"\."),
+            second_label,
+            third_label,
+            fourth_label
+        );
+        let second = format!("{first_label}.{second_label}.{third_label}.{fourth_label}.");
+        let mut packet = DnsOutPacket::new(MAX_PKT_DEFAULT);
+        packet.write_name(&first).unwrap();
+        let second_offset = packet.size();
+        packet.write_name(&second).unwrap();
+
+        let mut expected = vec![60];
+        expected.extend_from_slice("界".repeat(20).as_bytes());
+        expected.extend_from_slice(&[2, b'a', b'b', 0xc0, 76]); // share b... at 12 + 64
+        assert_eq!(second_offset, super::MSG_HEADER_LEN + 255);
+        assert_eq!(&packet.as_bytes()[second_offset..], expected);
+        // Repeated long names still compress to their own first occurrence.
+        let repeated_offset = packet.size();
+        packet.write_name(&first).unwrap();
+        assert_eq!(&packet.as_bytes()[repeated_offset..], &[0xc0, 12]);
+    }
+
+    #[test]
+    fn test_dns_outgoing_compression_packet_boundary() {
+        let mut out = DnsOutgoing::new(0);
+        out.add_question(r"L\.A.B.local.", RRType::PTR);
+        out.add_question("L.A.B.local.", RRType::PTR);
+        out.add_question("L.A.B.local.", RRType::PTR);
+
+        // Both distinct names fit exactly at 39 bytes; the repeated second
+        // name takes another six bytes using a pointer to offset 29.
+        let packets = out.to_packets(45, IPV6);
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].size(), 45);
+        assert_eq!(&packets[0].as_bytes()[39..], &[0xc0, 29, 0, 12, 0, 1]);
+
+        // At one byte less, the third question starts a new packet. Its
+        // compression table must not refer to offsets in the previous one.
+        let packets = out.to_packets(44, IPV6);
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[0].size(), 39);
+        assert_eq!(&packets[0].as_bytes()[4..6], &[0, 2]);
+        assert_eq!(&packets[1].as_bytes()[4..6], &[0, 1]);
+        assert_eq!(
+            &packets[1].as_bytes()[super::MSG_HEADER_LEN..],
+            b"\x01L\x01A\x01B\x05local\0\0\x0c\0\x01"
+        );
     }
 
     /// A question whose name has a label longer than 63 bytes cannot be
@@ -3102,8 +3440,8 @@ mod tests {
 
         // The rolled back name must not leave a stale compression offset behind.
         let mut expected_names = HashMap::new();
-        expected_names.insert("123.test".to_string(), 12);
-        expected_names.insert("test".to_string(), 16);
+        expected_names.insert(b"\x03123\x04test".to_vec(), 12);
+        expected_names.insert(b"\x04test".to_vec(), 16);
         assert_eq!(&packets[0].names, &expected_names);
     }
 
@@ -3147,9 +3485,11 @@ mod tests {
     }
 
     /// A name learned from the network can hold a label that ends with a
-    /// backslash, which escapes the following label separator. Unescaping such
-    /// a name on the way out merges two 63-byte labels into a 127-byte one.
-    /// This used to panic the daemon thread. See issue #483.
+    /// backslash. Unescaped, that backslash escaped the following label
+    /// separator, and re-emitting the name merged two 63-byte labels into a
+    /// 127-byte one, which used to panic the daemon thread (issue #483).
+    /// Reading now escapes the backslash, so the labels stay separate and the
+    /// question goes back out exactly as it came in.
     #[test]
     fn test_incoming_name_with_merged_labels_does_not_panic() {
         // A query with one question: "aa..a\" + "bb..b", 63 bytes each.
@@ -3163,7 +3503,7 @@ mod tests {
         data.extend([0, 12, 0, 1]); // PTR, IN
 
         let incoming = DnsIncoming::new(
-            data,
+            data.clone(),
             InterfaceId {
                 name: "test".to_string(),
                 index: 1,
@@ -3172,16 +3512,82 @@ mod tests {
         .unwrap();
         let name = incoming.questions()[0].entry.name.clone();
 
-        // The two labels merged: the trailing backslash escaped the separator.
-        assert!(name.starts_with("aaa"));
-        assert!(name.contains("\\.bbb"));
+        // The trailing backslash is escaped, so it no longer eats the separator.
+        assert_eq!(name, format!("{}\\\\.{}.", "a".repeat(62), "b".repeat(63)));
 
-        // Re-emitting it must drop the question rather than panic.
+        // Re-emitting it gives back the same two labels.
         let mut out = DnsOutgoing::new(0);
         out.add_question(&name, RRType::PTR);
         let packets = out.to_packets(MAX_PKT_DEFAULT, IPV6);
         assert_eq!(packets.len(), 1);
-        assert_eq!(packets[0].as_bytes(), &[0; MSG_HEADER_LEN]);
+        assert_eq!(packets[0].as_bytes(), &data[..]);
+    }
+
+    /// A dot inside a label belongs to that label (RFC 6763 section 4.3).
+    /// Reading it must escape it as `\.`, the form `ServiceInfo::new` stores,
+    /// or a query for the instance "L.A.R.A Hub" never matches the registered
+    /// service and gets no answer.
+    #[test]
+    fn test_incoming_label_with_dot_is_escaped() {
+        // A query with one question: SRV for "L.A.R.A Hub" + "_lara" + "_tcp" + "local".
+        let mut data: Vec<u8> = vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        for label in ["L.A.R.A Hub", "_lara", "_tcp", "local"] {
+            data.push(label.len() as u8);
+            data.extend_from_slice(label.as_bytes());
+        }
+        data.push(0);
+        data.extend([0, 33, 0, 1]); // SRV, IN
+
+        let incoming = DnsIncoming::new(
+            data,
+            InterfaceId {
+                name: "test".to_string(),
+                index: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            incoming.questions()[0].entry.name,
+            r"L\.A\.R\.A Hub._lara._tcp.local."
+        );
+    }
+
+    /// The 255-byte limit is on the wire size of a name (RFC 1035 section 2.3.4).
+    /// Escaping makes the text longer than that, and must not reject a legal name.
+    #[test]
+    fn test_incoming_name_limit_ignores_escapes() {
+        // 3 labels of 63 dots, then "local": 199 bytes on the wire, 387 once escaped.
+        let dots = ".".repeat(63);
+        let mut data: Vec<u8> = vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        for label in [dots.as_str(), dots.as_str(), dots.as_str(), "local"] {
+            data.push(label.len() as u8);
+            data.extend_from_slice(label.as_bytes());
+        }
+        data.push(0);
+        data.extend([0, 12, 0, 1]); // PTR, IN
+
+        let incoming = DnsIncoming::new(data, test_interface_id()).unwrap();
+        let escaped = r"\.".repeat(63);
+        assert_eq!(
+            incoming.questions()[0].entry.name,
+            format!("{escaped}.{escaped}.{escaped}.local.")
+        );
+    }
+
+    /// A name above 255 bytes on the wire is still rejected.
+    #[test]
+    fn test_incoming_name_over_limit_is_rejected() {
+        // 4 labels of 63 bytes: 257 bytes on the wire.
+        let long = "a".repeat(63);
+        let mut data: Vec<u8> = vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        for _ in 0..4 {
+            data.push(long.len() as u8);
+            data.extend_from_slice(long.as_bytes());
+        }
+        data.push(0);
+        data.extend([0, 12, 0, 1]); // PTR, IN
+
+        assert!(DnsIncoming::new(data, test_interface_id()).is_err());
     }
 
     /// A pointer that points into the name currently being read is a loop:
