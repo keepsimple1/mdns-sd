@@ -33,11 +33,11 @@ use crate::log::{debug, error, trace};
 use crate::{
     dns_cache::{DnsCache, IpType},
     dns_parser::{
-        first_label_wire_len, ip_address_rr_type, max_pkt_absolute, truncate_label_to_wire_len,
-        DnsAddress, DnsEntryExt, DnsIncoming, DnsNSec, DnsOutgoing, DnsPointer, DnsQuestion,
-        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, EscapedLabels, InterfaceId, RRType, ScopedIp,
-        CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_LABEL_BYTES,
-        MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
+        escaped_label_wire_len, first_label_wire_len, ip_address_rr_type, max_pkt_absolute,
+        truncate_label_to_wire_len, DnsAddress, DnsEntryExt, DnsIncoming, DnsNSec, DnsOutgoing,
+        DnsPointer, DnsQuestion, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, EscapedLabels,
+        InterfaceId, RRType, ScopedIp, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY,
+        FLAGS_QR_RESPONSE, MAX_LABEL_BYTES, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
     },
     error::{e_fmt, Error, Result},
     service_info::{
@@ -642,7 +642,8 @@ impl ServiceDaemon {
     ///
     /// - `hostname` does not end with `.local.`;
     /// - `hostname` is exactly `.local.` (the label before `.local.` is empty);
-    /// - `hostname` is longer than 255 bytes.
+    /// - `hostname` is longer than 255 bytes;
+    /// - a label of `hostname` is longer than [`MAX_LABEL_BYTES`] bytes on the wire.
     ///
     /// Returns [`Error::Again`] if the daemon's command queue is full.
     ///
@@ -685,14 +686,18 @@ impl ServiceDaemon {
     /// Returns [`Error::Msg`] if the [`ServiceInfo`] is malformed, for example:
     ///
     /// - the fullname does not end with `._tcp.local.` or `._udp.local.`;
-    /// - the hostname does not end with `.local.`, is exactly `.local.`, or
-    ///   is longer than 255 bytes.
+    /// - the instance label of the fullname is longer than [`MAX_LABEL_BYTES`]
+    ///   bytes on the wire;
+    /// - the hostname does not end with `.local.`, is exactly `.local.`, is
+    ///   longer than 255 bytes, or has a label longer than [`MAX_LABEL_BYTES`]
+    ///   bytes on the wire.
     ///
     /// Returns [`Error::Again`] if the daemon's command queue is full.
     ///
     /// Returns [`Error::DaemonShutdown`] if the daemon thread has already exited.
     pub fn register(&self, service_info: ServiceInfo) -> Result<()> {
         check_service_name(service_info.get_fullname())?;
+        check_instance_label_length(service_info.get_fullname())?;
         check_hostname(service_info.get_hostname())?;
 
         self.send_cmd(Command::Register(service_info.into()))
@@ -5218,6 +5223,20 @@ fn check_hostname(hostname: &str) -> Result<()> {
         return Err(e_fmt!("Hostname length must be <= 255 bytes"));
     }
 
+    // Every label must fit in a single DNS label on the wire, the same
+    // condition `write_name` enforces when encoding the hostname.
+    for label in EscapedLabels::new(hostname) {
+        let wire_len = escaped_label_wire_len(label);
+        if wire_len > MAX_LABEL_BYTES {
+            return Err(e_fmt!(
+                "Hostname label must be <= {} bytes on the wire, got {}: {}",
+                MAX_LABEL_BYTES,
+                wire_len,
+                hostname
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -5677,8 +5696,9 @@ fn name_change(original: &str) -> String {
     }
 
     // Shorten the base so the label with the new suffix still fits in
-    // MAX_LABEL_BYTES on the wire, like mDNSResponder does. A trailing space
-    // is trimmed so the result does not end up as `foo  (2)`.
+    // MAX_LABEL_BYTES on the wire, like mDNSResponder does. Trailing
+    // whitespace of the base is always trimmed, so the result does not end
+    // up like `foo  (2)`.
     let suffix = format!(" ({number})");
     let budget = MAX_LABEL_BYTES.saturating_sub(suffix.len());
     let new_name = format!(
@@ -5712,8 +5732,9 @@ fn hostname_change(original: &str) -> String {
     }
 
     // Shorten the base so the label with the new suffix still fits in
-    // MAX_LABEL_BYTES on the wire, like mDNSResponder does. A trailing '-'
-    // is trimmed so the result does not end up as `foo--2`.
+    // MAX_LABEL_BYTES on the wire, like mDNSResponder does. Trailing '-'
+    // of the base are always trimmed, so the result does not end up like
+    // `foo--2`.
     let suffix = format!("-{number}");
     let budget = MAX_LABEL_BYTES.saturating_sub(suffix.len());
     let new_name = format!(
@@ -7255,7 +7276,15 @@ mod tests {
         // valid hostnames
         for hostname in &[
             "my_host.local.",
-            &("A".repeat(255 - ".local.".len()) + ".local."),
+            &format!(
+                "{}.{}.{}.{}.local.",
+                "A".repeat(63),
+                "B".repeat(63),
+                "C".repeat(63),
+                "D".repeat(56)
+            ),
+            &("A".repeat(63) + ".local."),
+            &("a.".to_string() + &"B".repeat(63) + ".local."),
         ] {
             let result = check_hostname(hostname);
             assert!(result.is_ok());
@@ -7266,6 +7295,9 @@ mod tests {
             "my_host.local",
             ".local.",
             &("A".repeat(256 - ".local.".len()) + ".local."),
+            // A label of 64 bytes cannot be encoded on the wire.
+            &("A".repeat(64) + ".local."),
+            &("a.".to_string() + &"B".repeat(64) + ".local."),
         ] {
             let result = check_hostname(hostname);
             assert!(result.is_err());
@@ -7273,6 +7305,41 @@ mod tests {
                 println!("{}", e);
             }
         }
+    }
+
+    #[test]
+    fn test_register_rejects_oversized_labels() {
+        let d = ServiceDaemon::new().expect("Failed to create daemon");
+
+        // An instance name whose label exceeds MAX_LABEL_BYTES on the wire
+        // is rejected by `register` directly instead of only surfacing on
+        // the monitor channel.
+        let instance = "a".repeat(64);
+        let service = ServiceInfo::new(
+            "_oversized._tcp.local.",
+            &instance,
+            "my_host.local.",
+            "",
+            1234,
+            None,
+        )
+        .expect("failed to create ServiceInfo");
+        assert!(d.register(service).is_err());
+
+        // Same for a hostname label.
+        let hostname = format!("{}.local.", "a".repeat(64));
+        let service = ServiceInfo::new(
+            "_oversized._tcp.local.",
+            "instance",
+            &hostname,
+            "",
+            1234,
+            None,
+        )
+        .expect("failed to create ServiceInfo");
+        assert!(d.register(service).is_err());
+
+        d.shutdown().expect("Failed to shutdown daemon");
     }
 
     #[test]
