@@ -643,7 +643,7 @@ impl ServiceDaemon {
     /// - `hostname` does not end with `.local.`;
     /// - `hostname` is exactly `.local.` (the label before `.local.` is empty);
     /// - `hostname` is longer than 255 bytes;
-    /// - a label of `hostname` is longer than [`MAX_LABEL_BYTES`] bytes on the wire.
+    /// - a label of `hostname` is longer than `MAX_LABEL_BYTES` bytes on the wire.
     ///
     /// Returns [`Error::Again`] if the daemon's command queue is full.
     ///
@@ -686,10 +686,10 @@ impl ServiceDaemon {
     /// Returns [`Error::Msg`] if the [`ServiceInfo`] is malformed, for example:
     ///
     /// - the fullname does not end with `._tcp.local.` or `._udp.local.`;
-    /// - the instance label of the fullname is longer than [`MAX_LABEL_BYTES`]
+    /// - the instance label of the fullname is longer than `MAX_LABEL_BYTES`
     ///   bytes on the wire;
     /// - the hostname does not end with `.local.`, is exactly `.local.`, is
-    ///   longer than 255 bytes, or has a label longer than [`MAX_LABEL_BYTES`]
+    ///   longer than 255 bytes, or has a label longer than `MAX_LABEL_BYTES`
     ///   bytes on the wire.
     ///
     /// Returns [`Error::Again`] if the daemon's command queue is full.
