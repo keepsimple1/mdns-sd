@@ -1236,16 +1236,32 @@ fn join_multicast_v4(my_sock: &PktInfoUdpSocket, ip: &Ipv4Addr) -> io::Result<()
     }
 }
 
-/// Leaves the IPv4 mDNS group on the interface that has `ip`, if the host still has `ip`.
-///
-/// Once the address is gone, macOS drops the socket's first membership of the group
-/// instead, cutting off another interface. Skipping the leave is safe: a removed
-/// interface takes its membership with it, and one that only changed its address
-/// keeps it, which the next join treats as already held (see [`join_multicast_v4`]).
-fn leave_multicast_v4(my_sock: &PktInfoUdpSocket, ip: &Ipv4Addr) {
-    let present =
-        if_addrs::get_if_addrs().is_ok_and(|addrs| addrs.iter().any(|i| i.ip() == IpAddr::V4(*ip)));
-    if !present {
+/// Leaves the IPv4 mDNS group on interface `if_index` by its address `ip`, unless
+/// that would drop the wrong membership. `current_ifaddrs` is a recent snapshot of
+/// the host's addresses.
+fn leave_multicast_v4(
+    my_sock: &PktInfoUdpSocket,
+    ip: &Ipv4Addr,
+    if_index: u32,
+    current_ifaddrs: &[Interface],
+) {
+    let mut on_host = false;
+    let mut on_intf = false;
+    for intf in current_ifaddrs
+        .iter()
+        .filter(|intf| intf.ip() == IpAddr::V4(*ip))
+    {
+        on_host = true;
+        on_intf |= intf.index.unwrap_or(0) == if_index;
+    }
+
+    if on_host && !on_intf {
+        debug!("skip leaving multicast for {ip}: address now on another interface");
+        return;
+    }
+    if !on_host && cfg!(target_vendor = "apple") {
+        // Apple platforms drop the socket's first membership of the group instead,
+        // which will be another interface, and it will be wrong. Hence skipping.
         debug!("skip leaving multicast for {ip}: address no longer on this host");
         return;
     }
@@ -2019,7 +2035,7 @@ impl Zeroconf {
                 self.add_interface(intf, &interfaces);
             } else {
                 // Remove the interface
-                self.del_interface_addr(intf);
+                self.del_interface_addr(intf, &interfaces);
             }
         }
 
@@ -2109,7 +2125,7 @@ impl Zeroconf {
                     // Leaving by address would drop the membership the other interface uses.
                     debug!("keep multicast for {ipv4}: still used by another interface");
                 } else if let Some(sock) = self.ipv4_sock.as_ref() {
-                    leave_multicast_v4(&sock.pktinfo, &ipv4);
+                    leave_multicast_v4(&sock.pktinfo, &ipv4, if_index, &my_ifaddrs);
                 }
             }
 
@@ -2161,7 +2177,9 @@ impl Zeroconf {
 
     /// Remove an interface address when it was down, disabled or removed from the system.
     /// If no more addresses on the interface, remove the interface as well.
-    fn del_interface_addr(&mut self, intf: &Interface) {
+    ///
+    /// `current_ifaddrs` is a recent snapshot of the host's addresses.
+    fn del_interface_addr(&mut self, intf: &Interface, current_ifaddrs: &[Interface]) {
         let if_index = intf.index.unwrap_or(0);
         debug!(
             "del_interface_addr: {} ({if_index}) addr {}",
@@ -2189,7 +2207,7 @@ impl Zeroconf {
                         debug!("keep multicast for {ipv4}: still used by another interface");
                     } else if my_intf.next_ifaddr_v4().is_none() {
                         if let Some(sock) = self.ipv4_sock.as_ref() {
-                            leave_multicast_v4(&sock.pktinfo, &ipv4);
+                            leave_multicast_v4(&sock.pktinfo, &ipv4, if_index, current_ifaddrs);
                         }
                     }
                 }
@@ -3950,8 +3968,9 @@ impl Zeroconf {
             }
 
             Command::InvalidIntfAddrs(invalid_intf_addrs) => {
+                let current_ifaddrs = my_ip_interfaces_inner(true, self.include_apple_p2p);
                 for intf_addr in invalid_intf_addrs {
-                    self.del_interface_addr(&intf_addr);
+                    self.del_interface_addr(&intf_addr, &current_ifaddrs);
                 }
 
                 self.check_ip_changes();
@@ -5933,7 +5952,11 @@ mod tests {
             },
         );
 
-        daemon.del_interface_addr(&alias);
+        // The alias is in the snapshot, so only the shared-address check keeps the
+        // leave from going ahead.
+        let mut current_ifaddrs = my_ip_interfaces(true);
+        current_ifaddrs.push(alias.clone());
+        daemon.del_interface_addr(&alias, &current_ifaddrs);
 
         assert!(
             holds_ipv4_membership(&daemon, &Ipv4Addr::LOCALHOST),
