@@ -3043,37 +3043,13 @@ pub(crate) fn truncate_label_to_wire_len(label: &str, max_wire_len: usize) -> &s
     &label[..end]
 }
 
-/// Returns the wire length of the first label of `name`, treating an
-/// unescaped `.` as the label separator and `\.` / `\\` as escape pairs, the
-/// same rules as `parse_escaped_name`.
-pub(crate) fn first_label_wire_len(name: &str) -> usize {
-    let mut wire_len = 0;
-    let mut chars = name.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '.' => break,
-            '\\' => {
-                if let Some(&next_ch) = chars.peek() {
-                    if next_ch == '.' || next_ch == '\\' {
-                        chars.next();
-                    }
-                }
-                wire_len += 1;
-            }
-            _ => wire_len += ch.len_utf8(),
-        }
-    }
-    wire_len
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        escaped_label_wire_len, first_label_wire_len, truncate_label_to_wire_len,
-        u16_from_be_slice, DnsAddress, DnsHostInfo, DnsIncoming, DnsOutPacket, DnsOutgoing,
-        DnsPointer, DnsTxt, EscapedLabels, RRType, CLASS_ANY, CLASS_CACHE_FLUSH, CLASS_IN,
-        CLASS_UNICAST_RESPONSE, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6,
-        MAX_PKT_DEFAULT,
+        escaped_label_wire_len, truncate_label_to_wire_len, u16_from_be_slice, DnsAddress,
+        DnsHostInfo, DnsIncoming, DnsOutPacket, DnsOutgoing, DnsPointer, DnsTxt, EscapedLabels,
+        RRType, CLASS_ANY, CLASS_CACHE_FLUSH, CLASS_IN, CLASS_UNICAST_RESPONSE, FLAGS_QR_QUERY,
+        FLAGS_QR_RESPONSE, FLAGS_TC, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
     };
     use crate::InterfaceId;
     use std::collections::HashMap;
@@ -3193,13 +3169,6 @@ mod tests {
         assert_eq!(escaped_label_wire_len("a\\xb"), 4);
         assert_eq!(escaped_label_wire_len("ab\\"), 3);
         assert_eq!(escaped_label_wire_len("é"), 2);
-
-        // The first label ends at the first unescaped dot.
-        assert_eq!(first_label_wire_len("foo.local."), 3);
-        assert_eq!(first_label_wire_len("a\\.b.local."), 3);
-        assert_eq!(first_label_wire_len("a\\\\b.local."), 3);
-        assert_eq!(first_label_wire_len("foo"), 3);
-        assert_eq!(first_label_wire_len(".local."), 0);
 
         // Truncation fits a wire budget, on UTF-8 boundaries.
         assert_eq!(truncate_label_to_wire_len("abcdef", 3), "abc");

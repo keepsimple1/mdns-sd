@@ -33,11 +33,11 @@ use crate::log::{debug, error, trace};
 use crate::{
     dns_cache::{DnsCache, IpType},
     dns_parser::{
-        escaped_label_wire_len, first_label_wire_len, ip_address_rr_type, max_pkt_absolute,
-        truncate_label_to_wire_len, DnsAddress, DnsEntryExt, DnsIncoming, DnsNSec, DnsOutgoing,
-        DnsPointer, DnsQuestion, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, EscapedLabels,
-        InterfaceId, RRType, ScopedIp, CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY,
-        FLAGS_QR_RESPONSE, MAX_LABEL_BYTES, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
+        escaped_label_wire_len, ip_address_rr_type, max_pkt_absolute, truncate_label_to_wire_len,
+        DnsAddress, DnsEntryExt, DnsIncoming, DnsNSec, DnsOutgoing, DnsPointer, DnsQuestion,
+        DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt, EscapedLabels, InterfaceId, RRType, ScopedIp,
+        CLASS_CACHE_FLUSH, CLASS_IN, FLAGS_AA, FLAGS_QR_QUERY, FLAGS_QR_RESPONSE, MAX_LABEL_BYTES,
+        MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT,
     },
     error::{e_fmt, Error, Result},
     service_info::{
@@ -643,7 +643,7 @@ impl ServiceDaemon {
     /// - `hostname` does not end with `.local.`;
     /// - `hostname` is exactly `.local.` (the label before `.local.` is empty);
     /// - `hostname` is longer than 255 bytes;
-    /// - a label of `hostname` is longer than `MAX_LABEL_BYTES` bytes on the wire.
+    /// - a label of `hostname` is longer than 63 bytes on the wire.
     ///
     /// Returns [`Error::Again`] if the daemon's command queue is full.
     ///
@@ -686,11 +686,11 @@ impl ServiceDaemon {
     /// Returns [`Error::Msg`] if the [`ServiceInfo`] is malformed, for example:
     ///
     /// - the fullname does not end with `._tcp.local.` or `._udp.local.`;
-    /// - the instance label of the fullname is longer than `MAX_LABEL_BYTES`
-    ///   bytes on the wire;
+    /// - the instance label of the fullname is longer than 63 bytes on the
+    ///   wire;
     /// - the hostname does not end with `.local.`, is exactly `.local.`, is
-    ///   longer than 255 bytes, or has a label longer than `MAX_LABEL_BYTES`
-    ///   bytes on the wire.
+    ///   longer than 255 bytes, or has a label longer than 63 bytes on the
+    ///   wire.
     ///
     /// Returns [`Error::Again`] if the daemon's command queue is full.
     ///
@@ -2576,14 +2576,6 @@ impl Zeroconf {
         // Check the service name length.
         if let Err(e) = check_service_name_length(info.get_type(), self.service_name_len_max) {
             error!("check_service_name_length: {}", e);
-            self.notify_monitors(DaemonEvent::Error(e));
-            return;
-        }
-
-        // Check the instance name fits in a single DNS label on the wire,
-        // otherwise writing its records would fail silently on the network.
-        if let Err(e) = check_instance_label_length(info.get_fullname()) {
-            error!("check_instance_label_length: {}", e);
             self.notify_monitors(DaemonEvent::Error(e));
             return;
         }
@@ -5146,7 +5138,7 @@ fn check_service_name_length(ty_domain: &str, limit: u8) -> Result<()> {
 /// Checks that the first label (the instance name) of `fullname` fits in a
 /// single DNS label on the wire, per `parse_escaped_name` escape rules.
 fn check_instance_label_length(fullname: &str) -> Result<()> {
-    let wire_len = first_label_wire_len(fullname);
+    let wire_len = escaped_label_wire_len(split_first_label(fullname).0);
     if wire_len > MAX_LABEL_BYTES {
         return Err(e_fmt!(
             "Instance label must be <= {} bytes on the wire, got {}: {}",
