@@ -1011,6 +1011,32 @@ impl ServiceDaemon {
     }
 }
 
+/// Whether a packet was sent to one of our unicast addresses from outside the link it arrived on.
+///
+/// RFC 6762 section 5.5: a query received by direct unicast may come from outside the local
+/// link, and responders should ignore it unless its source address is on a subnet of the
+/// receiving interface (for IPv6, has an on-link prefix). Answering it would send our records,
+/// many times the size of the query, to whatever source address the packet claims.
+///
+/// Packets sent to the mDNS group are always on-link (section 11): routers do not forward
+/// them, whatever their source address.
+fn is_off_link_unicast(dst: &IpAddr, src: &IpAddr, intf_addrs: &HashSet<IfAddr>) -> bool {
+    let to_group = match dst {
+        IpAddr::V4(dst) => *dst == GROUP_ADDR_V4,
+        IpAddr::V6(dst) => *dst == GROUP_ADDR_V6,
+    };
+    if to_group {
+        return false;
+    }
+    // fe80::/10 is on-link by definition, whatever the interface's global prefixes.
+    if let IpAddr::V6(src) = src {
+        if src.segments()[0] & 0xffc0 == 0xfe80 {
+            return false;
+        }
+    }
+    !intf_addrs.iter().any(|addr| valid_ip_on_intf(src, addr))
+}
+
 /// Creates a new UDP socket to bind to `port` with REUSEPORT option.
 /// `non_block` indicates whether to set O_NONBLOCK for the socket.
 fn new_socket(addr: SocketAddr, non_block: bool) -> Result<PktInfoUdpSocket> {
@@ -3117,7 +3143,14 @@ impl Zeroconf {
                 );
                 if msg.is_query() {
                     let querier_addr = pktinfo.addr_src;
-                    self.handle_query(msg, pkt_if_index, querier_addr);
+                    if is_off_link_unicast(&pktinfo.addr_dst, &querier_addr.ip(), &my_intf.addrs) {
+                        debug!(
+                            "handle_read: ignoring query sent to {} from off-link {}",
+                            pktinfo.addr_dst, querier_addr
+                        );
+                    } else {
+                        self.handle_query(msg, pkt_if_index, querier_addr);
+                    }
                 } else if msg.is_response() {
                     self.handle_response(msg, pkt_if_index);
                 } else {
@@ -5916,14 +5949,14 @@ fn resolve_addr_to_index(if_kind: IfKind, interfaces: &[Interface]) -> IfKind {
 mod tests {
     use super::{
         answer_hostname_question, check_domain_suffix, check_instance_label_length,
-        check_service_name_length, hostname_change, ip_address_rr_type, is_own_address,
-        my_ip_interfaces, name_change, new_multicast_socket, resolve_max_packet_size,
-        send_dns_outgoing_impl, valid_instance_name, valid_ip_on_intf, DaemonEvent,
-        HostnameResolutionEvent, IfKind, MaxPacketSizeSelection, MyIntf, SendConfig, ServiceDaemon,
-        ServiceEvent, ServiceInfo, GROUP_ADDR_V4, INITIAL_QUERY_DELAY_MAX_MILLIS,
-        INITIAL_QUERY_DELAY_MIN_MILLIS, MAX_PKT_ABSOLUTE_IPV6, MAX_PKT_DEFAULT, MDNS_PORT,
-        MIN_MAX_PACKET_SIZE, RESOLVE_MAX_TRY, SHARED_RESPONSE_DELAY_MAX_MILLIS,
-        SHARED_RESPONSE_DELAY_MIN_MILLIS,
+        check_service_name_length, hostname_change, ip_address_rr_type, is_off_link_unicast,
+        is_own_address, my_ip_interfaces, name_change, new_multicast_socket,
+        resolve_max_packet_size, send_dns_outgoing_impl, valid_instance_name, valid_ip_on_intf,
+        DaemonEvent, HostnameResolutionEvent, IfKind, MaxPacketSizeSelection, MyIntf, SendConfig,
+        ServiceDaemon, ServiceEvent, ServiceInfo, GROUP_ADDR_V4, GROUP_ADDR_V6,
+        INITIAL_QUERY_DELAY_MAX_MILLIS, INITIAL_QUERY_DELAY_MIN_MILLIS, MAX_PKT_ABSOLUTE_IPV6,
+        MAX_PKT_DEFAULT, MDNS_PORT, MIN_MAX_PACKET_SIZE, RESOLVE_MAX_TRY,
+        SHARED_RESPONSE_DELAY_MAX_MILLIS, SHARED_RESPONSE_DELAY_MIN_MILLIS,
     };
     use crate::{
         dns_parser::{
@@ -6812,6 +6845,43 @@ mod tests {
         assert!(response.questions().is_empty());
         assert_eq!(response.answers()[0].get_record().get_ttl(), 120);
         assert!(response.answers()[0].get_record().is_unique());
+    }
+
+    #[test]
+    fn test_off_link_unicast_queries_are_ignored() {
+        let intf_addrs: HashSet<IfAddr> = vec![
+            test_ifaddr_v4(Ipv4Addr::new(192, 168, 1, 10)),
+            test_ifaddr_v6(Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 10)),
+        ]
+        .into_iter()
+        .collect();
+        let our_v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        let our_v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 10));
+
+        // Sent to one of our addresses: answered only from our subnets.
+        let on_link_v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+        let off_link_v4 = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
+        assert!(!is_off_link_unicast(&our_v4, &on_link_v4, &intf_addrs));
+        assert!(is_off_link_unicast(&our_v4, &off_link_v4, &intf_addrs));
+
+        let on_link_v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 20));
+        let off_link_v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 2, 0, 0, 0, 0, 20));
+        let link_local_v6 = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 20));
+        assert!(!is_off_link_unicast(&our_v6, &on_link_v6, &intf_addrs));
+        assert!(is_off_link_unicast(&our_v6, &off_link_v6, &intf_addrs));
+        assert!(!is_off_link_unicast(&our_v6, &link_local_v6, &intf_addrs));
+
+        // Sent to the mDNS group: on-link whatever the source (RFC 6762 section 11).
+        assert!(!is_off_link_unicast(
+            &IpAddr::V4(GROUP_ADDR_V4),
+            &off_link_v4,
+            &intf_addrs
+        ));
+        assert!(!is_off_link_unicast(
+            &IpAddr::V6(GROUP_ADDR_V6),
+            &off_link_v6,
+            &intf_addrs
+        ));
     }
 
     #[test]
