@@ -6884,6 +6884,107 @@ mod tests {
         ));
     }
 
+    // Windows refuses to send a datagram from a non-loopback address to 127.0.0.1
+    // (WSAEADDRNOTAVAIL), so the off-link case cannot be created there.
+    #[cfg(not(windows))]
+    #[test]
+    fn test_handle_read_ignores_off_link_unicast_queries() {
+        // A datagram sent to 127.0.0.1 arrives on the loopback interface, even when its source
+        // is the address of another interface. That source is not in 127.0.0.0/8, so it is
+        // off-link for the receiving interface: `handle_read` must not answer it, but it must
+        // answer the same query from 127.0.0.1.
+        let other_ip = match my_ip_interfaces(false)
+            .into_iter()
+            .find_map(|intf| match intf.ip() {
+                IpAddr::V4(ip) => Some(ip),
+                IpAddr::V6(_) => None,
+            }) {
+            Some(ip) => ip,
+            None => {
+                println!("No non-loopback IPv4 interface available; skipping test.");
+                return;
+            }
+        };
+
+        // A port of our own: a unicast datagram to a port that several sockets share with
+        // SO_REUSEPORT reaches only one of them, which may not be this daemon's.
+        let port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .and_then(|sock| sock.local_addr())
+            .expect("find a free port")
+            .port();
+        let daemon = ServiceDaemon::new_with_port(port).expect("Failed to create daemon");
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+        let hostname = format!("off-link-test-{unique}.local.");
+        let service_info = ServiceInfo::new(
+            "_off-link._udp.local.",
+            "test_instance",
+            &hostname,
+            &[IpAddr::V4(Ipv4Addr::LOCALHOST)] as &[IpAddr],
+            5353,
+            None,
+        )
+        .expect("invalid service info");
+        daemon.register(service_info).expect("register service");
+
+        let mut query = DnsOutgoing::new(FLAGS_QR_QUERY);
+        query.set_multicast(false);
+        query.add_question(&hostname, RRType::A);
+        let query_packet = query
+            .to_data_on_wire(MAX_PKT_DEFAULT, true)
+            .pop()
+            .expect("query serialized to one packet");
+        let if_id = InterfaceId {
+            name: "test".to_string(),
+            index: 0,
+        };
+
+        // Sends the query from `source` to the daemon until it answers or `wait` passes.
+        let answered = |source: Ipv4Addr, wait: Duration| -> bool {
+            let querier = UdpSocket::bind((source, 0)).expect("bind querier socket");
+            querier
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .expect("set read timeout");
+            let deadline = Instant::now() + wait;
+            while Instant::now() < deadline {
+                querier
+                    .send_to(&query_packet, (Ipv4Addr::LOCALHOST, port))
+                    .expect("send query");
+                let mut buf = [0u8; 1500];
+                while let Ok((len, _)) = querier.recv_from(&mut buf) {
+                    let Ok(msg) = DnsIncoming::new(buf[..len].to_vec(), if_id.clone()) else {
+                        continue;
+                    };
+                    if msg.is_response()
+                        && msg
+                            .answers()
+                            .iter()
+                            .any(|a| a.get_name().eq_ignore_ascii_case(&hostname))
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        };
+
+        // The service is announced asynchronously, so wait for the on-link answer first. It
+        // also shows that the daemon is ready before the off-link query is sent.
+        assert!(
+            answered(Ipv4Addr::LOCALHOST, Duration::from_secs(8)),
+            "a unicast query from 127.0.0.1 must be answered"
+        );
+        assert!(
+            !answered(other_ip, Duration::from_secs(2)),
+            "a unicast query from {}, off-link for the loopback interface, must be ignored",
+            other_ip
+        );
+
+        daemon.shutdown().unwrap();
+    }
+
     #[test]
     fn test_legacy_unicast_response() {
         // RFC 6762 §6.7: a query whose UDP source port is not 5353 (a
