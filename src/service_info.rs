@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 /// Default TTL values in seconds
 const DNS_HOST_TTL: u32 = 120; // 2 minutes for host records (A, SRV etc) per RFC6762
 const DNS_OTHER_TTL: u32 = 4500; // 75 minutes for non-host records (PTR, TXT etc) per RFC6762
+const MIN_TTL: u32 = 10; // shortest TTL the public setters accept
+const MAX_TTL: u32 = 0x7FFF_FFFF; // 2^31 - 1, per RFC 2181 section 8
 
 /// Represents a network interface.
 #[derive(Debug)]
@@ -543,6 +545,27 @@ impl ServiceInfo {
     /// other_ttl is for PTR and TXT records.
     pub(crate) fn _set_other_ttl(&mut self, ttl: u32) {
         self.other_ttl = ttl;
+    }
+
+    /// Sets the TTL of the SRV and address records, in seconds.
+    ///
+    /// `ttl` must be in the range `10..=2147483647`. A TTL of 0 would make the
+    /// records goodbyes, a TTL of a few seconds means constant query traffic,
+    /// and RFC 2181 section 8 caps a TTL at 2^31 - 1.
+    pub fn set_host_ttl(&mut self, ttl: u32) -> Result<()> {
+        check_ttl(ttl)?;
+        self.host_ttl = ttl;
+        Ok(())
+    }
+
+    /// Sets the TTL of the PTR and TXT records, in seconds.
+    ///
+    /// `ttl` must be in the range `10..=2147483647`, as for
+    /// [`set_host_ttl`](Self::set_host_ttl).
+    pub fn set_other_ttl(&mut self, ttl: u32) -> Result<()> {
+        check_ttl(ttl)?;
+        self.other_ttl = ttl;
+        Ok(())
     }
 
     pub(crate) fn set_status(&mut self, if_index: u32, status: ServiceStatus) {
@@ -1609,6 +1632,20 @@ impl ResolvedService {
     }
 }
 
+fn check_ttl(ttl: u32) -> Result<()> {
+    if ttl < MIN_TTL {
+        return Err(Error::Msg(format!(
+            "ttl {ttl} is too small, must be at least {MIN_TTL}"
+        )));
+    }
+    if ttl > MAX_TTL {
+        return Err(Error::Msg(format!(
+            "ttl {ttl} is too big, must be at most {MAX_TTL}"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1869,6 +1906,23 @@ mod tests {
         assert_eq!(encoded.len(), 255 + property_count);
         let decoded = decode_txt(&encoded);
         assert_eq!(properties.to_vec(), decoded);
+    }
+
+    #[test]
+    fn test_set_ttl_range() {
+        let mut info =
+            ServiceInfo::new("_test._tcp.local.", "test", "host", "", 1234, None).unwrap();
+        let (host, other) = (info.get_host_ttl(), info.get_other_ttl());
+        for ttl in [0, 9, 0x8000_0000] {
+            assert!(info.set_host_ttl(ttl).is_err());
+            assert!(info.set_other_ttl(ttl).is_err());
+        }
+        assert_eq!((info.get_host_ttl(), info.get_other_ttl()), (host, other));
+        for ttl in [10, 0x7FFF_FFFF] {
+            info.set_host_ttl(ttl).unwrap();
+            info.set_other_ttl(ttl).unwrap();
+            assert_eq!((info.get_host_ttl(), info.get_other_ttl()), (ttl, ttl));
+        }
     }
 
     #[test]
