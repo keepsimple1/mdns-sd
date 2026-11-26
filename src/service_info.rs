@@ -1282,6 +1282,40 @@ impl DnsRegistry {
         }
     }
 
+    /// Earliest time a probe defense may multicast all of its records.
+    pub(crate) fn probe_defense_ready_at(
+        &self,
+        out: &DnsOutgoing,
+        now: Instant,
+        is_ipv4: bool,
+    ) -> Instant {
+        let last_multicast = if is_ipv4 {
+            &self.last_multicast_v4
+        } else {
+            &self.last_multicast_v6
+        };
+        out._answers()
+            .iter()
+            .chain(out.additionals())
+            .filter_map(|record| last_multicast.get(&rate_limit_key(record)))
+            .map(|last| *last + Duration::from_millis(PROBE_DEFENSE_RATE_LIMIT_MILLIS))
+            .max()
+            .unwrap_or(now)
+            .max(now)
+    }
+
+    /// Records the multicast time of a probe defense for later rate checks.
+    pub(crate) fn record_probe_defense(&mut self, out: &DnsOutgoing, now: Instant, is_ipv4: bool) {
+        let last_multicast = if is_ipv4 {
+            &mut self.last_multicast_v4
+        } else {
+            &mut self.last_multicast_v6
+        };
+        for record in out._answers().iter().chain(out.additionals()) {
+            last_multicast.insert(rate_limit_key(record), now);
+        }
+    }
+
     /// Returns the renamed name if a name change exists, otherwise returns the original name.
     pub(crate) fn resolve_name<'a>(&'a self, name: &'a str) -> &'a str {
         match self.name_changes.get(name) {
@@ -1450,6 +1484,8 @@ impl DnsRegistry {
 /// a record must not be re-multicast until at least this many millis have
 /// elapsed since it was last multicast on that interface.
 pub(crate) const MULTICAST_RATE_LIMIT_MILLIS: u64 = 1000;
+/// Minimum interval between multicasts of the same record while defending a probe.
+pub(crate) const PROBE_DEFENSE_RATE_LIMIT_MILLIS: u64 = 250;
 
 /// Returns whether `record` may still be multicast under the RFC 6762 section 6
 /// rate limit, updating `last_multicast` to `now` when it is kept.
@@ -1659,6 +1695,36 @@ mod tests {
         let mut out = build_out();
         registry.apply_multicast_rate_limit(&mut out, now + Duration::from_millis(1000), true);
         assert_eq!(out.answers_count(), 1);
+    }
+
+    #[test]
+    fn test_probe_defense_waits_250_ms_for_same_record() {
+        let mut registry = DnsRegistry::new();
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE);
+        out.add_answer_record(DnsPointer::new(
+            "_test._tcp.local.",
+            RRType::PTR,
+            CLASS_IN,
+            4500,
+            "inst._test._tcp.local.".to_string(),
+        ));
+        let now = Instant::now();
+
+        assert_eq!(registry.probe_defense_ready_at(&out, now, true), now);
+        registry.record_probe_defense(&out, now, true);
+        assert_eq!(
+            registry.probe_defense_ready_at(&out, now + Duration::from_millis(50), true),
+            now + Duration::from_millis(250)
+        );
+        assert_eq!(
+            registry.probe_defense_ready_at(&out, now + Duration::from_millis(250), true),
+            now + Duration::from_millis(250)
+        );
+        // The IPv6 multicast group has its own history.
+        assert_eq!(
+            registry.probe_defense_ready_at(&out, now + Duration::from_millis(50), false),
+            now + Duration::from_millis(50)
+        );
     }
 
     /// A single interface carries both IPv4 and IPv6, but they are distinct
