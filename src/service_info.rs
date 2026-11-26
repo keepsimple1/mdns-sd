@@ -25,8 +25,6 @@ use serde::{Deserialize, Serialize};
 /// Default TTL values in seconds
 const DNS_HOST_TTL: u32 = 120; // 2 minutes for host records (A, SRV etc) per RFC6762
 const DNS_OTHER_TTL: u32 = 4500; // 75 minutes for non-host records (PTR, TXT etc) per RFC6762
-const MIN_TTL: u32 = 10; // shortest TTL the public setters accept
-const MAX_TTL: u32 = 0x7FFF_FFFF; // 2^31 - 1, per RFC 2181 section 8
 
 /// Represents a network interface.
 #[derive(Debug)]
@@ -199,6 +197,14 @@ pub(crate) enum ServiceStatus {
 }
 
 impl ServiceInfo {
+    /// The shortest TTL, in seconds, that [`set_host_ttl`](Self::set_host_ttl) and
+    /// [`set_other_ttl`](Self::set_other_ttl) accept.
+    pub const MIN_TTL: u32 = 10;
+
+    /// The longest TTL, in seconds, that [`set_host_ttl`](Self::set_host_ttl) and
+    /// [`set_other_ttl`](Self::set_other_ttl) accept: 2^31 - 1, per RFC 2181 section 8.
+    pub const MAX_TTL: u32 = 0x7FFF_FFFF;
+
     /// Creates a new service info.
     ///
     /// `ty_domain` is the service type and the domain label, for example "_my-service._udp.local.".
@@ -536,20 +542,10 @@ impl ServiceInfo {
         self.sub_domain = Some(subtype);
     }
 
-    /// host_ttl is for SRV and address records
-    /// currently only used for testing.
-    pub(crate) fn _set_host_ttl(&mut self, ttl: u32) {
-        self.host_ttl = ttl;
-    }
-
-    /// other_ttl is for PTR and TXT records.
-    pub(crate) fn _set_other_ttl(&mut self, ttl: u32) {
-        self.other_ttl = ttl;
-    }
-
     /// Sets the TTL of the SRV and address records, in seconds.
     ///
-    /// `ttl` must be in the range `10..=2147483647`. A TTL of 0 would make the
+    /// `ttl` must be in the range [`MIN_TTL`](Self::MIN_TTL)`..=`[`MAX_TTL`](Self::MAX_TTL),
+    /// or an error is returned and the TTL is unchanged. A TTL of 0 would make the
     /// records goodbyes, a TTL of a few seconds means constant query traffic,
     /// and RFC 2181 section 8 caps a TTL at 2^31 - 1.
     pub fn set_host_ttl(&mut self, ttl: u32) -> Result<()> {
@@ -560,8 +556,8 @@ impl ServiceInfo {
 
     /// Sets the TTL of the PTR and TXT records, in seconds.
     ///
-    /// `ttl` must be in the range `10..=2147483647`, as for
-    /// [`set_host_ttl`](Self::set_host_ttl).
+    /// `ttl` must be in the range [`MIN_TTL`](Self::MIN_TTL)`..=`[`MAX_TTL`](Self::MAX_TTL),
+    /// as for [`set_host_ttl`](Self::set_host_ttl).
     pub fn set_other_ttl(&mut self, ttl: u32) -> Result<()> {
         check_ttl(ttl)?;
         self.other_ttl = ttl;
@@ -1633,14 +1629,16 @@ impl ResolvedService {
 }
 
 fn check_ttl(ttl: u32) -> Result<()> {
-    if ttl < MIN_TTL {
+    if ttl < ServiceInfo::MIN_TTL {
         return Err(Error::Msg(format!(
-            "ttl {ttl} is too small, must be at least {MIN_TTL}"
+            "ttl {ttl} is too small, must be at least {}",
+            ServiceInfo::MIN_TTL
         )));
     }
-    if ttl > MAX_TTL {
+    if ttl > ServiceInfo::MAX_TTL {
         return Err(Error::Msg(format!(
-            "ttl {ttl} is too big, must be at most {MAX_TTL}"
+            "ttl {ttl} is too big, must be at most {}",
+            ServiceInfo::MAX_TTL
         )));
     }
     Ok(())
@@ -1913,12 +1911,17 @@ mod tests {
         let mut info =
             ServiceInfo::new("_test._tcp.local.", "test", "host", "", 1234, None).unwrap();
         let (host, other) = (info.get_host_ttl(), info.get_other_ttl());
-        for ttl in [0, 9, 0x8000_0000] {
+        for ttl in [
+            0,
+            ServiceInfo::MIN_TTL - 1,
+            ServiceInfo::MAX_TTL + 1,
+            u32::MAX,
+        ] {
             assert!(info.set_host_ttl(ttl).is_err());
             assert!(info.set_other_ttl(ttl).is_err());
         }
         assert_eq!((info.get_host_ttl(), info.get_other_ttl()), (host, other));
-        for ttl in [10, 0x7FFF_FFFF] {
+        for ttl in [ServiceInfo::MIN_TTL, ServiceInfo::MAX_TTL] {
             info.set_host_ttl(ttl).unwrap();
             info.set_other_ttl(ttl).unwrap();
             assert_eq!((info.get_host_ttl(), info.get_other_ttl()), (ttl, ttl));

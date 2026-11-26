@@ -7567,8 +7567,8 @@ mod tests {
         // let fullname = my_service.get_fullname().to_string();
 
         // set SRV to expire soon.
-        let new_ttl = 3; // for testing only.
-        my_service._set_host_ttl(new_ttl);
+        let new_ttl = ServiceInfo::MIN_TTL;
+        my_service.set_host_ttl(new_ttl).unwrap();
 
         // register my service
         let mdns_server = ServiceDaemon::new().expect("Failed to create mdns server");
@@ -7625,8 +7625,8 @@ mod tests {
         .expect("invalid service info");
 
         // Set a short TTL for addresses for testing.
-        let addr_ttl = 2;
-        my_service._set_host_ttl(addr_ttl); // Expire soon
+        let addr_ttl = ServiceInfo::MIN_TTL;
+        my_service.set_host_ttl(addr_ttl).unwrap(); // Expire soon
 
         server.register(my_service).unwrap();
 
@@ -7704,8 +7704,8 @@ mod tests {
         )
         .unwrap();
 
-        let new_ttl = 3; // for testing only.
-        my_service._set_other_ttl(new_ttl);
+        let new_ttl = ServiceInfo::MIN_TTL; // To refresh soon.
+        my_service.set_other_ttl(new_ttl).unwrap();
 
         // register my service
         let mdns_server = ServiceDaemon::new().expect("Failed to create mdns server");
@@ -8641,8 +8641,8 @@ mod tests {
         )
         .unwrap();
 
-        let new_ttl = 3; // for testing only.
-        my_service._set_other_ttl(new_ttl);
+        let new_ttl = ServiceInfo::MIN_TTL;
+        my_service.set_other_ttl(new_ttl).unwrap();
 
         let mdns_client = ServiceDaemon::new().expect("Failed to create mdns client");
 
