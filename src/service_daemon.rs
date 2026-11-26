@@ -4134,12 +4134,12 @@ impl Zeroconf {
         if out.answers_count() > 0 {
             if probe_defense {
                 if let Some(registry) = self.dns_registry_map.get_mut(&if_index) {
-                    registry.record_probe_defense(&out, Instant::now(), is_ipv4);
+                    registry.record_probe_defense(out, Instant::now(), is_ipv4);
                 }
             }
             debug!("sending response on intf {}", intf.name);
             if let Err(InternalError::IntfAddrInvalid(intf_addr)) = send_dns_outgoing(
-                &out,
+                out,
                 intf,
                 &sock.pktinfo,
                 self.port,
