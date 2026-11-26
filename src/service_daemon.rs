@@ -1056,7 +1056,7 @@ struct DelayedResponse {
     out: DnsOutgoing,
     if_index: u32,
     is_ipv4: bool,
-    probe_defense: bool,
+    probe: Option<(DnsIncoming, SocketAddr)>,
 }
 
 /// Specify kinds of interfaces. It is used to enable or to disable interfaces in the daemon.
@@ -3883,8 +3883,42 @@ impl Zeroconf {
 
     /// Handle incoming query packets, figure out whether and what to respond.
     fn handle_query(&mut self, msg: DnsIncoming, if_index: u32, querier_addr: SocketAddr) {
-        let querier_ip = querier_addr.ip();
-        let is_ipv4 = querier_ip.is_ipv4();
+        let is_ipv4 = querier_addr.is_ipv4();
+        let (mut out, delayed) = self.build_query_response(&msg, if_index, querier_addr, true);
+        // Defer PTR responses (RFC 6762 §6).
+        if delayed && out.answers_count() > 0 {
+            out.set_id(msg.id());
+            self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count());
+            let delay =
+                fastrand::u64(SHARED_RESPONSE_DELAY_MIN_MILLIS..SHARED_RESPONSE_DELAY_MAX_MILLIS);
+            let next_time = Instant::now() + Duration::from_millis(delay);
+            self.delayed_responses.push(DelayedResponse {
+                next_time,
+                out,
+                if_index,
+                is_ipv4,
+                probe: None,
+            });
+            self.add_timer(next_time);
+            return;
+        }
+
+        let known_answer_count = out.known_answer_count();
+        if out.answers_count() > 0 {
+            self.send_response(&mut out, msg, if_index, querier_addr);
+        }
+
+        self.increase_counter(Counter::KnownAnswerSuppression, known_answer_count);
+    }
+
+    fn build_query_response(
+        &mut self,
+        msg: &DnsIncoming,
+        if_index: u32,
+        querier_addr: SocketAddr,
+        tiebreak: bool,
+    ) -> (DnsOutgoing, bool) {
+        let is_ipv4 = querier_addr.is_ipv4();
 
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         let mut delayed = false;
@@ -3896,12 +3930,12 @@ impl Zeroconf {
 
         let Some(dns_registry) = self.dns_registry_map.get_mut(&if_index) else {
             debug!("missing dns registry for intf {}", if_index);
-            return;
+            return (out, delayed);
         };
 
         let Some(intf) = self.my_intfs.get(&if_index) else {
             debug!("handle_query: no intf found for index {if_index}");
-            return;
+            return (out, delayed);
         };
 
         for question in msg.questions().iter() {
@@ -3926,21 +3960,21 @@ impl Zeroconf {
                     }
 
                     if service.matches_type_or_subtype(q_name) {
-                        out.add_answer_with_additionals(&msg, service, intf, dns_registry, is_ipv4);
+                        out.add_answer_with_additionals(msg, service, intf, dns_registry, is_ipv4);
                     } else if q_name == META_QUERY {
                         let ttl = service.get_other_ttl();
                         let alias = service.get_type().to_string();
                         let ptr = DnsPointer::new(q_name, RRType::PTR, CLASS_IN, ttl, alias);
-                        if !out.add_answer(&msg, ptr) {
+                        if !out.add_answer(msg, ptr) {
                             trace!("answer was not added for meta-query {:?}", question);
                         }
                     }
                 }
             } else {
                 // Simultaneous Probe Tiebreaking (RFC 6762 section 8.2)
-                if qtype == RRType::ANY && msg.num_authorities() > 0 {
+                if tiebreak && qtype == RRType::ANY && msg.num_authorities() > 0 {
                     if let Some(probe) = dns_registry.probing.get_mut(q_name) {
-                        probe.tiebreaking(&msg, q_name);
+                        probe.tiebreaking(msg, q_name);
                     }
                 }
 
@@ -3954,7 +3988,7 @@ impl Zeroconf {
                         question,
                         dns_registry,
                         &mut out,
-                        &msg,
+                        msg,
                     );
                 }
 
@@ -3988,7 +4022,7 @@ impl Zeroconf {
 
                 add_answer_of_service(
                     &mut out,
-                    &msg,
+                    msg,
                     question.entry_name(),
                     service,
                     qtype,
@@ -3998,30 +4032,7 @@ impl Zeroconf {
             }
         }
 
-        // Defer PTR responses (RFC 6762 §6).
-        if delayed && out.answers_count() > 0 {
-            out.set_id(msg.id());
-            self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count());
-            let delay =
-                fastrand::u64(SHARED_RESPONSE_DELAY_MIN_MILLIS..SHARED_RESPONSE_DELAY_MAX_MILLIS);
-            let next_time = Instant::now() + Duration::from_millis(delay);
-            self.delayed_responses.push(DelayedResponse {
-                next_time,
-                out,
-                if_index,
-                is_ipv4,
-                probe_defense: false,
-            });
-            self.add_timer(next_time);
-            return;
-        }
-
-        let known_answer_count = out.known_answer_count();
-        if out.answers_count() > 0 {
-            self.send_response(&mut out, &msg, if_index, querier_addr);
-        }
-
-        self.increase_counter(Counter::KnownAnswerSuppression, known_answer_count);
+        (out, delayed)
     }
 
     fn is_legacy_querier(&self, addr: SocketAddr) -> bool {
@@ -4031,7 +4042,7 @@ impl Zeroconf {
     fn send_response(
         &mut self,
         out: &mut DnsOutgoing,
-        msg: &DnsIncoming,
+        msg: DnsIncoming,
         if_index: u32,
         querier_addr: SocketAddr,
     ) {
@@ -4041,14 +4052,24 @@ impl Zeroconf {
         if probe_defense {
             let now = Instant::now();
             if let Some(registry) = self.dns_registry_map.get(&if_index) {
-                let ready_at = registry.probe_defense_ready_at(&out, now, is_ipv4);
+                let ready_at = registry.probe_defense_ready_at(out, now, is_ipv4);
                 if ready_at > now {
+                    // A pending multicast with the same records can answer both probes.
+                    if self.delayed_responses.iter().any(|pending| {
+                        pending.probe.is_some()
+                            && pending.if_index == if_index
+                            && pending.is_ipv4 == is_ipv4
+                            && same_records(pending.out._answers(), out._answers())
+                            && same_records(pending.out.additionals(), out.additionals())
+                    }) {
+                        return;
+                    }
                     self.delayed_responses.push(DelayedResponse {
                         next_time: ready_at,
                         out: std::mem::replace(out, DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA)),
                         if_index,
                         is_ipv4,
-                        probe_defense: true,
+                        probe: Some((msg, querier_addr)),
                     });
                     self.add_timer(ready_at);
                     return;
@@ -4136,39 +4157,25 @@ impl Zeroconf {
         }
     }
 
-    /// Multicasts a deferred shared-record response or probe defense.
-    ///
-    /// Re-resolves the socket and interface from `if_index`, so it is safe to
-    /// call from the timer loop after the borrows taken while building the
-    /// response are gone. The original querier is no longer known, so the
-    /// response is always a plain multicast (no unicast destination, no
-    /// source-address preference). The appropriate rate limit is applied
-    /// according to the response type.
+    /// Sends a deferred multicast reply using the current interface and socket.
+    /// Probe defenses rebuild their answers from the current service state.
     fn send_delayed_response(&mut self, resp: DelayedResponse) {
         let DelayedResponse {
             mut out,
             if_index,
             is_ipv4,
-            probe_defense,
+            probe,
             ..
         } = resp;
 
-        if probe_defense {
-            let now = Instant::now();
-            if let Some(registry) = self.dns_registry_map.get(&if_index) {
-                let ready_at = registry.probe_defense_ready_at(&out, now, is_ipv4);
-                if ready_at > now {
-                    self.delayed_responses.push(DelayedResponse {
-                        next_time: ready_at,
-                        out,
-                        if_index,
-                        is_ipv4,
-                        probe_defense: true,
-                    });
-                    self.add_timer(ready_at);
-                    return;
-                }
+        if let Some((msg, querier_addr)) = probe {
+            // Ownership may have changed while the defense was queued.
+            // Rebuild the response without repeating simultaneous-probe tiebreaking.
+            let (mut response, _) = self.build_query_response(&msg, if_index, querier_addr, false);
+            if response.answers_count() > 0 {
+                self.send_response(&mut response, msg, if_index, querier_addr);
             }
+            return;
         }
 
         let sock_opt = if is_ipv4 {
@@ -4182,11 +4189,7 @@ impl Zeroconf {
         };
 
         if let Some(dns_registry) = self.dns_registry_map.get_mut(&if_index) {
-            if probe_defense {
-                dns_registry.record_probe_defense(&out, Instant::now(), is_ipv4);
-            } else {
-                dns_registry.apply_multicast_rate_limit(&mut out, Instant::now(), is_ipv4);
-            }
+            dns_registry.apply_multicast_rate_limit(&mut out, Instant::now(), is_ipv4);
         }
         if out.answers_count() == 0 {
             return;
@@ -5352,6 +5355,13 @@ struct SendConfig {
     /// Whether the packets go out over IPv4, which decides their absolute
     /// ceiling: see [`max_pkt_absolute`].
     is_ipv4: bool,
+}
+
+fn same_records(left: &[DnsRecordBox], right: &[DnsRecordBox]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .all(|record| right.iter().any(|other| record.matches(other.as_ref())))
 }
 
 /// Send an outgoing mDNS query or response, and returns the packet bytes.
@@ -6825,7 +6835,16 @@ mod tests {
     }
 
     #[test]
-    fn test_repeated_probe_defense_is_scheduled() {
+    fn test_repeated_probe_defense_is_coalesced() {
+        check_deferred_probe_defense(false);
+    }
+
+    #[test]
+    fn test_deferred_probe_defense_skips_unregistered_service() {
+        check_deferred_probe_defense(true);
+    }
+
+    fn check_deferred_probe_defense(unregister: bool) {
         let mut daemon = new_test_zeroconf();
         let address = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let index = daemon
@@ -6848,9 +6867,8 @@ mod tests {
         )
         .unwrap();
         service.set_status(index, crate::service_info::ServiceStatus::Announced);
-        daemon
-            .my_services
-            .insert(service.get_fullname().to_lowercase(), service);
+        let fullname = service.get_fullname().to_lowercase();
+        daemon.my_services.insert(fullname.clone(), service);
 
         let mut probe = DnsOutgoing::new(FLAGS_QR_QUERY);
         probe.add_question("probe-defense.local.", RRType::ANY);
@@ -6866,14 +6884,38 @@ mod tests {
             .boxed(),
         );
         let packet = probe.to_data_on_wire(MAX_PKT_DEFAULT, true).remove(0);
-        for _ in 0..2 {
+        for _ in 0..5 {
             let probe = DnsIncoming::new(packet.clone(), interface.clone()).unwrap();
             assert_eq!(probe.num_authorities(), 1);
             daemon.handle_query(probe, index, (address, daemon.port).into());
         }
         assert_eq!(daemon.delayed_responses.len(), 1);
-        assert!(daemon.delayed_responses[0].probe_defense);
+        assert!(daemon.delayed_responses[0].probe.is_some());
         assert!(daemon.delayed_responses[0].next_time > Instant::now());
+        let respond = super::Counter::Respond.to_string();
+        assert_eq!(daemon.counters.get(&respond), Some(&1));
+
+        if unregister {
+            let (sender, receiver) = flume::bounded(1);
+            daemon.exec_command_unregister(false, fullname, sender);
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(super::UnregisterStatus::OK)
+            ));
+        }
+
+        // Simulate the cooldown elapsing before dispatching the queued response.
+        let registry = daemon.dns_registry_map.get_mut(&index).unwrap();
+        for last in registry.last_multicast_v4.values_mut() {
+            *last -= Duration::from_millis(250);
+        }
+        let response = daemon.delayed_responses.pop().unwrap();
+        daemon.send_delayed_response(response);
+        assert!(daemon.delayed_responses.is_empty());
+        assert_eq!(
+            daemon.counters.get(&respond),
+            Some(&(if unregister { 1 } else { 2 }))
+        );
     }
 
     #[test]
@@ -6905,7 +6947,7 @@ mod tests {
             address,
             interface.clone(),
         ));
-        daemon.send_response(&mut response, &query, index, (address, daemon.port).into());
+        daemon.send_response(&mut response, query, index, (address, daemon.port).into());
         let packet = response
             .to_data_on_wire(MAX_PKT_DEFAULT, address.is_ipv4())
             .remove(0);
