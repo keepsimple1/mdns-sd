@@ -7567,8 +7567,8 @@ mod tests {
         // let fullname = my_service.get_fullname().to_string();
 
         // set SRV to expire soon.
-        let new_ttl = 3; // for testing only.
-        my_service._set_host_ttl(new_ttl);
+        let new_ttl = ServiceInfo::MIN_TTL;
+        my_service.set_host_ttl(new_ttl).unwrap();
 
         // register my service
         let mdns_server = ServiceDaemon::new().expect("Failed to create mdns server");
@@ -7625,8 +7625,8 @@ mod tests {
         .expect("invalid service info");
 
         // Set a short TTL for addresses for testing.
-        let addr_ttl = 2;
-        my_service._set_host_ttl(addr_ttl); // Expire soon
+        let addr_ttl = ServiceInfo::MIN_TTL;
+        my_service.set_host_ttl(addr_ttl).unwrap(); // Expire soon
 
         server.register(my_service).unwrap();
 
@@ -7704,8 +7704,8 @@ mod tests {
         )
         .unwrap();
 
-        let new_ttl = 3; // for testing only.
-        my_service._set_other_ttl(new_ttl);
+        let new_ttl = ServiceInfo::MIN_TTL; // To refresh soon.
+        my_service.set_other_ttl(new_ttl).unwrap();
 
         // register my service
         let mdns_server = ServiceDaemon::new().expect("Failed to create mdns server");
@@ -7728,18 +7728,35 @@ mod tests {
 
         assert!(resolved);
 
-        // wait over 80% of TTL, and refresh PTR should be sent out.
-        let timeout = Duration::from_millis(new_ttl as u64 * 1000 * 90 / 100);
-        while let Ok(event) = browse_chan.recv_timeout(timeout) {
-            println!("event: {:?}", event);
-        }
+        // Wait for the refresh queries of the PTR and the SRV/TXT records.
+        //
+        // When they go out depends on the browse: its own queries (1, 2, 4, 8, 16 s
+        // apart) get answered once the cached PTR is past half of its TTL, and each
+        // answer restarts the TTL, which pushes the 80% refresh back. So poll the
+        // metrics instead of checking at a fixed time. With these query intervals,
+        // a refresh must go out within 3 TTLs.
+        let deadline = Instant::now() + Duration::from_secs(new_ttl as u64 * 3);
+        let (ptr_refresh_counter, srvtxt_refresh_counter) = loop {
+            let metrics = mdns_client
+                .get_metrics()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+            let count = |key: &str| metrics.get(key).copied().unwrap_or(0);
+            let counts = (count("cache-refresh-ptr"), count("cache-refresh-srv-txt"));
+            if (counts.0 >= 1 && counts.1 >= 1) || Instant::now() >= deadline {
+                break counts;
+            }
+            // Keep the event channel from filling up.
+            while let Ok(event) = browse_chan.try_recv() {
+                println!("event: {:?}", event);
+            }
+            thread::sleep(Duration::from_millis(200));
+        };
 
-        // verify refresh counter.
-        let metrics_chan = mdns_client.get_metrics().unwrap();
-        let metrics = metrics_chan.recv_timeout(timeout).unwrap();
-        let ptr_refresh_counter = metrics["cache-refresh-ptr"];
+        // The answer to the refresh restarts the TTL, so there is one refresh
+        // each, with no retries at 85%, 90% or 95% of the TTL.
         assert_eq!(ptr_refresh_counter, 1);
-        let srvtxt_refresh_counter = metrics["cache-refresh-srv-txt"];
         assert_eq!(srvtxt_refresh_counter, 1);
 
         // Exit the server so that no more responses.
@@ -8641,8 +8658,8 @@ mod tests {
         )
         .unwrap();
 
-        let new_ttl = 3; // for testing only.
-        my_service._set_other_ttl(new_ttl);
+        let new_ttl = ServiceInfo::MIN_TTL;
+        my_service.set_other_ttl(new_ttl).unwrap();
 
         let mdns_client = ServiceDaemon::new().expect("Failed to create mdns client");
 
