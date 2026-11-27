@@ -7728,10 +7728,12 @@ mod tests {
 
         assert!(resolved);
 
-        // wait over 80% of TTL, and refresh PTR should be sent out.
-        // Use a fixed deadline: browse events like SearchStarted must not
-        // extend the wait, or a second refresh may go out before the check.
-        let timeout = Duration::from_millis(new_ttl as u64 * 1000 * 90 / 100);
+        // The second announcement, about 1 s after the first, restarts the TTL of
+        // the cached PTR, so its 80% refresh comes about 9 s after resolution. The
+        // answer to it restarts the TTL again, so the next refresh is about 8 s
+        // later. Check in between, at 120% of the TTL. Use a fixed deadline:
+        // browse events like SearchStarted must not extend the wait.
+        let timeout = Duration::from_millis(new_ttl as u64 * 1000 * 120 / 100);
         let deadline = Instant::now() + timeout;
         while let Ok(event) = browse_chan.recv_deadline(deadline) {
             println!("event: {:?}", event);
