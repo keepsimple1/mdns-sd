@@ -1843,7 +1843,7 @@ impl DnsOutgoing {
         &self.questions
     }
 
-    /// For testing purposes only.
+    /// Records used by the multicast rate limiter and tests.
     pub(crate) fn _answers(&self) -> &[DnsRecordBox] {
         &self.answers
     }
