@@ -545,9 +545,7 @@ impl ServiceInfo {
     /// Sets the TTL of the SRV and address records, in seconds.
     ///
     /// `ttl` must be in the range [`MIN_TTL`](Self::MIN_TTL)`..=`[`MAX_TTL`](Self::MAX_TTL),
-    /// or an error is returned and the TTL is unchanged. A TTL of 0 would make the
-    /// records goodbyes, a TTL of a few seconds means constant query traffic,
-    /// and RFC 2181 section 8 caps a TTL at 2^31 - 1.
+    /// or an error is returned and the TTL is unchanged.
     pub fn set_host_ttl(&mut self, ttl: u32) -> Result<()> {
         check_ttl(ttl)?;
         self.host_ttl = ttl;
@@ -557,7 +555,7 @@ impl ServiceInfo {
     /// Sets the TTL of the PTR and TXT records, in seconds.
     ///
     /// `ttl` must be in the range [`MIN_TTL`](Self::MIN_TTL)`..=`[`MAX_TTL`](Self::MAX_TTL),
-    /// as for [`set_host_ttl`](Self::set_host_ttl).
+    /// or an error is returned and the TTL is unchanged.
     pub fn set_other_ttl(&mut self, ttl: u32) -> Result<()> {
         check_ttl(ttl)?;
         self.other_ttl = ttl;
