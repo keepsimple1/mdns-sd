@@ -7728,23 +7728,35 @@ mod tests {
 
         assert!(resolved);
 
-        // The second announcement, about 1 s after the first, restarts the TTL of
-        // the cached PTR, so its 80% refresh comes about 9 s after resolution. The
-        // answer to it restarts the TTL again, so the next refresh is about 8 s
-        // later. Check in between, at 120% of the TTL. Use a fixed deadline:
-        // browse events like SearchStarted must not extend the wait.
-        let timeout = Duration::from_millis(new_ttl as u64 * 1000 * 120 / 100);
-        let deadline = Instant::now() + timeout;
-        while let Ok(event) = browse_chan.recv_deadline(deadline) {
-            println!("event: {:?}", event);
-        }
+        // Wait for the refresh queries of the PTR and the SRV/TXT records.
+        //
+        // When they go out depends on the browse: its own queries (1, 2, 4, 8, 16 s
+        // apart) get answered once the cached PTR is past half of its TTL, and each
+        // answer restarts the TTL, which pushes the 80% refresh back. So poll the
+        // metrics instead of checking at a fixed time. With these query intervals,
+        // a refresh must go out within 3 TTLs.
+        let deadline = Instant::now() + Duration::from_secs(new_ttl as u64 * 3);
+        let (ptr_refresh_counter, srvtxt_refresh_counter) = loop {
+            let metrics = mdns_client
+                .get_metrics()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+            let count = |key: &str| metrics.get(key).copied().unwrap_or(0);
+            let counts = (count("cache-refresh-ptr"), count("cache-refresh-srv-txt"));
+            if (counts.0 >= 1 && counts.1 >= 1) || Instant::now() >= deadline {
+                break counts;
+            }
+            // Keep the event channel from filling up.
+            while let Ok(event) = browse_chan.try_recv() {
+                println!("event: {:?}", event);
+            }
+            thread::sleep(Duration::from_millis(200));
+        };
 
-        // verify refresh counter.
-        let metrics_chan = mdns_client.get_metrics().unwrap();
-        let metrics = metrics_chan.recv_timeout(timeout).unwrap();
-        let ptr_refresh_counter = metrics["cache-refresh-ptr"];
+        // The answer to the refresh restarts the TTL, so there is one refresh
+        // each, with no retries at 85%, 90% or 95% of the TTL.
         assert_eq!(ptr_refresh_counter, 1);
-        let srvtxt_refresh_counter = metrics["cache-refresh-srv-txt"];
         assert_eq!(srvtxt_refresh_counter, 1);
 
         // Exit the server so that no more responses.
